@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { canonicalDigest } from "./canonical-json.ts";
+import { canonicalDigest, hasProtoKey } from "./canonical-json.ts";
 import type { CapabilitySet } from "./capabilities.ts";
 import { fetchTarget, hostMatches, hostPattern, type Host, type HostPattern } from "./hosts.ts";
 
@@ -123,7 +123,7 @@ export type Selector =
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const commandWord = z.string().regex(/^[A-Za-z0-9_@%+=:,.\/-]+$/);
 /** Parses a stored selector. One that is not in canonical form is refused, not repaired. */
-export const selectorSchema: z.ZodType<Selector> = z.discriminatedUnion("kind", [
+export const selectorSchema: z.ZodType<Selector> = z.custom<unknown>(value => !hasProtoKey(value), { message: "Unknown key __proto__" }).pipe(z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("exact"), argumentDigest: sha256 }),
   z.strictObject({ kind: z.literal("command_prefix"), argv: z.array(commandWord).min(1).max(catalogLimits.commandWords) })
     .refine(selector => simpleCommand(selector.argv.join(" "))?.length === selector.argv.length, { message: "Expected the words of a simple command" }),
@@ -134,7 +134,7 @@ export const selectorSchema: z.ZodType<Selector> = z.discriminatedUnion("kind", 
     .refine(selector => hostPattern(selector.pattern) === selector.pattern, { message: "Expected a canonical host pattern" })
     .transform(selector => ({ kind: selector.kind, pattern: selector.pattern as HostPattern })),
   z.strictObject({ kind: z.literal("tool") }),
-]);
+]));
 
 export interface Preview {
   /** A fixed sentence chosen by the tool and the call's kind. */
@@ -206,15 +206,17 @@ const schemas = {
  * is. Printable ASCII is shown as it is. Every other character is spelled `\u{hex}`: controls,
  * invisible and reordering characters, and every letter, digit, mark or symbol outside ASCII,
  * since any of them can pass for shell syntax or for another name. A backslash that would
- * itself read as the start of such an escape is spelled out too, so two different texts never
- * look the same. The result never ends inside an escape. */
-function visiblePrefix(value: string, room: number): { shown: string; bytes: number; whole: boolean } {
+ * itself read as the start of such an escape is spelled out too, so two different texts are
+ * never spelled the same. So is every space after the first `plainSpaces` in a run. The result
+ * never ends inside an escape. */
+function visiblePrefix(value: string, room: number, plainSpaces = Infinity): { shown: string; bytes: number; whole: boolean } {
   const characters = [...value];
-  let shown = "", bytes = 0;
+  let shown = "", bytes = 0, run = 0;
   for (let index = 0; index < characters.length; index++) {
     const character = characters[index];
+    run = character === " " ? run + 1 : 0;
     const startsEscape = character === "\\" && characters[index + 1] === "u" && characters[index + 2] === "{";
-    const piece = !startsEscape && /^[\x20-\x7e]$/.test(character) ? character : "\\u{" + character.codePointAt(0)!.toString(16) + "}";
+    const piece = !startsEscape && run <= plainSpaces && /^[\x20-\x7e]$/.test(character) ? character : "\\u{" + character.codePointAt(0)!.toString(16) + "}";
     if (shown.length + piece.length > room) return { shown, bytes, whole: false };
     shown += piece;
     bytes += Buffer.byteLength(character);
@@ -228,9 +230,12 @@ const field = (value: string) => visible(value).replace(/^ | $|(?<= ) /g, "\\u{2
 const shownPath = (value: WorkspacePath) => value === "" ? "." : field(value);
 
 /** `header` lines in full, then each block's lines with its mark. Every content line carries
- * its mark, so content cannot pass for a header line. The blocks share what is left of the
- * budget evenly; a block that does not fit is cut, inside a line if need be, and a line that
- * starts with `...`, which no header or content line can, says how much of it is not shown. */
+ * its mark, so content cannot pass for a header line, and keeps its indentation: only the
+ * spaces after the sixteenth in a run are spelled out, so padding cannot hide the rest of a
+ * line. The blocks share what is left of the budget evenly; a block that does not fit is cut,
+ * inside a line if need be, and a line that starts with `...`, which no header or content line
+ * can, says how much of it is not shown. A line break counts as shown once the line after it
+ * is, so the shown lines of a block that reports no cut join back to the whole of it. */
 function render(header: string[], blocks: { mark: string; content: string }[] = []): Pick<Preview, "text" | "truncated"> {
   const lines = [...header];
   // 64 bytes for each block are kept for the line that says how much was cut.
@@ -241,11 +246,11 @@ function render(header: string[], blocks: { mark: string; content: string }[] = 
     for (let row = 0; row < rows.length; row++) {
       const room = share - used - mark.length - 1;
       if (room < 0) break;
-      const piece = visiblePrefix(rows[row], room);
+      const piece = visiblePrefix(rows[row], room, 16);
       if (piece.whole || piece.shown !== "") {
         lines.push(mark + piece.shown);
         used += mark.length + piece.shown.length + 1;
-        shown += piece.bytes + (piece.whole && row < rows.length - 1 ? 1 : 0);
+        shown += piece.bytes + (row > 0 ? 1 : 0);
       }
       if (!piece.whole) break;
     }
@@ -306,7 +311,7 @@ const readers: { [T in ToolName]: (args: z.output<(typeof schemas)[T]>, prior?: 
 
 function read<T extends ToolName>(tool: T, input: unknown, prior?: string): Reading<T> {
   // zod drops an own `__proto__` key without refusing it; an unknown argument must be refused.
-  if (typeof input === "object" && input !== null && Object.hasOwn(input, "__proto__")) throw new ToolArgumentError(`Invalid arguments for ${tool}`);
+  if (hasProtoKey(input, 0)) throw new ToolArgumentError(`Invalid arguments for ${tool}`);
   const parsed = schemas[tool].safeParse(input);
   if (!parsed.success) {
     const where = parsed.error.issues[0]?.path.join(".");

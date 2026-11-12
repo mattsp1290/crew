@@ -137,10 +137,14 @@ different sets, even when the patterns cover the same hosts.
 Migration 32 adds a nullable `capabilities` column to `profiles` and a table
 `member_capabilities` with one row for each member that has capabilities. NULL and
 no row mean none. A CHECK on both requires an object at version 1 that holds at
-least one capability and no other key, each capability an object, a workspace that
-says `read` or `write`, a shell only in a writable workspace, a fetch that names
-its hosts, and at most 16 KiB. The shell's network and the host patterns are
-validated in TypeScript only.
+least one capability and no unknown key at any level, a workspace that says `read`
+or `write`, a shell only in a writable workspace with its network `off` or
+`proxied`, a fetch whose hosts are `"any"` or a list that is not empty, a search
+with nothing in it, and at most 16 KiB. Each host pattern, and how many a set may
+hold, are validated in TypeScript only. A row the reader cannot read fails its
+owner's whole member listing, so the CHECK refuses every such row it can
+describe; one whose host list holds a pattern TypeScript would refuse, or more
+than 32 patterns, still passes it.
 
 Triggers hold the rest:
 
@@ -216,20 +220,26 @@ The model never writes the preview. Crew renders it from the arguments.
 - **The spelling is one-to-one.** A backslash that would itself read as the start
   of an escape is spelled `\u{5c}`, so a real newline (`\u{a}`) and the six
   characters `\u{a}` (`\u{5c}u{a}`) never look the same. Two different texts
-  never have the same preview.
+  are never spelled the same; content that is cut is the same only up to the
+  cut, which the `...` line reports.
 - The lines that say what is acted on (command, working directory, path, method
   and URL, query) are always complete. A command cannot add a line. On those
   lines a space at either end, and every space after the first in a run, is
   spelled `\u{20}`, so padding cannot push the rest of a line out of sight.
 - File content and request bodies follow, each line with a mark (`+ `, `- `,
-  `> `), so content cannot pass for one of the lines above. The whole preview is
-  at most 16 KiB. The blocks of an edit share the room evenly, so a long removal
-  cannot hide what is written. A block that does not fit is cut, inside a line if
-  need be; then `truncated` is true and a line starting with `...`, which no other
-  line can, says how many bytes of that block are not shown.
+  `> `), so content cannot pass for one of the lines above. Content keeps its
+  indentation: only the spaces after the sixteenth in a run are spelled
+  `\u{20}`, so a line cannot be padded until what follows is out of sight. The
+  whole preview is at most 16 KiB. The blocks of an edit share the room evenly,
+  so a long removal cannot hide what is written. A block that does not fit is
+  cut, inside a line if need be; then `truncated` is true and a line starting
+  with `...`, which no other line can, says how many bytes of that block are
+  not shown. A line break counts as shown only when the line after it is, so
+  the lines of a block that reports no cut join back to the whole of it.
 
-A card that shows this text raw is safe. A card may show a friendlier rendering
-beside it, and must not show one instead of it.
+A card that shows this text raw is safe, provided it wraps long lines or lets
+the reader scroll them: a content line can be as long as the preview. A card may
+show a friendlier rendering beside it, and must not show one instead of it.
 
 ## Selectors
 
@@ -269,8 +279,10 @@ A command that is not simple gets **no** prefix selector and matches none. It
 always needs a card. sh, dash, bash and zsh, run with no startup files and default
 options, read a simple command as exactly its words. A test runs generated simple
 commands through dash and bash, and through zsh where it is installed, and
-compares the words the program receives. That is evidence, not a proof for every
-shell and option.
+compares the words the program receives; it does the same behind a first word
+that is a builtin or a wrapper (`env`, `command`, `exec`). The test image has no
+zsh, so that leg runs only when someone installs it. That is evidence, not a
+proof for every shell and option.
 
 What a prefix does not say:
 
@@ -402,10 +414,13 @@ A result must be text PostgreSQL can store: a string or key with a NUL or an
 unpaired surrogate is refused before it is sent. An executor must turn output that
 is not text, such as the bytes of a binary file, into text first. A result over the
 limit, including one that is small as JSON and large as PostgreSQL prints it, is
-`input_limit`, and the call stays `admitted`.
+`input_limit`, and the call stays `admitted`. So is a result nested more than 64
+levels deep or one that holds itself: it is refused before anything reads into it.
 
-A database error that leaves the store has had the fields that quote the failing
-row or parameter removed, because they hold arguments and results.
+A database error that leaves the ledger module, from a read, a write or the
+settling of a restore, has had the fields that quote the failing row or parameter
+removed, because they hold arguments and results. Apart from the refusals named
+above it is a server fault, never a message about the caller's input.
 
 ### After a worker is lost
 
@@ -607,21 +622,25 @@ npm run test:api && npm run test:audit && npm run test:memories
 - `capabilities.test.ts`: the schema and its illegal states, the subset check
   against an independent reading of 50 sets, the digest, spawn through the HTTP
   gateway (unchanged for a client that names none, within, above, invalid, empty,
-  retried, raced), the database's own refusals including a registration that
-  cannot be deleted or renamed, registration and the relay rule, migration 32 on a
-  version-26 database with a running native turn, and capture, hold and restore.
+  retried, raced, and retried behind an attempt that rolled back), the database's
+  own refusals, including the shapes inside a capability that the reader refuses
+  and a registration that cannot be deleted or renamed, registration and the
+  relay rule, migration 32 on a version-26 database with a running native turn,
+  and capture, hold and restore.
 - `tool-catalog.test.ts`: the command splitter against every ASCII character
   outside its alphabet and a list of shell constructs, generated simple commands
   run through the installed shells, path traversal and invisible characters with
   idempotence over every path of a small grammar, each tool's classification, the
   digest, each selector including what it must not match, that every offered
   selector can be stored and covers its call, and the preview: ASCII only,
-  one-to-one, and complete where it must be at its size limits.
+  one-to-one, complete where it must be at its size limits, padded content, and
+  a cut at the exact edge of the budget.
 - `tool-calls.test.ts`: every operation and its retry, a call that claims a kind
-  or scope it does not have, results PostgreSQL cannot store, the answers after a
-  lost worker, owner isolation, about a hundred illegal updates written directly
-  in SQL, the 256-call limit under a race, migration 33 with a running native
-  turn, and a held, resumed and restored installation.
+  or scope it does not have, results PostgreSQL cannot store or that are too deep
+  to read, the answers after a lost worker, owner isolation, about a hundred
+  illegal updates written directly in SQL, the 256-call limit under a race,
+  migration 33 with a running native turn, and a held, resumed and restored
+  installation.
 
 `recovery.test.ts` restores a real `pg_dump` archive holding member capabilities
 and ledger rows, completes an effect on the source after the recovery point, and

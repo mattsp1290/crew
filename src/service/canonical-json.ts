@@ -11,3 +11,11 @@ export function canonical(value: unknown): string {
 
 /** Lowercase hexadecimal SHA-256 of the canonical encoding. */
 export const canonicalDigest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
+
+/** Whether parsed JSON holds an own `__proto__` key within `depth` levels. JSON.parse makes
+ * one, and zod drops it from a strict object without refusing it. Nothing is polluted, but a
+ * schema that refuses unknown keys must refuse this one too. */
+export function hasProtoKey(value: unknown, depth = 4): boolean {
+  if (typeof value !== "object" || value === null || depth < 0) return false;
+  return Object.hasOwn(value, "__proto__") || Object.values(value).some(inner => hasProtoKey(inner, depth - 1));
+}

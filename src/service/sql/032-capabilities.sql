@@ -36,11 +36,13 @@ BEGIN
 END $$;
 
 -- The shape a stored set must have, whoever writes it: an object at version 1 that holds at
--- least one capability and no key but the known ones, each an object, a workspace that says
--- read or write, a shell only inside a writable workspace, a fetch that names its hosts, and
--- at most 16 KiB. capabilities.ts validates the rest (the shell's network, the host patterns)
--- and is the only place that decides whether one set is within another. IS TRUE: a missing
--- key yields NULL, which a CHECK would otherwise accept.
+-- least one capability and no key but the known ones, at any level; a workspace that says
+-- read or write; a shell only inside a writable workspace, with its network off or proxied; a
+-- fetch whose hosts are "any" or a list that is not empty; a search with nothing in it; and at
+-- most 16 KiB. capabilities.ts validates the rest (each host pattern, and how many) and is the
+-- only place that decides whether one set is within another. IS TRUE: a missing key yields
+-- NULL, which a CHECK would otherwise accept. The parentheses around -> and #> matter: binary
+-- minus binds tighter than either.
 ALTER TABLE birbcrew_ts.profiles
     -- The ceiling this registration allows its members. NULL allows none.
     ADD COLUMN capabilities jsonb,
@@ -51,9 +53,17 @@ ALTER TABLE birbcrew_ts.profiles
         AND jsonb_typeof(coalesce(capabilities->'workspace', '{}')) = 'object'
         AND jsonb_typeof(coalesce(capabilities->'webFetch', '{}')) = 'object'
         AND jsonb_typeof(coalesce(capabilities->'webSearch', '{}')) = 'object'
-        AND (capabilities->'workspace' IS NULL OR capabilities #>> '{workspace,files}' IN ('read', 'write'))
-        AND (capabilities #> '{workspace,shell}' IS NULL OR capabilities #>> '{workspace,files}' = 'write')
-        AND (capabilities->'webFetch' IS NULL OR capabilities->'webFetch' ? 'hosts')
+        AND (capabilities->'workspace' IS NULL OR (capabilities #>> '{workspace,files}' IN ('read', 'write')
+            AND ((capabilities->'workspace') - '{files,shell}'::text[]) = '{}'::jsonb))
+        AND (capabilities #> '{workspace,shell}' IS NULL OR (capabilities #>> '{workspace,files}' = 'write'
+            AND jsonb_typeof(capabilities #> '{workspace,shell}') = 'object'
+            AND ((capabilities #> '{workspace,shell}') - 'network') = '{}'::jsonb
+            AND capabilities #>> '{workspace,shell,network}' IN ('off', 'proxied')))
+        AND (capabilities->'webFetch' IS NULL OR (((capabilities->'webFetch') - 'hosts') = '{}'::jsonb
+            AND (capabilities #> '{webFetch,hosts}' = '"any"'::jsonb
+                OR (jsonb_typeof(capabilities #> '{webFetch,hosts}') = 'array'
+                    AND jsonb_array_length(capabilities #> '{webFetch,hosts}') > 0))))
+        AND (capabilities->'webSearch' IS NULL OR capabilities->'webSearch' = '{}'::jsonb)
         AND octet_length(capabilities::text) <= 16384
     ) IS TRUE) NOT VALID;
 
@@ -93,9 +103,17 @@ CREATE TABLE birbcrew_ts.member_capabilities (
         AND jsonb_typeof(coalesce(capabilities->'workspace', '{}')) = 'object'
         AND jsonb_typeof(coalesce(capabilities->'webFetch', '{}')) = 'object'
         AND jsonb_typeof(coalesce(capabilities->'webSearch', '{}')) = 'object'
-        AND (capabilities->'workspace' IS NULL OR capabilities #>> '{workspace,files}' IN ('read', 'write'))
-        AND (capabilities #> '{workspace,shell}' IS NULL OR capabilities #>> '{workspace,files}' = 'write')
-        AND (capabilities->'webFetch' IS NULL OR capabilities->'webFetch' ? 'hosts')
+        AND (capabilities->'workspace' IS NULL OR (capabilities #>> '{workspace,files}' IN ('read', 'write')
+            AND ((capabilities->'workspace') - '{files,shell}'::text[]) = '{}'::jsonb))
+        AND (capabilities #> '{workspace,shell}' IS NULL OR (capabilities #>> '{workspace,files}' = 'write'
+            AND jsonb_typeof(capabilities #> '{workspace,shell}') = 'object'
+            AND ((capabilities #> '{workspace,shell}') - 'network') = '{}'::jsonb
+            AND capabilities #>> '{workspace,shell,network}' IN ('off', 'proxied')))
+        AND (capabilities->'webFetch' IS NULL OR (((capabilities->'webFetch') - 'hosts') = '{}'::jsonb
+            AND (capabilities #> '{webFetch,hosts}' = '"any"'::jsonb
+                OR (jsonb_typeof(capabilities #> '{webFetch,hosts}') = 'array'
+                    AND jsonb_array_length(capabilities #> '{webFetch,hosts}') > 0))))
+        AND (capabilities->'webSearch' IS NULL OR capabilities->'webSearch' = '{}'::jsonb)
         AND octet_length(capabilities::text) <= 16384
     ) IS TRUE),
     FOREIGN KEY (owner_id, member_id) REFERENCES birbcrew_ts.members (owner_id, member_id)

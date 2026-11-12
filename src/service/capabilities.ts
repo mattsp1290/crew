@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { canonicalDigest } from "./canonical-json.ts";
+import { canonicalDigest, hasProtoKey } from "./canonical-json.ts";
 import { spawnSchema, type Member } from "./domain.ts";
 import { hostPatternSchema, patternCovers, type HostPattern } from "./hosts.ts";
 
@@ -52,14 +52,8 @@ function canonicalSet(set: z.output<typeof shape>): CapabilitySet {
   };
 }
 
-// zod drops an own `__proto__` key (JSON.parse makes one) without refusing it. Nothing is
-// polluted, but an unknown key must be refused, not ignored. The sets are at most three deep.
-function hasProtoKey(value: unknown, depth = 0): boolean {
-  if (typeof value !== "object" || value === null || depth > 4) return false;
-  return Object.hasOwn(value, "__proto__") || Object.values(value).some(inner => hasProtoKey(inner, depth + 1));
-}
-
-/** Parses what an operator or an owner wrote into the canonical set. */
+/** Parses what an operator or an owner wrote into the canonical set. A set is at most three
+ * levels deep, so the `__proto__` check reaches every key the schema could accept. */
 export const capabilitySchema = z.custom<z.input<typeof shape>>(value => !hasProtoKey(value), { message: "Unknown key __proto__" })
   .pipe(shape).transform(canonicalSet);
 export type CapabilityInput = z.input<typeof capabilitySchema>;

@@ -216,7 +216,19 @@ test("a ready call is admitted by one execution, finished by it alone, then deli
     assert.equal(JSON.stringify(error, Object.getOwnPropertyNames(error as object)).includes(secret), false);
     return true;
   });
+  // A result nested too deep, or one that holds itself, is over the limit: nothing recurses into it.
+  const nested = (depth: number) => { let value: Record<string, unknown> = {}; for (let level = 0; level < depth; level++) value = { inner: value }; return value; };
+  const loop: Record<string, unknown> = { name: "loop" }, twice: Record<string, unknown> = {};
+  loop.self = loop; twice.left = twice; twice.right = twice;
+  for (const endless of [nested(toolCallLimits.resultDepth + 1), nested(20_000), loop, twice, { rows: Array.from({ length: toolCallLimits.resultBytes }, () => 1) }]) {
+    await assert.rejects(ledger.complete(bounded, execution, endless), { code: "input_limit", name: "MemberStoreError" });
+  }
   assert.deepEqual(await phases([bounded]), ["admitted"], "a refused result leaves the call where it was");
+  const deepest = t.key();
+  await ledger.record(deepest, reading, allowed);
+  await ledger.admit(deepest, execution);
+  const atDepth = await ledger.complete(deepest, execution, nested(toolCallLimits.resultDepth));
+  assert.deepEqual([atDepth.phase, atDepth.phase === "completed" && atDepth.result], ["completed", nested(toolCallLimits.resultDepth)], "a result nested exactly to the limit is stored");
   for (const invalid of ["", "Timeout", "not found", "x".repeat(65), "rm -rf /"]) await assert.rejects(ledger.fail(bounded, execution, invalid), z.ZodError);
   await assert.rejects(ledger.admit(bounded, "not-a-uuid"), z.ZodError);
   const largest = { content: "x".repeat(toolCallLimits.resultBytes - 14) };

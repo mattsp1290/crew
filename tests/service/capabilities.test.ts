@@ -14,7 +14,7 @@ import { canonical } from "../../src/service/canonical-json.ts";
 import type { MemberClient } from "../../src/service/client.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
 import { createGateway } from "../../src/service/gateway.ts";
-import { canonicalHost, hostMatches } from "../../src/service/hosts.ts";
+import { canonicalHost, hostMatches, hostPatternSchema } from "../../src/service/hosts.ts";
 import { withNativeAdmission } from "../../src/service/native-admission.ts";
 import type { MemberProfile } from "../../src/service/profiles.ts";
 import { createProxyProfile, usesRelayCredential } from "../../src/service/proxy-profiles.ts";
@@ -275,6 +275,38 @@ test("an owner picks a set within the ceiling at spawn; it is reported, audited 
   const winner = raced.find(response => response.status === 201)!.body;
   assert.deepEqual((await g.rows("member_capabilities")).filter(row => row.member_id === winner.memberId).map(row => row.capabilities),
     winner.capabilities ? [winner.capabilities] : []);
+  // A first attempt that inserted the member and then rolled back, as one above the ceiling does,
+  // leaves the retry that waited for it to spawn the member whole: one member, one set, one event.
+  const undone = randomUUID(), readSet = { version: 1, workspace: { files: "read" } } as const;
+  const first = await pool.connect();
+  let retried: Awaited<ReturnType<MemberStore["spawn"]>>;
+  try {
+    await first.query("BEGIN");
+    await first.query("INSERT INTO birbcrew_ts.members (owner_id,spawn_request_id,engine,profile) VALUES ($1,$2,'pi',$3)", [g.ownerId, undone, bounded]);
+    const retry = store.spawn({ ownerId: g.ownerId, requestId: undone, engine: "pi", profile: bounded, capabilities: readSet });
+    assert.equal(await Promise.race([retry.then(() => "returned"), delay(300, "waiting")]), "waiting", "the retry waits for the first attempt to end");
+    await first.query("ROLLBACK");
+    retried = await retry;
+  } finally {
+    await first.query("ROLLBACK").catch(() => undefined);
+    first.release();
+  }
+  assert.deepEqual(retried.capabilities, readSet);
+  assert.deepEqual((await g.rows("members")).filter(row => row.spawn_request_id === undone).map(row => row.member_id), [retried.memberId]);
+  assert.deepEqual((await g.rows("member_capabilities")).filter(row => row.member_id === retried.memberId).map(row => row.capabilities), [readSet]);
+  assert.deepEqual((await g.rows("audit_events")).filter(row => row.member_id === retried.memberId).map(row => row.payload),
+    [{ spawnRequestId: undone, engine: "pi", profile: bounded, capabilityDigest: capabilityDigest(set(readSet)) }]);
+  // The same without the held transaction: an attempt above the ceiling races one within it. The
+  // one above is refused, by the ceiling if it inserted the member first and as a differing retry
+  // if it came second, and the one within spawns the member either way.
+  const contested = randomUUID();
+  const [above, within] = await Promise.allSettled([{ version: 1, webSearch: {} }, readSet].map(capabilities =>
+    store.spawn({ ownerId: g.ownerId, requestId: contested, engine: "pi", profile: bounded, capabilities: capabilities as CapabilityInput })));
+  assert.ok(above.status === "rejected" && (above.reason instanceof CapabilityCeilingError || above.reason.code === "conflict"), String(above.status));
+  assert.ok(within.status === "fulfilled");
+  assert.deepEqual((await g.rows("member_capabilities")).filter(row => row.member_id === within.value.memberId).map(row => row.capabilities), [readSet]);
+  assert.equal((await g.rows("audit_events")).filter(row => row.member_id === within.value.memberId).length, 1);
+  assert.equal((await g.rows("members")).filter(row => row.spawn_request_id === contested).length, 1);
   const sibling = (await g.api("/v1/members", { requestId: randomUUID(), engine: "pi", profile: bounded })).body.memberId;
   const listed = (await g.api("/v1/members")).body.members;
   assert.deepEqual(listed.find((member: { memberId: string }) => member.memberId === memberId), { memberId, engine: "pi", profile: bounded, capabilities: held });
@@ -355,7 +387,18 @@ test("the database binds a stored set to its member and ceiling, checks its shap
     { version: 1, workspace: {} }, { version: 1, workspace: { files: "execute" } }, { version: 1, workspace: ["write"] },
     { version: 1, shell: { network: "proxied" }, workspace: { files: "read" } }, { version: 1, webFetch: {} }, { version: 1, webFetch: "any" },
     { version: 1, webSearch: true }, { version: 1, webSearch: null }, { version: "1", webSearch: {} },
-    { version: 1, webFetch: { hosts: Array.from({ length: 80 }, (_, i) => `${"h".repeat(200)}${i}.example.com`) } }]) {
+    { version: 1, webFetch: { hosts: Array.from({ length: 80 }, (_, i) => `${"h".repeat(200)}${i}.example.com`) } },
+    // Inside a capability: a key that is not known, a shell that is not exactly a network that is off
+    // or proxied, hosts that are neither "any" nor a list that holds something, and a search that holds anything.
+    { version: 1, workspace: { files: "read", root: "/" } }, { version: 1, workspace: { files: "write", shell: null } },
+    { version: 1, workspace: { files: "write", shell: {} } }, { version: 1, workspace: { files: "write", shell: { network: "on" } } },
+    { version: 1, workspace: { files: "write", shell: { network: "off", user: "root" } } }, { version: 1, workspace: { files: "write", shell: "off" } },
+    { version: 1, workspace: { files: "write", shell: ["off"] } }, { version: 1, workspace: { files: "write", shell: { network: null } } },
+    { version: 1, webFetch: { hosts: 5 } }, { version: 1, webFetch: { hosts: "all" } }, { version: 1, webFetch: { hosts: [] } },
+    { version: 1, webFetch: { hosts: null } }, { version: 1, webFetch: { hosts: { any: true } } }, { version: 1, webFetch: { hosts: "any", ports: [22] } },
+    { version: 1, webFetch: { hosts: ["a.example.com"], x: 1 } }, { version: 1, webSearch: { engine: "x" } }]) {
+    // Each is a row the reader would refuse to read, and one such row fails its owner's whole listing.
+    if (shape !== null) assert.throws(() => storedCapabilities(shape), /Unknown stored capabilities/, JSON.stringify(shape));
     // JSON null is a value, not the absence of one.
     await assert.rejects(insert(g.ownerId, bare.memberId, shape), { code: "23514" }, JSON.stringify(shape));
     await assert.rejects(pool.query("INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,capabilities) VALUES ($1,'pi',$2,$3)",
@@ -391,6 +434,15 @@ test("the database binds a stored set to its member and ceiling, checks its shap
     await pool.query("INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,capabilities) VALUES ($1,'pi',$2,$3)",
       ["capabilities-" + randomUUID(), Buffer.alloc(32), JSON.stringify(minimal)]);
   }
+  // So is the largest set the schema can produce: every capability, and as many host patterns as allowed, each as long as a name can be.
+  const longest = (index: number) => "*." + [String(index).padStart(63, "a"), "b".repeat(63), "c".repeat(63), "d".repeat(61)].join(".");
+  const largest = set({ version: 1, workspace: { files: "write", shell: { network: "proxied" } }, webSearch: {},
+    webFetch: { hosts: Array.from({ length: capabilityLimits.hostPatterns }, (_, index) => longest(index)) } });
+  assert.ok(largest.webFetch && largest.webFetch.hosts.length === capabilityLimits.hostPatterns && longest(0).length === 255);
+  assert.equal(hostPatternSchema.safeParse(longest(0) + "d").success, false, "one character more is not a host pattern");
+  const widest = "capabilities-" + randomUUID();
+  await pool.query("INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,capabilities) VALUES ($1,'pi',$2,$3)", [widest, Buffer.alloc(32), JSON.stringify(largest)]);
+  assert.deepEqual(storedCapabilities((await pool.query("SELECT capabilities FROM birbcrew_ts.profiles WHERE name=$1", [widest])).rows[0].capabilities), largest);
   assert.deepEqual((await g.rows("member_capabilities")).map(row => [row.member_id, row.capabilities]), [[held.memberId, readOnly]]);
   assert.equal((await pool.query("SELECT 1 FROM pg_trigger WHERE tgrelid='birbcrew_ts.member_capabilities'::regclass AND tgname='recovery_write_barrier' AND tgenabled='O'")).rowCount, 1);
 });

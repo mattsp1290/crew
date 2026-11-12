@@ -16,6 +16,8 @@ export const toolCallLimits = {
   // Canonical JSON. The result CHECK allows twice this, because jsonb prints with more spaces;
   // a result that still prints larger (a very large number does) is refused as input_limit.
   resultBytes: 65_536,
+  // Levels of nesting below the result object itself.
+  resultDepth: 64,
 } as const;
 
 const uuid = turnKey.shape.requestId;
@@ -50,6 +52,18 @@ function storable(value: unknown): boolean {
   return Array.isArray(value) ? value.every(storable) : Object.entries(value).every(([key, inner]) => storable(key) && storable(inner));
 }
 const resultSchema = z.record(z.string(), z.json()).refine(storable, { message: "Expected text without NUL or unpaired surrogates" });
+/** Whether a result is small and shallow enough to read at all: no more values than the size
+ * limit has bytes (a value takes at least one) and nesting within the depth limit. Checked
+ * before anything recurses into the result, so one that is very deep, or that holds itself,
+ * is refused as over the limit and does not overflow the stack. */
+function walkable(result: unknown): boolean {
+  let left = toolCallLimits.resultBytes;
+  const visit = (value: unknown, depth: number): boolean => {
+    if (left-- <= 0 || depth > toolCallLimits.resultDepth) return false;
+    return typeof value !== "object" || value === null || Object.values(value).every(inner => visit(inner, depth + 1));
+  };
+  return visit(result, 0);
+}
 type Json = z.infer<ReturnType<typeof z.json>>;
 type Result = z.infer<typeof resultSchema>;
 
@@ -166,15 +180,14 @@ const refusals: Record<string, MemberStoreError["code"]> = {
   tool_calls_request_limit: "input_limit", tool_calls_arguments_check: "input_limit", tool_calls_scope_check: "input_limit",
   tool_calls_result_check: "input_limit", tool_calls_grant_binding: "conflict", tool_calls_conversation_binding: "not_found",
 };
-/** What a failed ledger write may say to its caller. A refusal the caller can act on becomes
- * a MemberStoreError. From any other database error the fields that quote the failing row or
- * parameter are removed: they hold private arguments and results. */
+/** What a failed ledger statement may say to its caller. A refusal the caller can act on
+ * becomes a MemberStoreError. Any other database error is a server fault, and the fields that
+ * quote the failing row or parameter are removed from it: they hold private arguments and
+ * results. */
 function refusal(error: unknown): unknown {
   if (!(error instanceof Error) || error instanceof MemberStoreError || !("code" in error)) return error;
   const constraint = "constraint" in error && typeof error.constraint === "string" ? error.constraint : "";
   if (Object.hasOwn(refusals, constraint)) return new MemberStoreError(refusals[constraint]);
-  // jsonb refuses a value PostgreSQL cannot store, such as a number too large to print within the limit.
-  if (error.code === "22P05" || error.code === "22P02") return new MemberStoreError("input_limit");
   for (const field of ["detail", "where", "hint", "internalQuery"]) delete (error as unknown as Record<string, unknown>)[field];
   return error;
 }
@@ -286,6 +299,7 @@ export class ToolCallStore {
 
   /** The execution that holds the call stores its result, a JSON object. Another execution is stale. */
   async complete(key: ToolCallKey, executionId: string, result: unknown): Promise<ToolCallRecord> {
+    if (!walkable(result)) throw new MemberStoreError("input_limit");
     const value = resultSchema.parse(result);
     if (Buffer.byteLength(canonical(value)) > toolCallLimits.resultBytes) throw new MemberStoreError("input_limit");
     return this.finish(key, executionId, { phase: "completed", result: value });
@@ -335,7 +349,7 @@ export class ToolCallStore {
     const key = callKey.parse(input);
     const { rows: [row] } = await this.pool.query<Row>(`SELECT t.* FROM birbcrew_ts.tool_calls t JOIN birbcrew_ts.conversations c USING (conversation_id)
       WHERE c.owner_id=$1 AND c.member_id=$2 AND t.conversation_id=$3 AND t.request_id=$4 AND t.invocation_id=$5 AND t.native_call_id=$6`,
-      [key.ownerId, key.memberId, ...identity(key)]);
+      [key.ownerId, key.memberId, ...identity(key)]).catch((error: unknown) => { throw refusal(error); });
     if (!row) throw new MemberStoreError("not_found");
     return record(key, row);
   }
@@ -349,6 +363,6 @@ export class ToolCallStore {
  * meets the write barrier, so it needs no conversation lock. */
 export async function settleRestoredToolCalls(db: Pick<PoolClient, "query">): Promise<number> {
   const settled = await db.query(`UPDATE birbcrew_ts.tool_calls SET phase='uncertain', uncertain_reason='recovery_restore', finished_at=clock_timestamp()
-    WHERE kind='effect' AND phase IN ('ready','admitted')`);
+    WHERE kind='effect' AND phase IN ('ready','admitted')`).catch((error: unknown) => { throw refusal(error); });
   return settled.rowCount ?? 0;
 }
