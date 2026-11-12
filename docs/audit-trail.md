@@ -98,7 +98,7 @@ A test checks that the two lists match. `GET /v1/capabilities` lists them under
 
 | Type | Actor | Recorded when | One row per | Payload |
 | --- | --- | --- | --- | --- |
-| `member.spawned` | owner | `spawn` inserts a member | member | `spawnRequestId`, `engine`, `profile` |
+| `member.spawned` | owner | `spawn` inserts a member | member | `spawnRequestId`, `engine`, `profile`; `capabilityDigest` when the member has [capabilities](member-capabilities.md) |
 | `conversation.opened` | owner | `openConversation` inserts a conversation | conversation | `{}`, or `routineId` when a routine firing opened it |
 | `request.accepted` | owner | `recordAcceptance` commits the durable admission | conversation + request | `promptDigest` |
 | `approval.decided` | owner | `decideLocked` stores a choice: Claude/Pi cards, Pi child cards and Codex live calls. `choice` may be a standing choice | `approvalId` | `approvalId`, `invocationId`, `toolName`, `argumentDigest`, `choice` |

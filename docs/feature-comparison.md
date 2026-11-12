@@ -154,7 +154,7 @@ Each line states what Crew does at `47f3c0f` and where the feature stops.
 | 7 | No | Members have no browser and no computer. |
 | 8 | No | Claude runs with no built-in tools and no operator MCP servers. Codex runs with its shell off in a read-only workspace. Only the Python documentation pilot writes files, through its Codex author. See [the persistent pilot](persistent-pilot.md). |
 | 9 | No | The profile fixes the tools of a member: `record_work_item`, `choose_next_step`, and `delegate_task` for Pi, plus any tools that a trusted application registers in code. Crew has no connector catalogue. Claude and Codex each reach their one profile tool through an MCP server that Crew creates for the invocation. |
-| 10 | Part | A backend application can register at most eight tools in code through the trusted context library. No HTTP route registers a tool. See [trusted application context](trusted-application-context.md). |
+| 10 | Part | A backend application can register at most eight tools in code through the trusted context library. No HTTP route registers a tool. See [trusted application context](trusted-application-context.md). A [capability model and a tool-call ledger](member-capabilities.md) exist for Crew-run file, shell and web tools, and no engine uses them yet. |
 | 11 | No | The gateway emits run, step, text, tool-call, subagent, and snapshot events. It emits no custom or component events. |
 | 12 | No | Codex web search is off. No member has a search tool. |
 

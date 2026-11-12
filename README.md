@@ -123,3 +123,9 @@ writes memory; the model cannot. Deleting a fact erases its text, but Codex, and
 Claude where its SDK records the prompt, keep the context a conversation's first turn
 saw, and native session files and Pi checkpoints keep copies. Memory reaches every
 later conversation of the member, so whoever holds the owner's token can steer them all.
+
+[Member capabilities](docs/member-capabilities.md) are the foundation for tools that
+Crew will run for a member: files in a workspace, a shell, web fetch and search. An
+operator sets a ceiling in a profile, an owner may pick a set within it at spawn, and
+a tool catalog and a tool-call ledger define how each call will be classified and
+recorded. No engine offers or runs any of these tools yet.

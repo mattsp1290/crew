@@ -16,7 +16,10 @@ contract (event types, page limits, formats) and the scheduled-routine limits an
 policies (`routines`), `standingGrants` (the standing
 choices, the card and state fields, the grantable tool, policy version and
 initiator kinds, the grants route and the inactive-list limit), `memories` (the
-member memory route, limits, injection and deletion semantics per engine), health
+member memory route, limits, injection and deletion semantics per engine),
+`memberCapabilities` (the capability set version, the spawn and member fields, the
+kinds, and `toolExecution: "not-implemented"`: no engine runs a capability tool
+yet, see [member capabilities](member-capabilities.md)), health
 dependencies and listing limits. Additive
 response fields are compatible; consumers must reject an unsupported major version.
 Trusted context is currently an operator-configured local runtime, **not** a public
@@ -25,7 +28,7 @@ proof of the operator's provider access or configured profile availability.
 
 | Route | Purpose |
 | --- | --- |
-| `POST /v1/members` | Existing member creation contract (`requestId`, `engine`, `profile`) |
+| `POST /v1/members` | Existing member creation contract (`requestId`, `engine`, `profile`), with an optional `capabilities` set within the profile's ceiling; a set above it is `400 capabilities_exceed_profile` |
 | `POST /v1/conversations` | Open an owned conversation (`conversationId`, `memberId`) |
 | `POST /v1/conversations/{conversationId}/requests` | Submit `{ "requestId": "UUID", "text": "exact input" }` |
 | `GET /v1/conversations/{conversationId}/requests/{requestId}` | Reconcile status and original committed result; never invokes inference |
@@ -132,6 +135,10 @@ rows:
   "next": null
 }
 ```
+
+A member that was spawned with [capabilities](member-capabilities.md) also has a
+`capabilities` object in the member listing and in the spawn response. A member
+without any has no such key.
 
 | Parameter | Routes | Meaning |
 | --- | --- | --- |

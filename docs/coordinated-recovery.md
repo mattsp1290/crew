@@ -11,7 +11,7 @@ Keep all of the following at the same quiesced boundary:
 
 | Artifact | Required contents |
 | --- | --- |
-| `application-postgres` | Entire Crew application database: schema/version table, members/profiles, volume identities and account digests, conversation mappings, native checkpoints, admissions/turns, effect and delivery receipts, decisions, observation snapshots/events/cursors, append-only audit events, scheduled routines and their firings, member memory entries (including their text) and each conversation's references to them, trusted sessions/generations and historical receipt authority, and recovery control row. |
+| `application-postgres` | Entire Crew application database: schema/version table, members/profiles, volume identities and account digests, conversation mappings, native checkpoints, admissions/turns, effect and delivery receipts, decisions, observation snapshots/events/cursors, append-only audit events, scheduled routines and their firings, member memory entries (including their text) and each conversation's references to them, capability ceilings, member capability sets and the tool-call ledger (including each call's private arguments and result), trusted sessions/generations and historical receipt authority, and recovery control row. |
 | `native-volumes` | Full private Claude and Codex native session trees, SQLite indexes and sidecars (after teardown), rollout/transcript bytes, identity markers, and any consumer-owned native stores. A checkpoint digest is not the underlying file. Pi context normally lives in application checkpoints. |
 | `temporal-persistence` | Supported consistent backup of the actual self-hosted Temporal persistence, visibility and required cluster/configuration state. Include all relevant stores in one opaque archive or provider snapshot export. A workflow-history export is insufficient to recreate the service's execution identities, queues and cluster persistence. |
 | `configuration` | Non-secret deployment configuration, application commit, lockfile, image/package/native pins, profile identities, models/tool schemas, logical native mount paths, PostgreSQL/Temporal server versions and store layout. |
@@ -255,6 +255,14 @@ snapshot or copied from another fence, and never deleted. See
    restored native volumes still hold the system context that Claude and Codex
    sessions recorded. See [member memory](memories.md#recovery).
 
+   In the same transaction it marks every tool-call ledger row that is an effect and
+   is `ready` or `admitted` as `uncertain` with reason `recovery_restore`: the effect
+   may have run after the recovery point, on the timeline the restore discards, so
+   the restored installation never runs it. Reads, stored outcomes and unanswered
+   asks are left as they are, and member capabilities are unchanged. A held source
+   that resumes without a restore keeps its ledger rows. No engine writes ledger rows
+   yet. See [member capabilities](member-capabilities.md#recovery).
+
    After successful reconciliation and activation, restart matching Temporal
    services/workers **with consumer ingress still disabled**. Let recovery
    reconcile lost native processes and verify the required held/interrupted/
@@ -398,7 +406,9 @@ below the minimum, the fence can be upgraded and the restore retried. It restore
 archive taken before a grant was revoked and checks that the resumed target revokes
 every grant while a source that resumed without a restore keeps its own. It restores an archive taken before a member memory entry was
 deleted and checks that the resumed target suspends every active entry, that a held
-installation refuses every memory write, and that capture counts both memory tables. The native fixture archives stopped Claude/Codex/Pi session state,
+installation refuses every memory write, and that capture counts both memory tables. It restores an archive holding
+member capabilities and tool-call ledger rows, completes an effect on the source after the recovery point, and checks
+that the resumed target marks that effect `uncertain` and refuses to run it. The native fixture archives stopped Claude/Codex/Pi session state,
 restores it under a different host root mounted at `/native`, and performs actual
 SDK follow-ups with fresh synthetic proxy credentials. It makes no live requests.
 The coordinated proof additionally backs up and restores one actual generation
