@@ -94,9 +94,9 @@ PostgreSQL.
 | No `capabilities`, or `{ "version": 1 }` | `201`. The member has none. The response, the listing and the audit row are exactly as before this change. |
 | A set within the ceiling | `201`. The response has `capabilities` in canonical form. |
 | A set above the ceiling, or any set when the profile has no ceiling | `400` `{"error":"capabilities_exceed_profile"}`. Nothing is written. |
-| A malformed set, an unknown key, another version | `400` `{"error":"invalid_input"}`. |
+| A malformed set, an unknown key (`__proto__` included), another version | `400` `{"error":"invalid_input"}`. |
 | A retry with the same `requestId` and the same set, however it is spelled | `201` with the same member. |
-| A retry with the same `requestId` and another set | `409` `{"error":"conflict"}`. |
+| A retry with the same `requestId` that differs in engine, profile or set | `409` `{"error":"conflict"}`, whatever it asks for. Only a new request is checked against the ceiling. |
 
 The absence of a field never means more. A request that names no capabilities gets
 none, even when the profile has a ceiling.
@@ -129,16 +129,30 @@ narrows or widens it later.
 
 The canonical form has the keys above and nothing else, host patterns in lower
 case, punycode, without a trailing dot, sorted and without duplicates. Two
-spellings of one set have one digest.
+spellings of one set have one digest. Two sets that list different patterns are
+different sets, even when the patterns cover the same hosts.
 
 ### Storage
 
 Migration 32 adds a nullable `capabilities` column to `profiles` and a table
 `member_capabilities` with one row for each member that has capabilities. NULL and
-no row mean none. A CHECK on both requires an object at version 1 with at least one
-capability, at most 16 KiB, and a shell only in a writable workspace. Triggers
-refuse any change to a stored ceiling or set, and refuse a member's row unless the
-member belongs to the row's owner and its profile registration has a ceiling.
+no row mean none. A CHECK on both requires an object at version 1 that holds at
+least one capability and no other key, each capability an object, a workspace that
+says `read` or `write`, a shell only in a writable workspace, a fetch that names
+its hosts, and at most 16 KiB. The shell's network and the host patterns are
+validated in TypeScript only.
+
+Triggers hold the rest:
+
+- A stored ceiling or set never changes.
+- A registration that has a ceiling is never deleted, truncated or renamed. A
+  member is checked against its ceiling once, at spawn; if the registration could
+  be removed, the same name could be registered again with a narrower ceiling, or
+  with none and a provider key, under members that keep their sets. A registration
+  without a ceiling can still be deleted.
+- A member's row is refused unless the member belongs to the row's owner and its
+  profile registration has a ceiling.
+
 Whether the set is within the ceiling is decided in TypeScript only, as for
 standing grants.
 
@@ -162,8 +176,10 @@ read (an unknown tool, an unknown argument, a path outside the workspace) raises
 
 Defaults are in parentheses. For a file directly in the workspace root the
 directory selector would be the whole workspace, so the card offers the file's own
-path instead. No card offers the whole workspace, a wildcard host, or a prefix of a
-command that is not provably simple.
+path instead. No card offers a write, an edit or a command over the whole
+workspace, a wildcard host, or a prefix of a command that is not provably simple.
+Listing or searching the root offers `tool`, which for those two reads is the
+whole workspace.
 
 Limits: a path is at most 512 bytes and a segment 255; a command 2,048 bytes; file
 content 262,144 bytes; `oldText` and `newText` 65,536 bytes each; a query 1,024
@@ -183,26 +199,37 @@ catalog version (1), the normalized arguments and, for `fs_edit`, `priorSha256`:
 the hash of the file the edit was read against, which the caller supplies. It uses
 the same canonical JSON as the trusted lane (`src/service/canonical-json.ts`).
 Every spelling of one call has one digest, and the same edit of another version of
-the file is another call. `verifyStored` in `src/service/tool-calls.ts` classifies
-a stored call again and refuses it unless digest, kind and catalog version match.
+the file is another call. The digest does not cover the kind or the scope, which
+follow from the arguments: `verifyStored` in `src/service/tool-calls.ts` classifies
+a stored call again and refuses it unless digest, kind, scope and catalog version
+match, and the ledger does the same before it stores a call.
 
 ### The preview
 
 The model never writes the preview. Crew renders it from the arguments.
 
-- It shows printable ASCII, and the letters and digits of every script, as they
-  are. Every other character is spelled `\u{hex}`: control characters, invisible
-  and reordering characters, other spaces, symbols that can pass for a slash or a
-  dot, and a combining mark that does not follow a letter outside ASCII.
+- **It is printable ASCII.** Every other character is spelled `\u{hex}`: control
+  characters, invisible and reordering characters, and every letter, digit, mark
+  or symbol outside ASCII. A letter such as U+02BC passes for a quote and U+01C0
+  for a pipe, so `echo ʼ; curl … ǀ sh; echo ʼ` would otherwise read as one quoted
+  string. A path such as `café.md` is shown as `caf\u{e9}.md`.
+- **The spelling is one-to-one.** A backslash that would itself read as the start
+  of an escape is spelled `\u{5c}`, so a real newline (`\u{a}`) and the six
+  characters `\u{a}` (`\u{5c}u{a}`) never look the same. Two different texts
+  never have the same preview.
 - The lines that say what is acted on (command, working directory, path, method
-  and URL, query) are always complete. A command cannot add a line.
+  and URL, query) are always complete. A command cannot add a line. On those
+  lines a space at either end, and every space after the first in a run, is
+  spelled `\u{20}`, so padding cannot push the rest of a line out of sight.
 - File content and request bodies follow, each line with a mark (`+ `, `- `,
-  `> `), so content cannot pass for one of the lines above. Content is cut to fit
-  16 KiB; then `truncated` is true and the last line says how many bytes are not
-  shown.
+  `> `), so content cannot pass for one of the lines above. The whole preview is
+  at most 16 KiB. The blocks of an edit share the room evenly, so a long removal
+  cannot hide what is written. A block that does not fit is cut, inside a line if
+  need be; then `truncated` is true and a line starting with `...`, which no other
+  line can, says how many bytes of that block are not shown.
 
-A letter of another script is shown as it is, so one name can still resemble
-another. Text that already spells `\u{...}` is shown unchanged.
+A card that shows this text raw is safe. A card may show a friendlier rendering
+beside it, and must not show one instead of it.
 
 ## Selectors
 
@@ -225,21 +252,35 @@ ASCII letters, digits and `_ @ % + = : , . / -`, and words are separated by spac
 Nothing else is accepted, so none of these can appear: quotes, a backslash, `$`,
 backquotes, `* ? [ ] { } ~ !`, `#`, `^`, `; & | < > ( )`, a tab, a newline, a
 control character, or any character outside ASCII, including spaces and letters
-that only look like ASCII. A first word of the form `NAME=value` or `NAME+=value`
-is an assignment, not an argument, and is refused. A word that starts with `=` is
-refused because zsh expands it. At most 64 words.
+that only look like ASCII. At most 64 words. Three more forms are refused because
+some shell reads them as something other than a plain word:
+
+- A first word that holds `=`. It is an assignment, not a program: `A=1 cmd`,
+  `A+=1 cmd`, and in zsh `1=2 cmd`, which assigns a positional parameter and then
+  runs `cmd`. A card for the no-op `1=2` would otherwise offer a prefix that covers
+  every command.
+- A first word that starts with `-` or `+`. `sh -c` reads it as shell options.
+- A word that starts with `=`, or holds `==` or `:=`. zsh replaces `=name` with the
+  path of a command at the start of a word and in the value of an assignment
+  argument (`export a==ls`). This also refuses `pip install pkg==1.2.3`, which
+  therefore gets a card each time.
 
 A command that is not simple gets **no** prefix selector and matches none. It
-always needs a card. The splitter never produces words a shell would read
-differently.
+always needs a card. sh, dash, bash and zsh, run with no startup files and default
+options, read a simple command as exactly its words. A test runs generated simple
+commands through dash and bash, and through zsh where it is installed, and
+compares the words the program receives. That is evidence, not a proof for every
+shell and option.
 
 What a prefix does not say:
 
 - It does not end the command. `rm -rf build` as a prefix also covers
   `rm -rf build dist`.
 - It does not say which program runs. The first word can be a shell keyword or a
-  builtin such as `time`, `exec` or `eval`, or a wrapper such as `env`.
-- It does not bind the working directory.
+  builtin such as `time`, `exec` or `eval`, or a wrapper such as `env`, `nohup` or
+  `xargs`. A prefix that ends at such a word covers every program.
+- It does not bind the working directory. A prefix `./build.sh` covers a
+  `build.sh` in any directory of the workspace, including one the member wrote.
 
 ### Paths
 
@@ -247,16 +288,19 @@ What a prefix does not say:
 drops `.` and empty segments, and `..` removes the segment before it. It refuses:
 
 - a path that climbs above the root by any route (`..`, `a/../..`);
-- an absolute path, and a path that starts with `~`;
+- an absolute path, and a path whose first segment starts with `~` once it is
+  normalized (`~/x`, and also `./~/x` and `a/../~x`);
 - a backslash, which is a separator to some tools and not to others;
 - control characters, format characters (bidirectional overrides, zero-width
-  characters, a soft hyphen) and line or paragraph separators;
+  characters, a soft hyphen), characters that render as nothing (the Hangul
+  fillers, variation selectors) and line or paragraph separators;
 - text that is not well-formed, a path over 512 bytes, a segment over 255 bytes.
 
 The result is what the selector matches and what the executor must open, so
-`a/../b` can only mean `b`. Names are compared byte for byte: no case folding and
-no Unicode normalization, so two spellings of one visible name are two names. A
-character that only looks like a slash or a dot is part of a name.
+`a/../b` can only mean `b`, and normalizing a result again returns it unchanged.
+Names are compared byte for byte: no case folding and no Unicode normalization, so
+two spellings of one visible name are two names. A character that only looks like
+a slash or a dot is part of a name. A name may start with `-`.
 
 **Nothing here can see a symbolic link.** A link inside the workspace that points
 outside it is invisible to a lexical check. The executor must resolve every path
@@ -334,17 +378,34 @@ call id, as for `deferred_calls`.
 
 | Operation | Does | Repeating it |
 | --- | --- | --- |
-| `record(key, call, verdict)` | Stores a classified call with its verdict | Returns the stored call. Another tool or digest under the same identity is `conflict`. |
+| `record(key, call, verdict)` | Classifies the call again and stores what the catalog says it is, with its verdict. A call that claims another kind, scope, digest or catalog version than its arguments give is `conflict`, and so is a grant that is not this member's | Returns the stored call. Another tool or digest under the same identity is `conflict`. |
 | `admit(key, executionId)` | `ready` to `admitted`, held by this execution. Returns `run: true` | The same execution gets `run: true` again. Another execution gets `run: true` for a read, which it takes over, and `run: false` for an effect. |
 | `complete(key, executionId, result)` | Stores the result, a JSON object of at most 65,536 bytes | The same execution with the same result reads it back. Another result is `conflict`. Another execution is `stale`. |
 | `fail(key, executionId, code)` | Stores a failure code such as `timeout` | As `complete`. |
 | `classifyLost(key)` | Says what to do after the worker was lost | The same answer. |
 | `deliver(key)` | Marks the outcome delivered | Returns the delivered call. A call without an outcome is `conflict`. |
 
+`toolCallKey(record)` gives a record's key for the next operation. `recordLocked`
+is `record` inside the caller's transaction, which must be `READ COMMITTED`, as
+every Crew transaction is.
+
 An admitted call names its execution, a UUID the executor chooses. Only that
 execution can finish the call. This is what makes a retried `admit` safe: an
 execution that asks again is told to run, and any other execution is told not to
-run an effect, because that effect may already have happened.
+run an effect, because that effect may already have happened. **The execution id
+must be made fresh for each attempt, in memory, and never kept across a restart.**
+An id that a retried activity or a restarted process could present again, such as
+one derived from a workflow run and activity id, would be told to run an admitted
+effect a second time.
+
+A result must be text PostgreSQL can store: a string or key with a NUL or an
+unpaired surrogate is refused before it is sent. An executor must turn output that
+is not text, such as the bytes of a binary file, into text first. A result over the
+limit, including one that is small as JSON and large as PostgreSQL prints it, is
+`input_limit`, and the call stays `admitted`.
+
+A database error that leaves the store has had the fields that quote the failing
+row or parameter removed, because they hold arguments and results.
 
 ### After a worker is lost
 
@@ -410,6 +471,14 @@ waits in a lock queue. A running native turn holds no conflicting lock. The
 member's set is a table of its own because a column on `members` would need
 `ACCESS EXCLUSIVE` there and wait for every running turn.
 
+The two usually apply in one transaction. Migration 32 therefore takes migration
+33's locks with its own, so that 33 never retries while 32 holds `profiles`
+exclusively. While that lock is held, spawns, profile registrations and anything
+else that reads `profiles` wait until `migrate()` commits. Applied after other
+pending migrations in one transaction, 32 retries while it holds their locks, as
+migration 26 describes for 25. If the locks cannot be had within 60 seconds,
+`migrate()` fails with `55P03` and applies nothing.
+
 Stop every process of the previous release first, as for the earlier migrations. A
 worker of the previous release registers profiles without the ceiling column and
 would accept a registration this release made with one.
@@ -438,18 +507,43 @@ members replay their spawn requests unchanged.
 
 ## What later work must hold to
 
+The executor:
+
 - Run the normalized arguments from the ledger, after `verifyStored`. Never the
   model's original text.
 - Open every path beneath the workspace root and refuse a symbolic link that
   leaves it. The catalog's path checks are lexical.
-- Run shell commands with one fixed shell, no startup files, no aliases, and a
-  fixed `IFS` and `PATH`. `simpleCommand` assumes a POSIX shell reading plain
-  words.
-- Send a `web_fetch` to the canonical URL, and check the address the name resolves
-  to. The catalog compares names and never resolves one.
+- Pass every path and query to a program after `--` or as the value of an option.
+  A path may start with `-`, and a search tool would read `--pre=./x` as an
+  option. Such a call is a read.
+- Run shell commands as `sh -c -- "$command"` with one fixed shell, no startup
+  files, no aliases, default options, and a fixed `IFS` and `PATH`.
+- Compute `priorSha256` from the file. Never take it from the model, and compare
+  it again just before writing. Otherwise an `exact` grant made against one
+  version of a file covers every version.
+- Send a `web_fetch` to the canonical URL. Check the address the name resolves to,
+  treating `0.0.0.0` as local, and resolve the name as fully qualified: the
+  catalog drops a trailing dot and never resolves a name.
+- Do not follow a redirect without checking the new URL as a new call. A `GET` to
+  an allowed host that redirects elsewhere would otherwise pass both the
+  capability check and a `host` selector.
+
+The gate:
+
+- Decide what a capability host pattern covers. Today `webFetch.hosts` names hosts
+  only, so a listed host is reachable on every scheme and port, and a `GET` there
+  is a read, which the design allows without a card. Either a pattern should mean
+  https on port 443 unless it says otherwise, or no fetch should be allowed by
+  default.
+- Before it offers `shell_run`, check again that the member's set is within its
+  registration's ceiling and that the running process holds a relay credential.
+  The database keeps a ceiling from changing, but it cannot see the credential.
+- Do not offer a `command_prefix` that ends at a wrapper or a shell keyword, or
+  say plainly on the card that it covers every program.
 - Decide whether a path inside the workspace needs protecting. A `path_prefix`
-  selector does not treat `.git` specially, and a later tool that runs `git`
-  outside the sandbox would trust files a member wrote there.
+  selector does not treat `.git`, `.github/workflows` or `.husky` specially, and
+  anything outside the sandbox that later runs what a member wrote there would
+  trust it. One approved write to such a directory offers a selector for all of it.
 - Decide what a restore does with a `waiting` call before a card can be answered.
   Its owner may have answered it on the discarded timeline.
 - Fail closed when Claude ignores a deferral (see the next section).
@@ -513,17 +607,21 @@ npm run test:api && npm run test:audit && npm run test:memories
 - `capabilities.test.ts`: the schema and its illegal states, the subset check
   against an independent reading of 50 sets, the digest, spawn through the HTTP
   gateway (unchanged for a client that names none, within, above, invalid, empty,
-  retried), the database's own refusals, registration and the relay rule,
-  migration 32 on a version-26 database with a running native turn, and capture,
-  hold and restore.
+  retried, raced), the database's own refusals including a registration that
+  cannot be deleted or renamed, registration and the relay rule, migration 32 on a
+  version-26 database with a running native turn, and capture, hold and restore.
 - `tool-catalog.test.ts`: the command splitter against every ASCII character
-  outside its alphabet and a list of shell constructs, path traversal and
-  invisible characters, each tool's classification, the digest, each selector
-  including what it must not match, and the preview at its size limits.
-- `tool-calls.test.ts`: every operation and its retry, the answers after a lost
-  worker, owner isolation, about a hundred illegal updates written directly in
-  SQL, the 256-call limit under a race, migration 33 with a running native turn,
-  and a held, resumed and restored installation.
+  outside its alphabet and a list of shell constructs, generated simple commands
+  run through the installed shells, path traversal and invisible characters with
+  idempotence over every path of a small grammar, each tool's classification, the
+  digest, each selector including what it must not match, that every offered
+  selector can be stored and covers its call, and the preview: ASCII only,
+  one-to-one, and complete where it must be at its size limits.
+- `tool-calls.test.ts`: every operation and its retry, a call that claims a kind
+  or scope it does not have, results PostgreSQL cannot store, the answers after a
+  lost worker, owner isolation, about a hundred illegal updates written directly
+  in SQL, the 256-call limit under a race, migration 33 with a running native
+  turn, and a held, resumed and restored installation.
 
 `recovery.test.ts` restores a real `pg_dump` archive holding member capabilities
 and ledger rows, completes an effect on the source after the recovery point, and

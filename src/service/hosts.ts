@@ -82,7 +82,7 @@ export const fetchUrlBytes = 4096;
  * an escape in the authority, whitespace, control characters and backslashes (the parser
  * strips or rewrites them), port 0, and any host canonicalHost refuses. */
 export function fetchTarget(input: string): FetchTarget | null {
-  if (typeof input !== "string" || Buffer.byteLength(input) > fetchUrlBytes) return null;
+  if (typeof input !== "string" || !input.isWellFormed() || Buffer.byteLength(input) > fetchUrlBytes) return null;
   if (/[\u0000- \u007f- \\]/.test(input)) return null;
   const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^\/?#]*)/.exec(input);
   if (!authority || authority[1] === "" || /[@%]/.test(authority[1])) return null;

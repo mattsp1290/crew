@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { canonical, canonicalDigest } from "./canonical-json.ts";
 import { MemberStoreError, openSchema, turnKey } from "./domain.ts";
-import { argumentDigest, classify, type Classified, type ToolCall } from "./tool-catalog.ts";
+import { classify, ToolArgumentError, type Classified, type ToolCall } from "./tool-catalog.ts";
 
 /** The tool-call ledger (docs/member-capabilities.md, 033-tool-calls.sql): one row for each
  * call of a Crew tool the gate decided, from its verdict to the delivery of its outcome. The
@@ -13,8 +13,9 @@ import { argumentDigest, classify, type Classified, type ToolCall } from "./tool
  * Nothing calls this yet: no engine offers a Crew tool, and the gate is a later slice. */
 export const toolCallLimits = {
   perRequest: 256, // guard_tool_call in 033-tool-calls.sql repeats it
-  argumentBytes: 2 * 1024 * 1024, // canonical JSON; the arguments CHECK allows twice this
-  resultBytes: 65_536, // canonical JSON; the result CHECK allows twice this
+  // Canonical JSON. The result CHECK allows twice this, because jsonb prints with more spaces;
+  // a result that still prints larger (a very large number does) is refused as input_limit.
+  resultBytes: 65_536,
 } as const;
 
 const uuid = turnKey.shape.requestId;
@@ -41,7 +42,14 @@ const verdictSchema: z.ZodType<Verdict> = z.union([
 ]);
 
 const failureCode = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
-const resultSchema = z.record(z.string(), z.json());
+// jsonb cannot hold NUL or an unpaired surrogate, in a string or in a key. An executor must
+// turn output that is not text, such as the bytes of a binary file, into text before it completes.
+function storable(value: unknown): boolean {
+  if (typeof value === "string") return value.isWellFormed() && !value.includes("\0");
+  if (typeof value !== "object" || value === null) return true;
+  return Array.isArray(value) ? value.every(storable) : Object.entries(value).every(([key, inner]) => storable(key) && storable(inner));
+}
+const resultSchema = z.record(z.string(), z.json()).refine(storable, { message: "Expected text without NUL or unpaired surrogates" });
 type Json = z.infer<ReturnType<typeof z.json>>;
 type Result = z.infer<typeof resultSchema>;
 
@@ -130,15 +138,45 @@ async function locked(db: PoolClient, key: Key): Promise<Row> {
   return row;
 }
 
-/** Classifies a stored call again and checks that it is the call that was decided: same
- * digest, kind and catalog version. Whoever runs a stored call does this first and runs the
- * arguments this returns. A call stored under another catalog version does not verify. */
-export function verifyStored(call: Pick<ToolCallRecord, "toolName" | "catalogVersion" | "kind" | "arguments" | "argumentDigest" | "priorSha256">): Classified {
-  const again = classify({ tool: call.toolName, arguments: call.arguments, ...(call.priorSha256 && { priorSha256: call.priorSha256 }) } as ToolCall);
-  if (again.argumentDigest !== call.argumentDigest || again.kind !== call.kind || again.catalogVersion !== call.catalogVersion) {
-    throw new MemberStoreError("conflict");
-  }
+/** What the catalog says a call is, when that is what `claimed` says too. The digest covers
+ * the tool, the catalog version, the arguments and an edit's file, and not the kind or the
+ * scope, so those are compared as well: a write that claims to be a read is a conflict. */
+function classifiedAs(call: { tool: string; arguments: unknown; priorSha256?: string },
+  claimed: { argumentDigest: string; kind: string; catalogVersion: number; scope: unknown }): Classified {
+  const again = classify({ tool: call.tool, arguments: call.arguments, ...(call.priorSha256 !== undefined && { priorSha256: call.priorSha256 }) } as ToolCall);
+  if (again.argumentDigest !== claimed.argumentDigest || again.kind !== claimed.kind || again.catalogVersion !== claimed.catalogVersion
+      || canonical(again.scope) !== canonical(claimed.scope)) throw new MemberStoreError("conflict");
   return again;
+}
+
+/** Classifies a stored call again and checks that it is the call that was decided: same
+ * digest, kind, scope and catalog version. Whoever runs a stored call does this first and
+ * runs the arguments this returns. A call stored under another catalog version does not verify. */
+export function verifyStored(call: Pick<ToolCallRecord, "toolName" | "catalogVersion" | "kind" | "scope" | "arguments" | "argumentDigest" | "priorSha256">): Classified {
+  return classifiedAs({ tool: call.toolName, arguments: call.arguments, priorSha256: call.priorSha256 }, call);
+}
+
+/** A record's identity, for the next operation on it. */
+export function toolCallKey(call: ToolCallRecord): ToolCallKey {
+  return { ownerId: call.ownerId, memberId: call.memberId, conversationId: call.conversationId, requestId: call.requestId,
+    invocationId: call.invocationId, nativeCallId: call.nativeCallId };
+}
+
+const refusals: Record<string, MemberStoreError["code"]> = {
+  tool_calls_request_limit: "input_limit", tool_calls_arguments_check: "input_limit", tool_calls_scope_check: "input_limit",
+  tool_calls_result_check: "input_limit", tool_calls_grant_binding: "conflict", tool_calls_conversation_binding: "not_found",
+};
+/** What a failed ledger write may say to its caller. A refusal the caller can act on becomes
+ * a MemberStoreError. From any other database error the fields that quote the failing row or
+ * parameter are removed: they hold private arguments and results. */
+function refusal(error: unknown): unknown {
+  if (!(error instanceof Error) || error instanceof MemberStoreError || !("code" in error)) return error;
+  const constraint = "constraint" in error && typeof error.constraint === "string" ? error.constraint : "";
+  if (Object.hasOwn(refusals, constraint)) return new MemberStoreError(refusals[constraint]);
+  // jsonb refuses a value PostgreSQL cannot store, such as a number too large to print within the limit.
+  if (error.code === "22P05" || error.code === "22P02") return new MemberStoreError("input_limit");
+  for (const field of ["detail", "where", "hint", "internalQuery"]) delete (error as unknown as Record<string, unknown>)[field];
+  return error;
 }
 
 export class ToolCallStore {
@@ -154,7 +192,7 @@ export class ToolCallStore {
       return result;
     } catch (error) {
       await db.query("ROLLBACK");
-      throw error;
+      throw refusal(error);
     } finally {
       db.release();
     }
@@ -167,22 +205,30 @@ export class ToolCallStore {
     return this.transaction(db => this.recordLocked(db, key, call, verdict));
   }
 
-  /** `record` inside the caller's transaction, for a gate that decides and records at once. */
-  async recordLocked(db: PoolClient, input: ToolCallKey, call: Classified, decided: Verdict): Promise<ToolCallRecord> {
+  /** `record` inside the caller's transaction, for a gate that decides and records at once.
+   * The transaction must be READ COMMITTED, as every Crew transaction is: the per-request
+   * limit counts calls committed while this one waited. The call is classified again here and
+   * what the catalog says is what is stored, so a call that claims a kind or a scope it does
+   * not have is a conflict. */
+  async recordLocked(db: PoolClient, input: ToolCallKey, claimed: Classified, decided: Verdict): Promise<ToolCallRecord> {
     const key = callKey.parse(input), verdict = verdictSchema.parse(decided);
-    if (verdict.verdict === "allow" && verdict.by === "default" && call.kind !== "read") throw new MemberStoreError("conflict");
-    if (argumentDigest(call) !== call.argumentDigest) throw new MemberStoreError("conflict");
-    if (Buffer.byteLength(canonical(call.arguments)) > toolCallLimits.argumentBytes) throw new MemberStoreError("input_limit");
-    await lockConversation(db, key);
-    const turn = await db.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2", [key.conversationId, key.requestId]);
-    if (!turn.rowCount) throw new MemberStoreError("not_found");
-    const { rows: [prior] } = await db.query<Row>(selected, identity(key));
-    if (prior) {
-      if (prior.tool_name !== call.tool || prior.argument_digest !== call.argumentDigest) throw new MemberStoreError("conflict");
-      return record(key, prior);
-    }
-    const phase = { allow: "ready", ask: "waiting", deny: "refused" }[verdict.verdict];
+    let call: Classified;
     try {
+      call = classifiedAs(claimed, claimed);
+    } catch (error) {
+      throw error instanceof ToolArgumentError ? new MemberStoreError("conflict") : error;
+    }
+    if (verdict.verdict === "allow" && verdict.by === "default" && call.kind !== "read") throw new MemberStoreError("conflict");
+    try {
+      await lockConversation(db, key);
+      const turn = await db.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2", [key.conversationId, key.requestId]);
+      if (!turn.rowCount) throw new MemberStoreError("not_found");
+      const { rows: [prior] } = await db.query<Row>(selected, identity(key));
+      if (prior) {
+        if (prior.tool_name !== call.tool || prior.argument_digest !== call.argumentDigest) throw new MemberStoreError("conflict");
+        return record(key, prior);
+      }
+      const phase = { allow: "ready", ask: "waiting", deny: "refused" }[verdict.verdict];
       const { rows: [row] } = await db.query<Row>(`INSERT INTO birbcrew_ts.tool_calls
         (owner_id,member_id,conversation_id,request_id,invocation_id,native_call_id,tool_name,catalog_version,kind,scope,arguments,
          argument_digest,prior_sha256,verdict,decided_by,grant_id,phase)
@@ -192,15 +238,19 @@ export class ToolCallStore {
           verdict.verdict === "allow" && verdict.by === "grant" ? verdict.grantId : null, phase]);
       return record(key, row);
     } catch (error) {
-      if (error instanceof Error && "constraint" in error && error.constraint === "tool_calls_request_limit") throw new MemberStoreError("input_limit");
-      throw error;
+      throw refusal(error);
     }
   }
 
   /** An execution asks to run the call. It may when the call is ready, when this same
    * execution already holds it (a retry), or when the call is a read another execution held
    * (the read is run again, and the earlier execution can no longer finish it). It may not
-   * run an effect another execution holds: that effect may already have happened. */
+   * run an effect another execution holds: that effect may already have happened.
+   *
+   * `executionId` must be made fresh for each attempt, in memory, and never kept across a
+   * restart: an id that a retried activity or a restarted process could present again would be
+   * told to run an admitted effect a second time. After a worker is lost, call classifyLost,
+   * never admit with the old id. */
   async admit(input: ToolCallKey, executionId: string): Promise<Admission> {
     const key = callKey.parse(input), execution = uuid.parse(executionId);
     return this.transaction(async (db) => {

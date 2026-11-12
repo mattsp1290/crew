@@ -126,6 +126,8 @@ test("a fetch URL with userinfo, a rewritten authority, another scheme or parser
     // The parser would strip or rewrite these.
     " https://example.com/", "https://example.com/ ", "https://exa\tmple.com/", "https://example.com/a\nb", "https://example.com/a b",
     "https://example.com/\0", "ht\ttps://example.com/", "https://example.com/\u007f", "https://example.com/\u0085",
+    // Text that is not well formed would be rewritten to U+FFFD.
+    "https://example.com/\ud800", "https://example.com/?q=\udc00",
     "ftp://example.com/", "file:///etc/passwd", "javascript:alert(1)", "data:text/plain,x", "ws://example.com/", "blob:https://example.com/x",
     "view-source:https://example.com/", "about:blank",
     "https://example.com:0/", "https://example.com:65536/", "https://example.com:port/", "https://a_b.example.com/", "https://exa%6dple.com/",

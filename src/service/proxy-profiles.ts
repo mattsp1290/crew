@@ -99,7 +99,8 @@ export async function createProxyProfile(options: ProxyProfileOptions) {
       }));
       profile.pi = { model, modelRuntime: runtime };
     }
-    relayBacked.add(profile[options.engine]!);
+    // Frozen, so the options that carry the mark cannot be given another credential afterwards.
+    relayBacked.add(Object.freeze(profile[options.engine]!));
     return { profile, close };
   } catch {
     await close();

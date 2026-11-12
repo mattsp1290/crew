@@ -34,19 +34,21 @@ declare const pathBrand: unique symbol;
  * workspacePath makes one. */
 export type WorkspacePath = string & { readonly [pathBrand]: true };
 
-// Control characters, format characters (bidirectional overrides, zero-width characters) and
-// line or paragraph separators have no place in a file name a person must be able to read, and
-// a backslash is a separator to some tools and not to others.
-const refusedInPath = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\\]/u;
+// Control characters, format characters (bidirectional overrides, zero-width characters),
+// characters that render as nothing (default-ignorable code points such as the Hangul fillers)
+// and line or paragraph separators have no place in a file name a person must be able to
+// read, and a backslash is a separator to some tools and not to others.
+const refusedInPath = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\\]/u;
 
 /** Normalizes a workspace-relative path lexically, or returns null. `.` and empty segments are
  * dropped and `..` removes the segment before it; a path that climbs above the root, an
- * absolute path and a `~` path are refused. The result is what the selector matches, the
- * preview shows and the executor must open, so `a/../b` can only ever mean `b`. Nothing here
+ * absolute path and a path whose first segment starts with `~` once normalized are refused.
+ * The result is what the selector matches, the preview shows and the executor must open, so
+ * `a/../b` can only ever mean `b`, and normalizing it again returns it unchanged. Nothing here
  * can see a symbolic link: the executor must resolve the path beneath the workspace root. */
 export function workspacePath(input: string): WorkspacePath | null {
   if (typeof input !== "string" || !input.isWellFormed() || Buffer.byteLength(input) > catalogLimits.pathBytes) return null;
-  if (refusedInPath.test(input) || input.startsWith("/") || input.startsWith("~")) return null;
+  if (refusedInPath.test(input) || input.startsWith("/")) return null;
   const kept: string[] = [];
   for (const segment of input.split("/")) {
     if (segment === "" || segment === ".") continue;
@@ -56,6 +58,8 @@ export function workspacePath(input: string): WorkspacePath | null {
     } else if (Buffer.byteLength(segment) > catalogLimits.segmentBytes) return null;
     else kept.push(segment);
   }
+  // Checked on the result: `./~/x` and `a/../~x` must be refused like `~/x`.
+  if (kept[0]?.startsWith("~")) return null;
   return kept.join("/") as WorkspacePath;
 }
 
@@ -68,17 +72,25 @@ export function pathWithin(prefix: WorkspacePath, path: WorkspacePath): boolean 
 /** The words of a command, or null when the command is anything but plain words separated by
  * spaces. A word may hold only ASCII letters, digits and `_ @ % + = : , . / -`, so there is
  * no quoting, escape, expansion, substitution, glob, redirect, pipe, list operator, comment,
- * tab or newline to interpret. A leading `NAME=value` or `NAME+=value` word (an assignment,
- * not an argument) and a word that starts with `=` (zsh expands it) are refused too. A shell
- * reads such a command as exactly these words; a command this cannot prove simple gets no
- * prefix selector. The first word can still be a shell keyword or builtin (`time`, `exec`,
- * `eval`), so the words say how the command line begins, not which program runs. */
+ * tab or newline to interpret. Also refused, because some shell reads them as something other
+ * than a plain word:
+ * - a first word that holds `=`: an assignment, not a program (`A=1 cmd`, `A+=1 cmd`, and in
+ *   zsh `1=2 cmd`, which assigns a positional parameter and then runs `cmd`);
+ * - a first word that starts with `-` or `+`: `sh -c` reads it as shell options;
+ * - a word that starts with `=`, or holds `==` or `:=`: zsh replaces `=name` with the path
+ *   of a command there, at the start of a word and in the value of an assignment argument.
+ *
+ * sh, dash, bash and zsh, run with no startup files and default options, read such a command
+ * as exactly these words. A command this cannot prove simple gets no prefix selector. The
+ * first word can still be a shell keyword, a builtin or a wrapper (`time`, `exec`, `eval`,
+ * `env`), so the words say how the command line begins, not which program runs. */
 export function simpleCommand(command: string): string[] | null {
   if (typeof command !== "string" || Buffer.byteLength(command) > catalogLimits.commandBytes) return null;
   if (!/^[A-Za-z0-9_@%+=:,.\/ -]+$/.test(command)) return null;
   const words = command.split(" ").filter(word => word !== "");
   if (!words.length || words.length > catalogLimits.commandWords) return null;
-  if (/^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(words[0]) || words.some(word => word.startsWith("="))) return null;
+  if (/[=]|^[-+]/.test(words[0])) return null;
+  if (words.some(word => word.startsWith("=") || word.includes("==") || word.includes(":="))) return null;
   return words;
 }
 
@@ -190,45 +202,60 @@ const schemas = {
   web_search: z.strictObject({ query: text(catalogLimits.queryBytes).min(1), maxResults: whole(1, 20).default(10) }),
 } satisfies { [T in ToolName]: z.ZodType };
 
-/** Printable ASCII and the letters and digits of every script are shown as they are, and so is
- * a combining mark that follows a letter outside ASCII. Every other character (controls,
- * invisible and reordering characters, other spaces, symbols that can pass for a slash or a
- * dot, and a mark placed over ASCII text) is shown as `\u{hex}`, so the reader sees every
- * character that is there. Text that already spells `\u{...}` is shown unchanged. */
-function visible(value: string): string {
-  let shown = "", marks = false;
-  for (const character of value) {
-    const plain = /^[\x20-\x7e]$/.test(character), letter = !plain && /^\p{L}$/u.test(character);
-    const mark: boolean = marks && /^\p{M}$/u.test(character);
-    shown += plain || letter || mark || /^\p{N}$/u.test(character) ? character : "\\u{" + character.codePointAt(0)!.toString(16) + "}";
-    marks = letter || mark;
+/** As much of `value` as fits in `room` bytes once made visible, and how many of its bytes that
+ * is. Printable ASCII is shown as it is. Every other character is spelled `\u{hex}`: controls,
+ * invisible and reordering characters, and every letter, digit, mark or symbol outside ASCII,
+ * since any of them can pass for shell syntax or for another name. A backslash that would
+ * itself read as the start of such an escape is spelled out too, so two different texts never
+ * look the same. The result never ends inside an escape. */
+function visiblePrefix(value: string, room: number): { shown: string; bytes: number; whole: boolean } {
+  const characters = [...value];
+  let shown = "", bytes = 0;
+  for (let index = 0; index < characters.length; index++) {
+    const character = characters[index];
+    const startsEscape = character === "\\" && characters[index + 1] === "u" && characters[index + 2] === "{";
+    const piece = !startsEscape && /^[\x20-\x7e]$/.test(character) ? character : "\\u{" + character.codePointAt(0)!.toString(16) + "}";
+    if (shown.length + piece.length > room) return { shown, bytes, whole: false };
+    shown += piece;
+    bytes += Buffer.byteLength(character);
   }
-  return shown;
+  return { shown, bytes, whole: true };
 }
-const shownPath = (value: WorkspacePath) => value === "" ? "." : visible(value);
+const visible = (value: string) => visiblePrefix(value, Infinity).shown;
+/** A value on a header line. A space at either end, and every space after the first in a run,
+ * is spelled out, so padding cannot push the rest of the line out of sight unnoticed. */
+const field = (value: string) => visible(value).replace(/^ | $|(?<= ) /g, "\\u{20}");
+const shownPath = (value: WorkspacePath) => value === "" ? "." : field(value);
 
-/** `header` lines in full, then as many `mark`-prefixed lines of each block as fit the budget.
- * Every content line carries its mark, so content cannot pass for a header line. */
+/** `header` lines in full, then each block's lines with its mark. Every content line carries
+ * its mark, so content cannot pass for a header line. The blocks share what is left of the
+ * budget evenly; a block that does not fit is cut, inside a line if need be, and a line that
+ * starts with `...`, which no header or content line can, says how much of it is not shown. */
 function render(header: string[], blocks: { mark: string; content: string }[] = []): Pick<Preview, "text" | "truncated"> {
   const lines = [...header];
-  // The last 64 bytes are kept for the line that says how much was cut.
-  const budget = catalogLimits.previewBytes - 64;
-  let used = Buffer.byteLength(lines.join("\n")), truncated = false, hidden = 0;
-  for (const { mark, content } of blocks) {
-    let shown = 0;
-    for (const raw of truncated ? [] : content.split("\n")) {
-      const line = mark + visible(raw), cost = Buffer.byteLength(line) + 1;
-      if (used + cost > budget) {
-        truncated = true;
-        break;
+  // 64 bytes for each block are kept for the line that says how much was cut.
+  let left = catalogLimits.previewBytes - Buffer.byteLength(lines.join("\n")) - 64 * blocks.length, truncated = false;
+  blocks.forEach(({ mark, content }, index) => {
+    const share = Math.floor(left / (blocks.length - index)), rows = content.split("\n");
+    let used = 0, shown = 0;
+    for (let row = 0; row < rows.length; row++) {
+      const room = share - used - mark.length - 1;
+      if (room < 0) break;
+      const piece = visiblePrefix(rows[row], room);
+      if (piece.whole || piece.shown !== "") {
+        lines.push(mark + piece.shown);
+        used += mark.length + piece.shown.length + 1;
+        shown += piece.bytes + (piece.whole && row < rows.length - 1 ? 1 : 0);
       }
-      lines.push(line);
-      used += cost;
-      shown += Buffer.byteLength(raw) + 1;
+      if (!piece.whole) break;
     }
-    if (truncated) hidden += Math.max(0, Buffer.byteLength(content) - shown);
-  }
-  if (truncated) lines.push(`... ${hidden} more bytes not shown`);
+    const hidden = Buffer.byteLength(content) - shown;
+    if (hidden > 0) {
+      lines.push(`... ${hidden} more bytes of "${mark.trim()}" lines not shown`);
+      truncated = true;
+    }
+    left -= used;
+  });
   return { text: lines.join("\n"), truncated };
 }
 
@@ -250,16 +277,17 @@ const readers: { [T in ToolName]: (args: z.output<(typeof schemas)[T]>, prior?: 
     ...render([`path: ${shownPath(args.path)}`, `depth: ${args.depth}`]) }),
   fs_search: args => ({ kind: "read", scope: { kind: "path", path: args.path }, summary: "Search files",
     selector: args.path === "" ? { kind: "tool" } : { kind: "path_prefix", prefix: args.path }, arguments: args,
-    ...render([`path: ${shownPath(args.path)}`, `query: ${visible(args.query)}`]) }),
+    ...render([`path: ${shownPath(args.path)}`, `query: ${field(args.query)}`]) }),
   fs_write: args => ({ kind: "effect", scope: { kind: "path", path: args.path }, summary: "Write a file", selector: around(args.path), arguments: args,
     ...render([`path: ${shownPath(args.path)}`, `bytes: ${Buffer.byteLength(args.content)}`], [{ mark: "+ ", content: args.content }]) }),
   fs_edit: (args, prior) => ({ kind: "effect", scope: { kind: "path", path: args.path }, summary: "Edit a file", selector: around(args.path), arguments: args,
-    ...render([`path: ${shownPath(args.path)}`, `file sha256: ${prior}`], [{ mark: "- ", content: args.oldText }, { mark: "+ ", content: args.newText }]) }),
+    ...render([`path: ${shownPath(args.path)}`, `file sha256: ${prior}`, `old bytes: ${Buffer.byteLength(args.oldText)}`, `new bytes: ${Buffer.byteLength(args.newText)}`],
+      [{ mark: "- ", content: args.oldText }, { mark: "+ ", content: args.newText }]) }),
   shell_run: args => {
     const argv = simpleCommand(args.command);
     return { kind: "effect", scope: { kind: "command", cwd: args.cwd, argv }, summary: "Run a shell command",
       selector: argv && { kind: "command_prefix", argv }, arguments: args,
-      ...render([`command: ${visible(args.command)}`, `cwd: ${shownPath(args.cwd)}`, `timeout: ${args.timeoutSeconds} s`]) };
+      ...render([`command: ${field(args.command)}`, `cwd: ${shownPath(args.cwd)}`, `timeout: ${args.timeoutSeconds} s`]) };
   },
   web_fetch: args => {
     const target = fetchTarget(args.url)!;
@@ -269,14 +297,16 @@ const readers: { [T in ToolName]: (args: z.output<(typeof schemas)[T]>, prior?: 
       // A host selector covers reads over https on port 443 only, so only such a call offers one.
       selector: read && target.scheme === "https" && target.port === 443 ? { kind: "host", pattern: target.host as string as HostPattern } : null,
       arguments: { url: target.href, method: args.method, ...(args.body !== undefined && { body: args.body }) },
-      ...render([`${args.method} ${visible(target.href)}`, ...(args.body === undefined ? [] : [`body bytes: ${Buffer.byteLength(args.body)}`])],
+      ...render([`${args.method} ${field(target.href)}`, ...(args.body === undefined ? [] : [`body bytes: ${Buffer.byteLength(args.body)}`])],
         args.body === undefined ? [] : [{ mark: "> ", content: args.body }]) };
   },
   web_search: args => ({ kind: "read", scope: { kind: "search" }, summary: "Search the web", selector: { kind: "tool" }, arguments: args,
-    ...render([`query: ${visible(args.query)}`, `results: ${args.maxResults}`]) }),
+    ...render([`query: ${field(args.query)}`, `results: ${args.maxResults}`]) }),
 };
 
 function read<T extends ToolName>(tool: T, input: unknown, prior?: string): Reading<T> {
+  // zod drops an own `__proto__` key without refusing it; an unknown argument must be refused.
+  if (typeof input === "object" && input !== null && Object.hasOwn(input, "__proto__")) throw new ToolArgumentError(`Invalid arguments for ${tool}`);
   const parsed = schemas[tool].safeParse(input);
   if (!parsed.success) {
     const where = parsed.error.issues[0]?.path.join(".");
@@ -297,13 +327,17 @@ export function argumentDigest(call: { tool: string; catalogVersion: number; arg
  * not accept; such a call must be denied, never run. Normalized arguments read back as
  * themselves, so a stored call classifies to the digest it was stored with. */
 export function classify(call: ToolCall): Classified {
-  if (!toolNames.includes(call.tool)) throw new ToolArgumentError("Unknown tool");
-  const prior = call.tool === "fs_edit" ? call.priorSha256 : undefined;
-  if (call.tool === "fs_edit" && !sha256.safeParse(prior).success) throw new ToolArgumentError("fs_edit needs the SHA-256 of the file it edits");
-  const { summary, text: shown, truncated, ...reading } = read(call.tool, call.arguments, prior);
+  if (typeof call !== "object" || call === null) throw new ToolArgumentError("Unknown tool");
+  // Each field is read once, so a call object cannot answer differently the second time.
+  const { tool, arguments: input } = call, given: unknown = "priorSha256" in call ? call.priorSha256 : undefined;
+  if (typeof tool !== "string" || !toolNames.includes(tool)) throw new ToolArgumentError("Unknown tool");
+  const edited = sha256.safeParse(given);
+  if (tool === "fs_edit" && !edited.success) throw new ToolArgumentError("fs_edit needs the SHA-256 of the file it edits");
+  const prior = tool === "fs_edit" ? edited.data : undefined;
+  const { summary, text: shown, truncated, ...reading } = read(tool, input, prior);
   return {
-    tool: call.tool, catalogVersion, kind: reading.kind, scope: reading.scope, arguments: reading.arguments, ...(prior !== undefined && { priorSha256: prior }),
-    argumentDigest: argumentDigest({ tool: call.tool, catalogVersion, arguments: reading.arguments, priorSha256: prior }),
+    tool, catalogVersion, kind: reading.kind, scope: reading.scope, arguments: reading.arguments, ...(prior !== undefined && { priorSha256: prior }),
+    argumentDigest: argumentDigest({ tool, catalogVersion, arguments: reading.arguments, priorSha256: prior }),
     preview: { summary, text: shown, truncated }, selector: reading.selector,
   };
 }

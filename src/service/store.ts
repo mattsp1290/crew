@@ -118,34 +118,35 @@ export class MemberStore {
 
   /** A member's capabilities are the set its spawn asked for, which must be within the ceiling
    * its profile registered (capabilities.ts); none when it asked for none. A retry must ask for
-   * the same set. */
+   * the same set: one that differs in any way is a conflict, whatever it asks for. A retry reads
+   * member_capabilities, so it needs schema version 32. */
   async spawn(input: z.input<typeof spawnRequestSchema>): Promise<SpawnedMember> {
     const { ownerId, requestId, engine, profile, capabilities } = spawnRequestSchema.parse(input);
     const requested = hasCapabilities(capabilities) ? capabilities : null;
     return this.transaction(async (db) => {
-      if (requested) {
-        const { rows: [registered] } = await db.query<{ capabilities: unknown }>(
-          "SELECT capabilities FROM birbcrew_ts.profiles WHERE name = $1 AND engine = $2", [profile, engine]);
-        if (!capabilitiesWithin(requested, storedCapabilities(registered?.capabilities))) throw new CapabilityCeilingError();
-      }
       const inserted = await db.query(
         `INSERT INTO birbcrew_ts.members (owner_id, spawn_request_id, engine, profile)
          VALUES ($1, $2, $3, $4) ON CONFLICT (owner_id, spawn_request_id) DO NOTHING`,
         [ownerId, requestId, engine, profile],
       );
-      if (inserted.rowCount && requested) await db.query(
-        `INSERT INTO birbcrew_ts.member_capabilities (owner_id, member_id, capabilities)
-         SELECT owner_id, member_id, $3 FROM birbcrew_ts.members WHERE owner_id = $1 AND spawn_request_id = $2`,
-        [ownerId, requestId, JSON.stringify(requested)]);
       const { rows: [member] } = await db.query<Member>(
         `SELECT owner_id AS "ownerId", member_id AS "memberId", engine, profile
            FROM birbcrew_ts.members WHERE owner_id = $1 AND spawn_request_id = $2`,
         [ownerId, requestId],
       );
-      // A member this call inserted holds what it asked for. Only a retry reads the stored set.
-      const held = inserted.rowCount ? requested : storedCapabilities((await db.query<{ capabilities: unknown }>(
-        "SELECT capabilities FROM birbcrew_ts.member_capabilities WHERE owner_id = $1 AND member_id = $2",
-        [ownerId, member.memberId])).rows[0]?.capabilities);
+      let held = requested;
+      if (!inserted.rowCount) {
+        held = storedCapabilities((await db.query<{ capabilities: unknown }>(
+          "SELECT capabilities FROM birbcrew_ts.member_capabilities WHERE owner_id = $1 AND member_id = $2",
+          [ownerId, member.memberId])).rows[0]?.capabilities);
+      } else if (requested) {
+        // Only a new member is checked against the ceiling. A set above it rolls the member back.
+        const { rows: [registered] } = await db.query<{ capabilities: unknown }>(
+          "SELECT capabilities FROM birbcrew_ts.profiles WHERE name = $1 AND engine = $2", [profile, engine]);
+        if (!capabilitiesWithin(requested, storedCapabilities(registered?.capabilities))) throw new CapabilityCeilingError();
+        await db.query("INSERT INTO birbcrew_ts.member_capabilities (owner_id, member_id, capabilities) VALUES ($1, $2, $3)",
+          [ownerId, member.memberId, JSON.stringify(requested)]);
+      }
       if (member.engine !== engine || member.profile !== profile
           || (held && capabilityDigest(held)) !== (requested && capabilityDigest(requested))) throw new MemberStoreError("conflict");
       if (inserted.rowCount) await appendAudit(db, { type: "member.spawned", ownerId, memberId: member.memberId,

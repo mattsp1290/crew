@@ -11,7 +11,9 @@
 -- deadlock. A native turn's admission transaction holds ACCESS SHARE on members and ROW SHARE
 -- on turns, which SHARE ROW EXCLUSIVE allows, so a running turn never delays it. No existing
 -- table is altered and the audit registry is unchanged. After 60 s without the locks it fails
--- with 55P03 and applies nothing.
+-- with 55P03 and applies nothing. Applied in one transaction with 032, it finds these locks
+-- already held: 032 takes them with its own, so this block never retries while 032 holds
+-- ACCESS EXCLUSIVE on profiles.
 DO $$
 DECLARE deadline timestamptz := clock_timestamp() + interval '60 seconds';
 BEGIN
@@ -41,8 +43,8 @@ CREATE TABLE birbcrew_ts.tool_calls (
     catalog_version smallint NOT NULL CHECK (catalog_version > 0),
     kind text NOT NULL CHECK (kind IN ('read', 'effect')),
     scope jsonb NOT NULL CHECK (jsonb_typeof(scope) = 'object' AND octet_length(scope::text) <= 8192),
-    -- Private: never audited, published or logged. toolCallLimits.argumentBytes in tool-calls.ts
-    -- bounds the canonical JSON to half of this; jsonb prints with more spaces.
+    -- Private: never audited, published or logged. The catalog's own limits keep the largest
+    -- call it accepts (a file of control characters, six bytes each as JSON) under half of this.
     arguments jsonb NOT NULL CHECK (jsonb_typeof(arguments) = 'object' AND octet_length(arguments::text) <= 4194304),
     argument_digest text NOT NULL CHECK (argument_digest ~ '^[a-f0-9]{64}$'),
     -- The hash of the file an edit was approved against: part of what the digest covers.
@@ -120,13 +122,15 @@ BEGIN
     IF TG_OP = 'INSERT' THEN
         SELECT owner_id, member_id INTO bound FROM birbcrew_ts.conversations WHERE conversation_id = NEW.conversation_id;
         IF NOT FOUND OR (bound.owner_id, bound.member_id) IS DISTINCT FROM (NEW.owner_id, NEW.member_id) THEN
-            RAISE EXCEPTION 'Tool call conversation is missing or belongs to another owner or member' USING ERRCODE = '23503';
+            RAISE EXCEPTION 'Tool call conversation is missing or belongs to another owner or member'
+                USING ERRCODE = '23503', CONSTRAINT = 'tool_calls_conversation_binding';
         END IF;
         IF NEW.grant_id IS NOT NULL THEN
             PERFORM 1 FROM birbcrew_ts.tool_grants g WHERE g.grant_id = NEW.grant_id AND g.owner_id = NEW.owner_id
                AND g.member_id = NEW.member_id AND (g.conversation_id IS NULL OR g.conversation_id = NEW.conversation_id);
             IF NOT FOUND THEN
-                RAISE EXCEPTION 'Tool call grant is missing or belongs to another owner, member or conversation' USING ERRCODE = '23503';
+                RAISE EXCEPTION 'Tool call grant is missing or belongs to another owner, member or conversation'
+                    USING ERRCODE = '23503', CONSTRAINT = 'tool_calls_grant_binding';
             END IF;
         END IF;
         IF NEW.phase IS DISTINCT FROM (CASE NEW.verdict WHEN 'allow' THEN 'ready' WHEN 'ask' THEN 'waiting' WHEN 'deny' THEN 'refused' END)
@@ -140,6 +144,8 @@ BEGIN
         RETURN NEW;
     END IF;
 
+    -- Every column but the ones named here: a column a later migration adds is immutable until
+    -- that migration says otherwise.
     IF (to_jsonb(OLD) - '{phase,execution_id,result,failure,uncertain_reason,delivered,admitted_at,finished_at,delivered_at}'::text[])
         IS DISTINCT FROM (to_jsonb(NEW) - '{phase,execution_id,result,failure,uncertain_reason,delivered,admitted_at,finished_at,delivered_at}'::text[]) THEN
         RAISE EXCEPTION 'A tool call''s identity, classification, arguments and verdict are immutable' USING ERRCODE = '23514';

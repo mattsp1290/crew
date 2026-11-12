@@ -52,8 +52,16 @@ function canonicalSet(set: z.output<typeof shape>): CapabilitySet {
   };
 }
 
+// zod drops an own `__proto__` key (JSON.parse makes one) without refusing it. Nothing is
+// polluted, but an unknown key must be refused, not ignored. The sets are at most three deep.
+function hasProtoKey(value: unknown, depth = 0): boolean {
+  if (typeof value !== "object" || value === null || depth > 4) return false;
+  return Object.hasOwn(value, "__proto__") || Object.values(value).some(inner => hasProtoKey(inner, depth + 1));
+}
+
 /** Parses what an operator or an owner wrote into the canonical set. */
-export const capabilitySchema = shape.transform(canonicalSet);
+export const capabilitySchema = z.custom<z.input<typeof shape>>(value => !hasProtoKey(value), { message: "Unknown key __proto__" })
+  .pipe(shape).transform(canonicalSet);
 export type CapabilityInput = z.input<typeof capabilitySchema>;
 
 /** A spawn request. `capabilities` asks for a set within the profile's ceiling; absent, or a
@@ -98,9 +106,11 @@ export function capabilitiesWithin(requested: CapabilitySet, ceiling: Capability
     && (!requested.webSearch || ceiling?.webSearch !== undefined);
 }
 
-/** The same for every way of writing one set: key order and host order, case and duplicates do not change it. */
+/** The same for every way of writing one set: key order, host order, case and repeated
+ * patterns do not change it. Two sets that list different patterns for the same hosts are
+ * different sets. */
 export function capabilityDigest(set: CapabilitySet): string {
-  return canonicalDigest(set);
+  return canonicalDigest(canonicalSet(set));
 }
 
 /** A set as stored in PostgreSQL. One this release cannot read (after a rollback) is a server

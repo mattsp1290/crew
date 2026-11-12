@@ -83,6 +83,12 @@ test("a set that names an illegal state fails validation: a shell needs a writab
     { version: 1, browser: {} }, { version: 1, mcp: { servers: ["x"] } }, { version: 1, admin: true },
   ]) assert.equal(capabilitySchema.safeParse(invalid).success, false, JSON.stringify(invalid));
   assert.equal(capabilitySchema.safeParse({ version: 1, webFetch: { hosts: Array.from({ length: capabilityLimits.hostPatterns }, (_, i) => `h${i}.example.com`) } }).success, true);
+  // JSON.parse makes __proto__ an own key. It is an unknown key like any other, at any depth, and is refused rather than dropped.
+  for (const json of ['{"version":1,"__proto__":{"webSearch":{}}}', '{"version":1,"workspace":{"files":"read","__proto__":{"files":"write"}}}',
+    '{"version":1,"workspace":{"files":"write","shell":{"network":"off","__proto__":null}}}', '{"version":1,"webFetch":{"hosts":"any","__proto__":[]}}']) {
+    assert.equal(capabilitySchema.safeParse(JSON.parse(json)).success, false, json);
+  }
+  assert.equal(({} as { webSearch?: unknown }).webSearch, undefined, "and nothing was polluted");
 });
 
 // Every combination of these: 5 workspaces x 5 fetch settings x 2 search settings.
@@ -173,6 +179,10 @@ test("the digest is the same for every spelling of one set and different for eve
   // A stored set reads back as itself; a value this release cannot read is an error, never "none".
   assert.deepEqual(storedCapabilities(JSON.parse(JSON.stringify(a))), a);
   assert.equal(storedCapabilities(null), null);
+  // A set built in code, with its patterns in another order, has the digest of its canonical form.
+  const unsorted = { version: 1, webFetch: { hosts: [...a.webFetch!.hosts as string[]].reverse() }, workspace: a.workspace } as CapabilitySet;
+  assert.notDeepEqual(unsorted, a);
+  assert.equal(capabilityDigest(unsorted), capabilityDigest(a));
   for (const unreadable of [{ version: 2, workspace: { files: "read" } }, { version: 1 }, "any", { version: 1, teleport: {} }]) {
     assert.throws(() => storedCapabilities(unreadable), /Unknown stored capabilities/);
   }
@@ -253,6 +263,18 @@ test("an owner picks a set within the ceiling at spawn; it is reported, audited 
     assert.deepEqual(await g.api("/v1/members", { requestId, engine: "pi", profile: bounded, ...(other && { capabilities: other }) }),
       { status: 409, body: { error: "conflict" } }, JSON.stringify(other));
   }
+  // A retry is judged as a retry: one that differs is a conflict even when what it asks for would be refused as a new request.
+  for (const differing of [{ profile: plain, capabilities: asked }, { profile: bounded, capabilities: { ...ceiling, webSearch: {} } }, { profile: plain }]) {
+    assert.deepEqual(await g.api("/v1/members", { requestId, engine: "pi", ...differing }), { status: 409, body: { error: "conflict" } }, JSON.stringify(differing));
+  }
+  // Three spawns of one request race with three different sets: one member, holding the winner's set.
+  const racing = randomUUID();
+  const raced = await Promise.all([{ version: 1, workspace: { files: "read" } }, { version: 1, workspace: { files: "write" } }, undefined].map(capabilities =>
+    g.api("/v1/members", { requestId: racing, engine: "pi", profile: bounded, ...(capabilities && { capabilities }) })));
+  assert.deepEqual(raced.map(response => response.status).sort(), [201, 409, 409]);
+  const winner = raced.find(response => response.status === 201)!.body;
+  assert.deepEqual((await g.rows("member_capabilities")).filter(row => row.member_id === winner.memberId).map(row => row.capabilities),
+    winner.capabilities ? [winner.capabilities] : []);
   const sibling = (await g.api("/v1/members", { requestId: randomUUID(), engine: "pi", profile: bounded })).body.memberId;
   const listed = (await g.api("/v1/members")).body.members;
   assert.deepEqual(listed.find((member: { memberId: string }) => member.memberId === memberId), { memberId, engine: "pi", profile: bounded, capabilities: held });
@@ -263,7 +285,7 @@ test("an owner picks a set within the ceiling at spawn; it is reported, audited 
   assert.deepEqual(events.map((row: { type: string; payload: unknown }) => [row.type, row.payload]),
     [["member.spawned", { spawnRequestId: requestId, engine: "pi", profile: bounded, capabilityDigest: capabilityDigest(set(held as CapabilityInput)) }]]);
   assert.equal(JSON.stringify(events).includes("example"), false, "the trail holds the digest, never the set");
-  assert.deepEqual((await g.rows("member_capabilities")).map(row => [row.member_id, row.capabilities]), [[memberId, held]]);
+  assert.deepEqual((await g.rows("member_capabilities")).filter(row => row.member_id === memberId).map(row => row.capabilities), [held]);
 
   // The whole ceiling is itself a legal request.
   const whole = await g.api("/v1/members", { requestId: randomUUID(), engine: "pi", profile: bounded, capabilities: ceiling });
@@ -328,6 +350,11 @@ test("the database binds a stored set to its member and ceiling, checks its shap
   await assert.rejects(insert(g.ownerId, randomUUID(), readOnly), { code: "23503" });
   for (const shape of [{ version: 1 }, { version: 2, workspace: { files: "read" } }, { workspace: { files: "read" } }, [1], "any", null,
     { version: 1, workspace: { files: "read", shell: { network: "off" } } }, { version: 1, workspace: { shell: { network: "off" } } },
+    // A key that is not a capability, a capability that is not an object, and a shell outside a workspace.
+    { version: 1, x: 1 }, { version: 1, workspace: { files: "read" }, admin: true }, { version: 1, workspace: null }, { version: 1, workspace: "write" },
+    { version: 1, workspace: {} }, { version: 1, workspace: { files: "execute" } }, { version: 1, workspace: ["write"] },
+    { version: 1, shell: { network: "proxied" }, workspace: { files: "read" } }, { version: 1, webFetch: {} }, { version: 1, webFetch: "any" },
+    { version: 1, webSearch: true }, { version: 1, webSearch: null }, { version: "1", webSearch: {} },
     { version: 1, webFetch: { hosts: Array.from({ length: 80 }, (_, i) => `${"h".repeat(200)}${i}.example.com`) } }]) {
     // JSON null is a value, not the absence of one.
     await assert.rejects(insert(g.ownerId, bare.memberId, shape), { code: "23514" }, JSON.stringify(shape));
@@ -348,6 +375,22 @@ test("the database binds a stored set to its member and ceiling, checks its shap
   }
   await assert.rejects(pool.query("UPDATE birbcrew_ts.profiles SET capabilities=$2 WHERE name=$1 AND engine='pi'", [plain, JSON.stringify(ceiling)]),
     { code: "23514", message: /fixed/ });
+  // A registration with a ceiling stays under its name: removing or renaming it would let the name
+  // be registered again with another ceiling, or none, under members that keep their sets.
+  await assert.rejects(pool.query("DELETE FROM birbcrew_ts.profiles WHERE name=$1", [bounded]), { code: "23514", message: /fixed/ });
+  await assert.rejects(pool.query("UPDATE birbcrew_ts.profiles SET name=$2 WHERE name=$1", [bounded, "capabilities-renamed"]), { code: "23514" });
+  await assert.rejects(pool.query("UPDATE birbcrew_ts.profiles SET engine='claude', volume=gen_random_uuid() WHERE name=$1", [bounded]), { code: "23514" });
+  await assert.rejects(pool.query("TRUNCATE birbcrew_ts.profiles"), { code: "23514", message: /kept/ });
+  assert.deepEqual((await pool.query("SELECT capabilities FROM birbcrew_ts.profiles WHERE name=$1", [bounded])).rows, [{ capabilities: ceiling }]);
+  // Each minimal set is a legal ceiling, and a registration without one is not held by the rule.
+  const disposable = "capabilities-" + randomUUID();
+  await pool.query("INSERT INTO birbcrew_ts.profiles (name,engine,account_digest) VALUES ($1,'pi',$2)", [disposable, Buffer.alloc(32)]);
+  assert.equal((await pool.query("DELETE FROM birbcrew_ts.profiles WHERE name=$1", [disposable])).rowCount, 1);
+  for (const minimal of [{ version: 1, webSearch: {} }, { version: 1, workspace: { files: "read" } }, { version: 1, webFetch: { hosts: "any" } },
+    { version: 1, workspace: { files: "write", shell: { network: "proxied" } }, webFetch: { hosts: ["a.example.com"] }, webSearch: {} }]) {
+    await pool.query("INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,capabilities) VALUES ($1,'pi',$2,$3)",
+      ["capabilities-" + randomUUID(), Buffer.alloc(32), JSON.stringify(minimal)]);
+  }
   assert.deepEqual((await g.rows("member_capabilities")).map(row => [row.member_id, row.capabilities]), [[held.memberId, readOnly]]);
   assert.equal((await pool.query("SELECT 1 FROM pg_trigger WHERE tgrelid='birbcrew_ts.member_capabilities'::regclass AND tgname='recovery_write_barrier' AND tgenabled='O'")).rowCount, 1);
 });
@@ -390,6 +433,9 @@ test("a registration stores its ceiling once, refuses a different one, and needs
   const proxy = await relay();
   t.after(() => proxy.close());
   assert.equal(usesRelayCredential(proxy.profile.pi), true);
+  // The marked options cannot be given another credential afterwards.
+  assert.equal(Object.isFrozen(proxy.profile.pi), true);
+  assert.throws(() => { (proxy.profile.pi as unknown as { model: unknown }).model = { id: "another" }; }, TypeError);
   assert.equal(usesRelayCredential({ ...proxy.profile.pi }), false, "a copy of the options is not what Crew built");
   assert.equal(usesRelayCredential(direct().pi), false);
   for (const nothing of [undefined, null, "relay", 1]) assert.equal(usesRelayCredential(nothing), false);
@@ -452,7 +498,9 @@ test("migration 32 upgrades a v26 database without rewriting a table or waiting 
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, running.requestId, start.token, execution.workflowRunId, execution.activityId]);
 
-  // Exclusive only on profiles; neither existing table is rewritten.
+  // Exclusive only on profiles; neither existing table is rewritten. The locks on turns and
+  // tool_grants are migration 33's, taken here so that the pair never retries for them while
+  // profiles is locked exclusively.
   const db = await upgraded.connect();
   try {
     await db.query("BEGIN");
@@ -466,6 +514,7 @@ test("migration 32 upgrades a v26 database without rewriting a table or waiting 
     assert.deepEqual(rows, [
       { relation: "members", mode: "AccessShareLock" }, { relation: "members", mode: "ShareRowExclusiveLock" },
       { relation: "profiles", mode: "AccessExclusiveLock" }, { relation: "profiles", mode: "ShareRowExclusiveLock" },
+      { relation: "tool_grants", mode: "ShareRowExclusiveLock" }, { relation: "turns", mode: "ShareRowExclusiveLock" },
     ]);
   } finally {
     await db.query("ROLLBACK");
@@ -487,7 +536,7 @@ test("migration 32 upgrades a v26 database without rewriting a table or waiting 
   assert.deepEqual(await current.spawn(spawn), member);
   assert.deepEqual(Object.keys(member), ["ownerId", "memberId", "engine", "profile"]);
   await assert.rejects(current.spawn({ ...spawn, requestId: randomUUID(), capabilities: { version: 1, workspace: { files: "read" } } }), CapabilityCeilingError);
-  await assert.rejects(current.spawn({ ...spawn, capabilities: { version: 1, workspace: { files: "read" } } }), CapabilityCeilingError);
+  await assert.rejects(current.spawn({ ...spawn, capabilities: { version: 1, workspace: { files: "read" } } }), { code: "conflict" });
   // The worker's registration of the old profile, which names no capabilities, still matches;
   // the same name cannot be given a ceiling afterwards.
   const directory = await mkdtemp(join(tmpdir(), "birb-capabilities-"));

@@ -14,7 +14,7 @@ import { InstallationRecovery, readRecoveryManifest, type RecoveryHooks, type Re
 import { FileRecoveryFence } from "../../src/service/recovery-fence.ts";
 import { MemberStore } from "../../src/service/store.ts";
 import { argumentDigest, catalogLimits, classify, type Classified } from "../../src/service/tool-catalog.ts";
-import { toolCallLimits, ToolCallStore, verifyStored, type ToolCallKey, type Verdict } from "../../src/service/tool-calls.ts";
+import { toolCallKey, toolCallLimits, ToolCallStore, verifyStored, type ToolCallKey, type Verdict } from "../../src/service/tool-calls.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -115,6 +115,21 @@ test("a decided call is recorded once, in the phase its verdict gives it; a retr
   // A call that is not the one its digest pins, or belongs to no turn, is not recorded.
   await assert.rejects(ledger.record(t.key(), { ...writing, arguments: { ...writing.arguments, content: "other" } }, asked), { code: "conflict" });
   await assert.rejects(ledger.record(t.key(), { ...reading, argumentDigest: writing.argumentDigest }, allowed), { code: "conflict" });
+  // The digest does not cover the kind or the scope, so the ledger classifies the call itself: a
+  // write that claims to be a read, or to touch another path, is refused whatever its verdict.
+  const granted: Verdict = { verdict: "allow", by: "grant", grantId };
+  for (const claimed of [{ ...writing, kind: "read" }, { ...running, kind: "read" }, { ...writing, scope: { kind: "path", path: "docs/allowed" } },
+    { ...running, scope: { kind: "command", cwd: "", argv: ["ls"] } }, { ...reading, kind: "effect" }, { ...writing, catalogVersion: 2 },
+    { ...writing, tool: "fs_read" }, { ...writing, tool: "fs_delete" }, { ...edit, priorSha256: "d".repeat(64) }, { ...edit, priorSha256: undefined },
+  ] as unknown as Classified[]) {
+    for (const verdict of [allowed, asked, granted, { verdict: "deny", by: "budget" }] as Verdict[]) {
+      await assert.rejects(ledger.record(t.key(), claimed, verdict), { code: "conflict" }, JSON.stringify([claimed.tool, claimed.kind, verdict]));
+    }
+  }
+  // What is stored is the catalog's reading, and extra fields on the caller's object go nowhere.
+  const extra = t.key();
+  await ledger.record(extra, { ...writing, preview: { summary: "Read a file", text: "harmless", truncated: false }, selector: { kind: "tool" } }, asked);
+  assert.deepEqual([(await row(extra)).kind, (await row(extra)).scope, verifyStored(await ledger.get(extra))], ["effect", writing.scope, writing]);
   await assert.rejects(ledger.record({ ...t.key(), requestId: randomUUID() }, reading, allowed), { code: "not_found" });
   for (const invalid of [{ ...t.key(), nativeCallId: "" }, { ...t.key(), nativeCallId: "x".repeat(257) }, { ...t.key(), invocationId: "not-a-uuid" }, { ...t.key(), extra: 1 }]) {
     await assert.rejects(ledger.record(invalid as ToolCallKey, reading, allowed), z.ZodError);
@@ -190,6 +205,18 @@ test("a ready call is admitted by one execution, finished by it alone, then deli
   await ledger.admit(bounded, execution);
   await assert.rejects(ledger.complete(bounded, execution, { content: "x".repeat(toolCallLimits.resultBytes) }), { code: "input_limit" });
   for (const invalid of [null, "text", 7, [1], undefined, { at: new Date() }, { n: Number.NaN }]) await assert.rejects(ledger.complete(bounded, execution, invalid), z.ZodError);
+  // Text PostgreSQL cannot store is refused before it is sent, in a value or a key at any depth.
+  for (const unstorable of [{ content: "before \0 after" }, { content: "lone \ud800 surrogate" }, { lines: ["ok", "bad\0"] }, { nested: { "key\0": 1 } },
+    { nested: [{ deep: "\udc00" }] }]) await assert.rejects(ledger.complete(bounded, execution, unstorable), z.ZodError);
+  // A result that is small as canonical JSON and large as PostgreSQL prints it is over the limit
+  // too, and the refusal carries nothing of the row: no result text, no arguments.
+  const secret = "PRIVATE-" + randomUUID();
+  await assert.rejects(ledger.complete(bounded, execution, { secret, numbers: Array.from({ length: 600 }, () => 1e300) }), (error: unknown) => {
+    assert.deepEqual([(error as { code: string }).code, (error as Error).name], ["input_limit", "MemberStoreError"]);
+    assert.equal(JSON.stringify(error, Object.getOwnPropertyNames(error as object)).includes(secret), false);
+    return true;
+  });
+  assert.deepEqual(await phases([bounded]), ["admitted"], "a refused result leaves the call where it was");
   for (const invalid of ["", "Timeout", "not found", "x".repeat(65), "rm -rf /"]) await assert.rejects(ledger.fail(bounded, execution, invalid), z.ZodError);
   await assert.rejects(ledger.admit(bounded, "not-a-uuid"), z.ZodError);
   const largest = { content: "x".repeat(toolCallLimits.resultBytes - 14) };
@@ -211,6 +238,10 @@ test("after a worker is lost: an outcome is delivered, a read is run again, and 
   assert.deepEqual(await ledger.classifyLost(finished), { action: "deliver", call: stored }, "asking again changes nothing");
   await ledger.deliver(finished);
   assert.deepEqual(await ledger.classifyLost(finished), { action: "done", call: { ...stored, delivered: true } });
+  // A record names its own call: the next operation takes its key, and a whole record is not a key.
+  assert.deepEqual(toolCallKey(stored), finished);
+  assert.deepEqual(await ledger.deliver(toolCallKey(stored)), { ...stored, delivered: true });
+  await assert.rejects(ledger.deliver(stored as unknown as ToolCallKey), z.ZodError);
 
   // An admitted read: run it again. The lost execution can no longer finish it.
   const read = t.key();
@@ -291,7 +322,7 @@ test("one owner never reads or changes another owner's calls", async () => {
   const theirGrant = await grant(theirs.ownerId, theirs.memberId), siblingGrant = await grant(mine.ownerId, sibling.memberId);
   for (const foreign of [theirGrant, siblingGrant]) {
     await assert.rejects(insert(mine.ownerId, mine.memberId, mine.conversationId, mine.requestId, foreign), { code: "23503", message: /grant/ });
-    await assert.rejects(ledger.record(mine.key(), running, { verdict: "allow", by: "grant", grantId: foreign }), { code: "23503" });
+    await assert.rejects(ledger.record(mine.key(), running, { verdict: "allow", by: "grant", grantId: foreign }), { code: "conflict" });
   }
   await insert(mine.ownerId, mine.memberId, mine.conversationId, mine.requestId, await grant(mine.ownerId, mine.memberId));
 });
@@ -337,7 +368,7 @@ test("the database refuses every change that is not a legal step, whoever makes 
       "tool_name='fs_read'", "kind='read'", "catalog_version=2", "verdict='deny', decided_by='budget'", "decided_by='budget'", "grant_id=gen_random_uuid()",
       "native_call_id='other'", "invocation_id=gen_random_uuid()", "owner_id='someone else'", "decided_at=clock_timestamp()", "call_id=gen_random_uuid()",
       "prior_sha256=repeat('a',64)"].map(set => [from, set])),
-  ]) await assert.rejects(update(await at(from), set), (error: { code: string }) => ["23514", "23503"].includes(error.code), `${from}: ${set}`);
+  ]) await assert.rejects(update(await at(from), set), { code: "23514" }, `${from}: ${set}`);
 
   // A read is never uncertain, and only a read can be taken over.
   const read = await at("admitted", reading);
@@ -385,9 +416,14 @@ test("a request records at most 256 calls, and arguments at the catalog's limits
   const stored = await ledger.record(other.key(), big, asked);
   assert.equal(stored.argumentDigest, big.argumentDigest);
   assert.deepEqual(verifyStored(stored).arguments, big.arguments);
-  // A call no catalog tool could produce is refused by size before it reaches the table.
-  const oversized = { ...big, arguments: { path: "big.bin", content: "x".repeat(toolCallLimits.argumentBytes) } } as unknown as Classified;
-  await assert.rejects(ledger.record(other.key(), { ...oversized, argumentDigest: argumentDigest(oversized) }, asked), { code: "input_limit" });
+  // A call the catalog would not accept is not recorded, however consistent its digest is.
+  const oversized = { ...big, arguments: { path: "big.bin", content: "x".repeat(catalogLimits.contentBytes + 1) } } as unknown as Classified;
+  await assert.rejects(ledger.record(other.key(), { ...oversized, argumentDigest: argumentDigest(oversized) }, asked), { code: "conflict" });
+  // The table has its own bound on what a row may hold.
+  await assert.rejects(pool.query(`INSERT INTO birbcrew_ts.tool_calls (owner_id,member_id,conversation_id,request_id,invocation_id,native_call_id,tool_name,
+      catalog_version,kind,scope,arguments,argument_digest,verdict,decided_by,phase) VALUES ($1,$2,$3,$4,$4,'huge','fs_write',1,'effect','{}',$5,$6,'ask','default','waiting')`,
+    [other.ownerId, other.memberId, other.conversationId, other.requestId, JSON.stringify({ content: "x".repeat(4_200_000) }), "0".repeat(64)]),
+    { code: "23514", constraint: "tool_calls_arguments_check" });
 });
 
 test("a stored call verifies only as the call that was decided", async () => {
