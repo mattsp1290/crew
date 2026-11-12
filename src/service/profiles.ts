@@ -3,9 +3,14 @@ import { runPiTurn, runPiSegment, runPiDelegatingSegment } from "./pi.ts";
 import { runClaudeTurn, runClaudeSegment } from "./claude.ts";
 import type { MemberProfiles, TurnDriver } from "./activities.ts";
 import type { Engine } from "./domain.ts";
+import type { CapabilityInput } from "./capabilities.ts";
 
 export interface MemberProfile {
   accountId: string;
+  /** The capability ceiling for members of this profile (docs/member-capabilities.md). Absent
+   * means none. Set it here, in trusted operator code; no request can. A ceiling with a shell
+   * needs a profile from createProxyProfile. No engine offers a capability tool yet. */
+  capabilities?: CapabilityInput;
   delegateTask?: true;
   humanTool?: "choose_next_step";
   protectedTool?: "record_work_item";

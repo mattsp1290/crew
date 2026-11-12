@@ -13,10 +13,11 @@ import { Client as PgClient, Pool, type PoolOptions } from "pg";
 import { z } from "zod";
 import { decisionSchema } from "./approvals.ts";
 import { AuditUnsettledError, auditCsv, auditParameterNames, auditQuerySchema, readAudit } from "./audit.ts";
+import { CapabilityCeilingError, spawnRequestSchema } from "./capabilities.ts";
 import { MemberClient } from "./client.ts";
 import { listGrants, revokeGrant } from "./grants.ts";
 import { MemoryApi, memoryListParameterNames } from "./memories.ts";
-import { MemberStoreError, openSchema, spawnSchema, submitSchema, turnKey } from "./domain.ts";
+import { MemberStoreError, openSchema, submitSchema, turnKey } from "./domain.ts";
 import { readEvents, readSnapshot, toolBootstrap, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
 import { IntegrationApi, integrationCapabilities } from "./integration-api.ts";
@@ -289,7 +290,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       throw new HttpError(405, "method_not_allowed");
     }
     if (path === "/members" && request.method === "POST") {
-      const input = spawnSchema.omit({ ownerId: true }).parse(await body(request));
+      const input = spawnRequestSchema.omit({ ownerId: true }).parse(await body(request));
       const published = await store.pool.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2", [input.engine, input.profile]);
       if (!published.rowCount) throw new HttpError(409, "unknown_profile");
       return json(response, 201, await store.spawn({ ownerId, ...input }));
@@ -347,6 +348,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       if (response.destroyed || response.headersSent) return response.end();
       if (error instanceof HttpError) return json(response, error.status, { error: error.message });
       if (error instanceof z.ZodError) return json(response, 400, { error: "invalid_input" });
+      if (error instanceof CapabilityCeilingError) return json(response, 400, { error: error.message });
       if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : 409, { error: error.code });
       if (error instanceof WorkflowUpdateFailedError) return json(response, 409, { error: "update_rejected" });
       if (error instanceof AuditUnsettledError) return json(response, 503, { error: "audit_unsettled" }, { "Retry-After": "1" });

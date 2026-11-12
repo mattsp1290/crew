@@ -1,7 +1,8 @@
 /** Trusted backend-only API. Never construct authority from an observer request. */
 import {acquireRecoveryNativeLease,requireRecoveryActive} from "./recovery-admission.ts";
 import { appendAudit, trustedToolName } from "./audit.ts";
-import { createHash, randomUUID } from "node:crypto";
+import { canonical, canonicalDigest as digest } from "./canonical-json.ts";
+import { randomUUID } from "node:crypto";
 import { Client, type Pool, type PoolClient } from "pg";
 import { z } from "zod";
 import type { Engine } from "./domain.ts";
@@ -35,12 +36,7 @@ export class TrustedContextError extends Error {
     super(`Trusted application ${code}`); this.name = "TrustedContextError"; this.code = code;
   }
 }
-export function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
-  return "{" + Object.keys(value).sort().map(k => JSON.stringify(k) + ":" + canonical((value as Record<string,unknown>)[k])).join(",") + "}";
-}
-const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
+export { canonical };
 function freezeJson<T>(value: T): T {
   if (value && typeof value === "object") { for (const v of Object.values(value)) freezeJson(v); Object.freeze(value); }
   return value;

@@ -24,8 +24,9 @@ type Actor = "owner" | "system";
  * decided by the validated payload. A routine acts with its owner's authority, so rows its
  * firings cause name the owner; Crew's own decisions about a routine name the system. */
 export const auditEvents = {
+  // capabilityDigest: the digest of the capability set the member was given (capabilities.ts); absent when it has none.
   "member.spawned": { actor: "owner", key: "(member_id) WHERE event_type = 'member.spawned'",
-    payload: z.strictObject({ spawnRequestId: uuid, engine: engineSchema, profile: z.string().min(1) }) },
+    payload: z.strictObject({ spawnRequestId: uuid, engine: engineSchema, profile: z.string().min(1), capabilityDigest: sha256.optional() }) },
   // routineId: the routine firing that opened it, read from the firing row.
   "conversation.opened": { actor: "owner", key: "(conversation_id) WHERE event_type = 'conversation.opened'",
     payload: z.strictObject({ routineId: uuid.optional() }) },

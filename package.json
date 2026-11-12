@@ -36,6 +36,7 @@
     "test:memories": "node --test tests/service/memories.test.ts",
     "test:memories:service": "node tests/proof/memories.mts",
     "test:grants": "node --test tests/service/standing-grants.test.ts",
+    "test:capabilities": "node --test tests/service/hosts.test.ts tests/service/capabilities.test.ts",
     "test:api:service": "node tests/proof/integration-api.mts",
     "test:recovery:coordinated": "node tests/proof/coordinated-recovery.mts",
     "test:temporal:tls": "node tests/proof/temporal-tls.mts"

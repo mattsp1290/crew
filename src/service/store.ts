@@ -8,6 +8,8 @@ import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import { childrenFor } from "./children.ts";
 import { savedProposal, type Approval } from "./approvals.ts";
 import { appendAudit } from "./audit.ts";
+import { capabilitiesWithin, CapabilityCeilingError, capabilityDigest, hasCapabilities, spawnRequestSchema, storedCapabilities,
+  type SpawnedMember } from "./capabilities.ts";
 import { firingConversation, firingInitiator } from "./routines.ts";
 import { snapshotMemories } from "./memories.ts";
 import { createHash } from "node:crypto";
@@ -16,7 +18,7 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  MemberStoreError, openSchema, ownerInitiator, requestInitiator, spawnSchema, submitSchema,
+  MemberStoreError, openSchema, ownerInitiator, requestInitiator, submitSchema,
   type BeginTurn, type Conversation, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 
@@ -103,7 +105,8 @@ export class MemberStore {
       await db.query("CREATE SCHEMA IF NOT EXISTS birbcrew_ts");
       await db.query("CREATE TABLE IF NOT EXISTS birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
       const migrations = [[1, "001-members.sql"], [2, "002-approvals.sql"], [3, "003-native-launches.sql"],
-      [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"]] as const;
+      [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"],
+      [32, "032-capabilities.sql"]] as const;
       for (const [version, name] of migrations) {
         const applied = await db.query("SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=$1", [version]);
         if (applied.rowCount) continue;
@@ -113,23 +116,41 @@ export class MemberStore {
     });
   }
 
-  async spawn(input: z.input<typeof spawnSchema>): Promise<Member> {
-    const { ownerId, requestId, engine, profile } = spawnSchema.parse(input);
+  /** A member's capabilities are the set its spawn asked for, which must be within the ceiling
+   * its profile registered (capabilities.ts); none when it asked for none. A retry must ask for
+   * the same set. */
+  async spawn(input: z.input<typeof spawnRequestSchema>): Promise<SpawnedMember> {
+    const { ownerId, requestId, engine, profile, capabilities } = spawnRequestSchema.parse(input);
+    const requested = hasCapabilities(capabilities) ? capabilities : null;
     return this.transaction(async (db) => {
+      if (requested) {
+        const { rows: [registered] } = await db.query<{ capabilities: unknown }>(
+          "SELECT capabilities FROM birbcrew_ts.profiles WHERE name = $1 AND engine = $2", [profile, engine]);
+        if (!capabilitiesWithin(requested, storedCapabilities(registered?.capabilities))) throw new CapabilityCeilingError();
+      }
       const inserted = await db.query(
         `INSERT INTO birbcrew_ts.members (owner_id, spawn_request_id, engine, profile)
          VALUES ($1, $2, $3, $4) ON CONFLICT (owner_id, spawn_request_id) DO NOTHING`,
         [ownerId, requestId, engine, profile],
       );
+      if (inserted.rowCount && requested) await db.query(
+        `INSERT INTO birbcrew_ts.member_capabilities (owner_id, member_id, capabilities)
+         SELECT owner_id, member_id, $3 FROM birbcrew_ts.members WHERE owner_id = $1 AND spawn_request_id = $2`,
+        [ownerId, requestId, JSON.stringify(requested)]);
       const { rows: [member] } = await db.query<Member>(
         `SELECT owner_id AS "ownerId", member_id AS "memberId", engine, profile
            FROM birbcrew_ts.members WHERE owner_id = $1 AND spawn_request_id = $2`,
         [ownerId, requestId],
       );
-      if (member.engine !== engine || member.profile !== profile) throw new MemberStoreError("conflict");
+      // A member this call inserted holds what it asked for. Only a retry reads the stored set.
+      const held = inserted.rowCount ? requested : storedCapabilities((await db.query<{ capabilities: unknown }>(
+        "SELECT capabilities FROM birbcrew_ts.member_capabilities WHERE owner_id = $1 AND member_id = $2",
+        [ownerId, member.memberId])).rows[0]?.capabilities);
+      if (member.engine !== engine || member.profile !== profile
+          || (held && capabilityDigest(held)) !== (requested && capabilityDigest(requested))) throw new MemberStoreError("conflict");
       if (inserted.rowCount) await appendAudit(db, { type: "member.spawned", ownerId, memberId: member.memberId,
-        payload: { spawnRequestId: requestId, engine, profile } });
-      return member;
+        payload: { spawnRequestId: requestId, engine, profile, ...(held && { capabilityDigest: capabilityDigest(held) }) } });
+      return held ? { ...member, capabilities: held } : member;
     });
   }
 
