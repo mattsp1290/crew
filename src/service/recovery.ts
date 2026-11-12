@@ -6,6 +6,7 @@ import { Client, type Pool, type PoolClient } from 'pg';
 import { z } from 'zod';
 import { fenceEpochLimit, RecoveryRefusedError, type RecoveryFence } from './recovery-fence.ts';
 import { appendAudit } from './audit.ts';
+import { settleRestoredToolCalls } from './tool-calls.ts';
 export { RecoveryRefusedError } from './recovery-fence.ts';
 
 const id=z.uuid();
@@ -60,6 +61,8 @@ async function settleRestoredState(db:PoolClient,activate:()=>Promise<boolean>) 
   SELECT memory_id,owner_id,member_id FROM suspended ORDER BY created_at,memory_id`);
  for(const memory of memories) await appendAudit(db,{type:'memory.suspended',ownerId:memory.owner_id,memberId:memory.member_id,
   payload:{memoryId:memory.memory_id,reason:'recovery_restore'}});
+ // An effect allowed before the recovery point may have run on the discarded timeline: never run it here.
+ await settleRestoredToolCalls(db);
 }
 export type SnapshotArtifact={kind:RecoveryManifest['artifacts'][number]['kind'];file:string};
 /** Hooks are trusted operator code, not user/AG-UI input. They must stop ALL

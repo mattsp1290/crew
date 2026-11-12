@@ -282,6 +282,12 @@ test("the argument digest is the canonical SHA-256 of tool, catalog version and 
   assert.equal(new Set(digests).size, calls.length);
   for (const digest of digests) assert.match(digest, /^[0-9a-f]{64}$/);
   for (const call of calls) assert.equal(canonical(classify(call).arguments).includes("undefined"), false);
+  // Normalized arguments read back as themselves, so a stored call classifies to what was stored.
+  for (const call of [...calls, { tool: "web_fetch", arguments: { url: "HTTPS://BÜCHER.example.:443/a b".replace(" ", "%20") + "?q=é#x", method: "PUT", body: "‮" } },
+    { tool: "shell_run", arguments: { command: "a | b", cwd: "./x//y/../" } }, { tool: "fs_list", arguments: { path: "a/./b/" } }] as ToolCall[]) {
+    const first = classify(call);
+    assert.deepEqual(classify({ tool: first.tool, arguments: first.arguments, ...(first.priorSha256 && { priorSha256: first.priorSha256 }) } as ToolCall), first);
+  }
 });
 
 test("the selector a card may offer covers its own call, and exact and tool selectors mean what they say", () => {

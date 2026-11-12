@@ -615,5 +615,5 @@ test("a version-25 database upgrades: conversations opened before it have no mem
   assert.equal(await conversationContext(upgraded, { ...member, conversationId: before }), undefined);
   const later = await current.openConversation({ ownerId, memberId, conversationId: randomUUID() });
   assert.deepEqual(entries(await conversationContext(upgraded, later)), [{ memoryId, text: "after upgrade" }]);
-  assert.deepEqual((await upgraded.query("SELECT version FROM birbcrew_ts.schema_versions WHERE version>=25 ORDER BY 1")).rows.map(row => row.version), [25, 26, 32]);
+  assert.deepEqual((await upgraded.query("SELECT version FROM birbcrew_ts.schema_versions WHERE version>=25 ORDER BY 1")).rows.map(row => row.version), [25, 26, 32, 33]);
 });

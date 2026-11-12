@@ -142,6 +142,8 @@ export interface Classified<T extends ToolName = ToolName> {
   scope: Scope;
   /** Normalized: canonical paths and URL, every default filled in. The executor must run these and nothing else. */
   arguments: ToolArguments[T];
+  /** For fs_edit: the SHA-256 of the file the edit was read against. */
+  priorSha256?: string;
   /** SHA-256 of the canonical JSON of the tool, the catalog version, the normalized arguments and, for fs_edit, the file's prior hash. */
   argumentDigest: string;
   preview: Preview;
@@ -283,17 +285,25 @@ function read<T extends ToolName>(tool: T, input: unknown, prior?: string): Read
   return readers[tool](parsed.data as never, prior);
 }
 
+/** The digest that pins one call: what a card approves, an exact selector repeats and the
+ * ledger stores. Whoever runs a stored call recomputes it from the stored fields first. */
+export function argumentDigest(call: { tool: string; catalogVersion: number; arguments: unknown; priorSha256?: string }): string {
+  return canonicalDigest({ tool: call.tool, catalogVersion: call.catalogVersion, arguments: call.arguments,
+    ...(call.priorSha256 !== undefined && { priorSha256: call.priorSha256 }) });
+}
+
 /** Reads one call: its kind, scope, normalized arguments, digest, preview and the selector a
  * card may offer. Throws ToolArgumentError for an unknown tool or arguments the catalog does
- * not accept; such a call must be denied, never run. */
+ * not accept; such a call must be denied, never run. Normalized arguments read back as
+ * themselves, so a stored call classifies to the digest it was stored with. */
 export function classify(call: ToolCall): Classified {
   if (!toolNames.includes(call.tool)) throw new ToolArgumentError("Unknown tool");
   const prior = call.tool === "fs_edit" ? call.priorSha256 : undefined;
   if (call.tool === "fs_edit" && !sha256.safeParse(prior).success) throw new ToolArgumentError("fs_edit needs the SHA-256 of the file it edits");
   const { summary, text: shown, truncated, ...reading } = read(call.tool, call.arguments, prior);
   return {
-    tool: call.tool, catalogVersion, kind: reading.kind, scope: reading.scope, arguments: reading.arguments,
-    argumentDigest: canonicalDigest({ tool: call.tool, catalogVersion, arguments: reading.arguments, ...(prior !== undefined && { priorSha256: prior }) }),
+    tool: call.tool, catalogVersion, kind: reading.kind, scope: reading.scope, arguments: reading.arguments, ...(prior !== undefined && { priorSha256: prior }),
+    argumentDigest: argumentDigest({ tool: call.tool, catalogVersion, arguments: reading.arguments, priorSha256: prior }),
     preview: { summary, text: shown, truncated }, selector: reading.selector,
   };
 }
