@@ -266,7 +266,9 @@ test("an observer overtaken while its hub could not read gets CURSOR_EXPIRED, as
   const single = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 1 });
   t.after(() => single.end());
   const held = new MemberStore(single);
-  const hub = await f.gateway(true, held), polling = await f.gateway(false, held);
+  // Once the connection is free the hub's first two reads (64 rows) reach the observer before its own read
+  // returns, so the capacity leaves room above them: this test is about the gap, not an overflow.
+  const hub = await f.gateway({ capacity: 128 }, held), polling = await f.gateway(false, held);
   const cid = await f.conversation();
   const runId = randomUUID();
   const observers = [observe(hub.socketPath, f.owner, cid, runId), observe(polling.socketPath, f.owner, cid, runId)];
@@ -302,6 +304,8 @@ test("an observer refused by a full hub reads the database itself and receives t
   assert.equal(observers[0].raw, observers[2].raw);
   assert.equal(observers[1].raw, observers[2].raw);
   await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+  // The admitted observer stayed on the hub through the terminal frame.
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 1 });
 });
 
 test("a failed hub read releases the hub, and its observers finish from the database without loss", { timeout: 60_000 }, async (t) => {
@@ -336,6 +340,8 @@ test("a failed hub read releases the hub, and its observers finish from the data
   assert.equal(observers[0].raw, observers[2].raw);
   assert.equal(observers[1].raw, observers[2].raw);
   assertLedger(observers[0], await f.ledger(cid));
+  // The observers that fell back opened no new hub.
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 2 });
 });
 
 test("another owner's observer is refused before subscribing, and a hub only reads its owner's rows", { timeout: 60_000 }, async (t) => {

@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createEventStream, type EventStream, type SubscriptionEnd } from "@mattsp1290/switchboard";
 import type { Pool } from "pg";
 import { errorSummary, warn } from "./diagnostics.ts";
-import { readEvents } from "./observation.ts";
+import { readEvents, readEventsLimit } from "./observation.ts";
 
 // The gateway's observer fan-out. One reader per (owner, conversation) polls the owner-scoped public event
 // ledger as every observer used to, and publishes each committed row to the observers of that hub. PostgreSQL
@@ -20,9 +20,7 @@ export interface FanoutBounds {
   readonly capacity: number;
 }
 
-// readEvents' LIMIT. One read's rows are published together, so an observer that keeps up never holds more.
-const readRows = 32;
-
+// One read's rows (readEventsLimit, 32) are published together, so an observer that keeps up never holds more.
 // 64 lets a briefly slow client fall two reads behind before it overflows and continues from the database,
 // which keeps the last 256 frames. Capacity is also the hub's memory bound: rows are shared by reference, and a
 // MESSAGES_SNAPSHOT row carries the whole message history, so a client that stops reading keeps up to 64 rows
@@ -68,8 +66,8 @@ interface Hub {
   /** The highest cursor read and published, or the first observer's snapshot cursor before any read. */
   cursor: number;
   observers: number;
-  /** A full hub logs once, not once per refused connection. */
-  fullReported: boolean;
+  /** When this hub last logged that it was full: at most once a minute, not once per refused connection. */
+  fullReportedAt: number;
 }
 
 function freeze<T>(value: T): T {
@@ -92,7 +90,7 @@ export class ObserverHubs {
     this.#pool = pool;
     this.#bounds = { ...defaultFanoutBounds, ...bounds };
     // Below one read's rows, even an observer that keeps up would overflow on every full read.
-    if (!(this.#bounds.capacity >= readRows)) throw new RangeError(`Observer capacity must be at least ${readRows} rows`);
+    if (!(this.#bounds.capacity >= readEventsLimit)) throw new RangeError(`Observer capacity must be at least ${readEventsLimit} rows`);
     createEventStream(this.#bounds).close(); // Invalid bounds throw here, not on the first observer.
   }
 
@@ -124,8 +122,10 @@ export class ObserverHubs {
     }), { signal });
     if (subscribed.kind === "error") {
       this.#fallbacks++;
-      if (!hub.fullReported) warn("observer_hub_full", { maxObservers: this.#bounds.maxObservers });
-      hub.fullReported = true;
+      if (Date.now() - hub.fullReportedAt >= 60_000) {
+        hub.fullReportedAt = Date.now();
+        warn("observer_hub_full", { maxObservers: this.#bounds.maxObservers });
+      }
       if (!hub.observers) this.#close(hub);
       return undefined;
     }
@@ -141,7 +141,9 @@ export class ObserverHubs {
         offered = sending = undefined;
         wake?.();
         // A closed stream on a failed read (not on shutdown or disconnect) sends this observer back too.
-        const fallback = abandoned ? "gap" : reason === "overflow" || reason === "listener-error" ? reason
+        // The subscription's own reason decides: an abandon() that lost a race with overflow stays an overflow.
+        const fallback = reason === "disposed" ? (abandoned ? "gap" : undefined)
+          : reason === "overflow" || reason === "listener-error" ? reason
           : reason === "closed" && !this.#closed && !signal.aborted ? "closed" : undefined;
         if (fallback) {
           this.#fallbacks++;
@@ -172,7 +174,7 @@ export class ObserverHubs {
         }
       },
       abandon() {
-        if (!ended) abandoned = true;
+        abandoned = true;
         subscription.dispose();
       },
       dispose: () => subscription.dispose(),
@@ -187,7 +189,7 @@ export class ObserverHubs {
 
   #open(key: string, owner: string, conversationId: string, cursor: number): Hub {
     const hub: Hub = { key, stream: createEventStream(this.#bounds), reader: new AbortController(), cursor, observers: 0,
-      fullReported: false };
+      fullReportedAt: -Infinity };
     this.#hubs.set(key, hub);
     void this.#read(hub, owner, conversationId);
     return hub;
