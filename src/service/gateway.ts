@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { EventType as E, type Event } from "@ag-ui/core";
+import { EventType as E, PROTOCOL_VERSION, type Event } from "@ag-ui/core";
 import { RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { EventEncoder } from "@ag-ui/encoder";
 import { Client, Connection, WorkflowUpdateFailedError } from "@temporalio/client";
@@ -20,7 +20,7 @@ import { MemoryApi, memoryListParameterNames } from "./memories.ts";
 import { readInstructions } from "./instructions.ts";
 import { PackApi, packListParameterNames } from "./instruction-packs.ts";
 import { MemberStoreError, turnKey } from "./domain.ts";
-import { readEvents, readSnapshot, toolBootstrap, type PublicSnapshot } from "./observation.ts";
+import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
 import { IntegrationApi, integrationCapabilities, ReceiptContractError } from "./integration-api.ts";
 import { firingParameterNames, RoutineApi, RoutineDispatcher, routineListParameterNames, type Clock } from "./routines.ts";
@@ -131,14 +131,16 @@ async function observe(
     const data = (id === undefined ? "" : `id: ${id}\n`) + encoder.encode(event);
     if (!response.write(data)) await once(response, "drain", { signal: stop.signal });
   }
-  async function finish(phase: unknown) {
+  async function finish(phase: Phase) {
     if (phase === "failed") await send({ type: E.RUN_ERROR, code: "MEMBER_FAILED", message: "Member conversation failed" });
-    else if (phase === "complete" || phase === "cancelled") await send({ type: E.RUN_FINISHED, threadId, runId });
+    else if (phase === "complete") await send({ type: E.RUN_FINISHED, threadId, runId });
+    // AG-UI reads a RUN_FINISHED without an outcome as success, so a cancellation must say so.
+    else if (phase === "cancelled") await send({ type: E.RUN_FINISHED, threadId, runId, outcome: { type: "cancelled" } });
     else return false;
     return true;
   }
   try {
-    await send({ type: E.RUN_STARTED, threadId, runId });
+    await send({ type: E.RUN_STARTED, threadId, runId, protocolVersion: PROTOCOL_VERSION });
     await send({ type: E.MESSAGES_SNAPSHOT, messages: snapshot.messages });
     await send({ type: E.STATE_SNAPSHOT, snapshot: snapshot.state }, cursor);
     if (snapshot.state.openStep) await send({ type: E.STEP_STARTED, stepName: snapshot.state.openStep });

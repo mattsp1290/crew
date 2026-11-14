@@ -360,6 +360,15 @@ without the old cursor for a fresh snapshot. Do not promise arbitrary historic t
 replay, including across rollover. Committed per-request results use the separate
 request lookup above, not the event cursor.
 
+The stream opens with `RUN_STARTED` carrying `protocolVersion: "1.0"`, the AG-UI
+version the gateway speaks, which the official client checks against its own.
+The stream ends when the conversation does, with an event that matches the final
+`state.phase`. `complete` (the conversation used its last turn) sends `RUN_FINISHED`
+with no `outcome`, which AG-UI reads as success. `cancelled` sends `RUN_FINISHED`
+with `outcome: {"type":"cancelled"}`, which the official client reports to
+`onRunFinishedEvent` as `outcome: "cancelled"`. `failed` sends `RUN_ERROR` with code
+`MEMBER_FAILED`.
+
 ## Standing grants
 
 A work-item card may carry `standingChoices: ["allow_conversation", "allow_always"]`

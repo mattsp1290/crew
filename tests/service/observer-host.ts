@@ -100,10 +100,15 @@ export async function service(t: TestContext, external = false) {
     const agent = new HttpAgent({ url: server.url + "/conversations/" + cid + "/events", threadId: cid,
       headers: { Authorization: "Bearer " + owner } });
     const events: { type: string; [key: string]: unknown }[] = [];
-    const run = agent.runAgent({}, { onEvent({ event }) { events.push({ ...event }); } });
+    // How the official client read each RUN_FINISHED: "success", "interrupt" or "cancelled".
+    const outcomes: string[] = [];
+    const run = agent.runAgent({}, {
+      onEvent({ event }) { events.push({ ...event }); },
+      onRunFinishedEvent({ outcome }) { outcomes.push(outcome); },
+    });
     const done = run.then(() => undefined, (error: unknown) => error);
     t.after(() => agent.abortRun());
-    return { agent, done, events };
+    return { agent, done, events, outcomes };
   }
   return { api, post, attach, temporal, stranger, ownerId: Object.values(tokens)[0], db, async restart() { await server.stop(); server = await start(); } };
 }

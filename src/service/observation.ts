@@ -18,7 +18,7 @@ type PublicApproval = Omit<Approval, "argumentDigest" | "ownerId" | "nativeCallI
   expiresAt?: string; choices: typeof toolChoices.record_work_item; standingChoices?: typeof standingChoice.options;
 };
 type PublicQuestion = Omit<PublicApproval, "choices"> & { choices: typeof toolChoices.choose_next_step };
-type Phase = "idle" | "running" | "waiting" | "complete" | "cancelled" | "failed";
+export type Phase = "idle" | "running" | "waiting" | "complete" | "cancelled" | "failed";
 interface ClosedCall {
   requestId: string;
   approvalId: string;
