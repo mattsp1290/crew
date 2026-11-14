@@ -20,7 +20,7 @@ import { MemoryApi, memoryListParameterNames } from "./memories.ts";
 import { readInstructions } from "./instructions.ts";
 import { PackApi, packListParameterNames } from "./instruction-packs.ts";
 import { MemberStoreError, openSchema, spawnSchema, submitSchema, turnKey } from "./domain.ts";
-import { readEvents, readEventsIdleMs, readSnapshot, toolBootstrap, type ObservedRow, type Phase, type PublicSnapshot } from "./observation.ts";
+import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
 import { IntegrationApi, integrationCapabilities } from "./integration-api.ts";
 import { firingParameterNames, RoutineApi, RoutineDispatcher, routineListParameterNames, type Clock } from "./routines.ts";
@@ -29,6 +29,7 @@ import { UsageApi, usageParameterNames } from "./usage.ts";
 import { defaultTargetPolicy, TargetRefusedError, type TargetPolicy } from "./webhook-target.ts";
 import { deliveryParameterNames, WebhookApi, WebhookDispatcher, webhookListParameterNames } from "./webhooks.ts";
 import { observerFanout, ObserverHubs, ObserverSettingsError, type FanoutBounds } from "./observer-hub.ts";
+import { readEventsIdleMs, type ObservedRow } from "./observation.ts";
 
 const credentials = z.record(z.string().regex(/^[0-9a-f]{64}$/), z.string().min(1));
 const encoder = new EventEncoder();
