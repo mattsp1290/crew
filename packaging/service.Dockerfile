@@ -15,6 +15,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY vendor/ag-ui/*.tgz vendor/ag-ui/
+COPY vendor/switchboard/*.tgz vendor/switchboard/
 COPY packages/pi-subagents/birbcrew-pi-subagents-0.1.0.tgz packages/pi-subagents/
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY scripts/build-native scripts/

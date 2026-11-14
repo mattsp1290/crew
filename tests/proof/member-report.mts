@@ -28,7 +28,7 @@ export async function evidenceOutputs(env: NodeJS.ProcessEnv = process.env) {
 }
 
 const roots = ["src/service", "native", "scripts", "tests/service", "tests/proof", "tests/fixtures/engines",
-  "packages", "vendor/ag-ui", "clients"];
+  "packages", "vendor/ag-ui", "vendor/switchboard", "clients"];
 const files = [".gitattributes", "package.json", "package-lock.json", ".node-version", "tsconfig.json"];
 const hash = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
 const revision = z.string().regex(/^[a-f0-9]{40}$/);

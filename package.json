@@ -63,6 +63,7 @@
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
+    "@mattsp1290/switchboard": "file:vendor/switchboard/switchboard-58c7922d8fade3617cc86fedcf41677f897025ef.tgz",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@openai/codex": "0.167.1",
     "@openai/codex-sdk": "0.167.1",

@@ -39,7 +39,9 @@ reply when the client disconnects. The model responses are scripted locally.
 
 For local development, use Node 24.22.3 and run `npm ci`, `npm run typecheck`,
 and `npm test`. The TypeScript fixtures exercise all three integrations with real SDKs and local model responses. Package pins and rebuild
-instructions are in [the adapter reference](vendor/ag-ui/README.md).
+instructions are in [the adapter reference](vendor/ag-ui/README.md). The
+Switchboard library's pin and rebuild instructions are in
+[its own record](vendor/switchboard/README.md).
 
 ### Use an operator-controlled AI proxy
 
