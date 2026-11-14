@@ -16,7 +16,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY vendor/ag-ui/*.tgz vendor/ag-ui/
 COPY packages/pi-subagents/birbcrew-pi-subagents-0.1.0.tgz packages/pi-subagents/
-RUN npm ci --omit=dev --no-audit --no-fund
+COPY packages/client/package.json packages/client/tsconfig.json packages/client/LICENSE packages/client/
+COPY packages/client/src packages/client/src
+RUN npm ci --include=dev --no-audit --no-fund \
+    && npm run build:client \
+    && npm prune --omit=dev --no-audit --no-fund
 COPY scripts/build-native scripts/
 COPY native/member-launch.c native/
 RUN scripts/build-native
@@ -34,6 +38,8 @@ RUN apt-get update \
     && install -d -o 10001 -g 10001 -m 0700 /var/lib/birbcrew/native
 COPY --from=build /app/package.json /app/package.json
 COPY --from=build /app/node_modules /app/node_modules
+COPY --from=build /app/packages/client/package.json /app/packages/client/LICENSE /app/packages/client/
+COPY --from=build /app/packages/client/dist /app/packages/client/dist
 # Source resolves the launcher at <repo>/.proof/bin/member-launch relative to src/service.
 COPY --from=build /app/.proof/bin/member-launch /app/.proof/bin/member-launch
 COPY --from=build /app/src/service /app/src/service

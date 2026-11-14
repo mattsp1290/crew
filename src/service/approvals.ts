@@ -1,4 +1,5 @@
-import { acceptsChoice, emptyToolArguments, nextStep, recordWorkItemArguments, standingChoice, toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
+import { decideSchema, nextStep, standingChoice } from "@birbcrew/client/contract";
+import { acceptsChoice, emptyToolArguments, recordWorkItemArguments, toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
 import { createGrant, grantable, proposalGrant, standingScope } from "./grants.ts";
 import { publishObservation } from "./observation.ts";
 import { appendAudit } from "./audit.ts";
@@ -21,9 +22,9 @@ const proposalSchema = z.discriminatedUnion("toolName", [
   claim.extend({ toolName: z.literal("choose_next_step"), arguments: emptyToolArguments }),
 ]);
 const approvalKey = callSchema.extend({ approvalId: uuid });
-export const decisionSchema = approvalKey.extend({
-  argumentDigest: z.string().regex(/^[0-9a-f]{64}$/), version: z.number().int(),
-  choice: z.enum(["approve", "deny", ...nextStep.options, ...standingChoice.options]),
+export const decisionSchema = decideSchema.extend({
+  ownerId: openSchema.shape.ownerId, nativeCallId: callSchema.shape.nativeCallId,
+  argumentDigest: z.string().regex(/^[0-9a-f]{64}$/),
 });
 const settleSchema = approvalKey.extend({ token: uuid });
 

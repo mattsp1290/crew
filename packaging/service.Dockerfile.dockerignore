@@ -3,6 +3,11 @@
 !package-lock.json
 !vendor/ag-ui/*.tgz
 !packages/pi-subagents/birbcrew-pi-subagents-0.1.0.tgz
+!packages/client/package.json
+!packages/client/tsconfig.json
+!packages/client/LICENSE
+!packages/client/src/
+!packages/client/src/**
 !scripts/build-native
 !native/member-launch.c
 !src/service/

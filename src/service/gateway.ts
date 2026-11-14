@@ -1,3 +1,4 @@
+import { routes } from "@birbcrew/client/contract";
 import { childOpener } from "./child-observation.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
@@ -11,7 +12,6 @@ import { EventEncoder } from "@ag-ui/encoder";
 import { Client, Connection, WorkflowUpdateFailedError } from "@temporalio/client";
 import { Client as PgClient, Pool, type PoolOptions } from "pg";
 import { z } from "zod";
-import { decisionSchema } from "./approvals.ts";
 import { AuditUnsettledError, auditCsv, auditParameterNames, auditQuerySchema, readAudit } from "./audit.ts";
 import { MemberClient } from "./client.ts";
 import { listGrants, revokeGrant } from "./grants.ts";
@@ -19,10 +19,10 @@ import { HandoffApi } from "./handoffs.ts";
 import { MemoryApi, memoryListParameterNames } from "./memories.ts";
 import { readInstructions } from "./instructions.ts";
 import { PackApi, packListParameterNames } from "./instruction-packs.ts";
-import { MemberStoreError, openSchema, spawnSchema, submitSchema, turnKey } from "./domain.ts";
+import { MemberStoreError, turnKey } from "./domain.ts";
 import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
-import { IntegrationApi, integrationCapabilities } from "./integration-api.ts";
+import { IntegrationApi, integrationCapabilities, ReceiptContractError } from "./integration-api.ts";
 import { firingParameterNames, RoutineApi, RoutineDispatcher, routineListParameterNames, type Clock } from "./routines.ts";
 import { TemporalSettingsError, temporalConnectionOptions, temporalSettings } from "./temporal-config.ts";
 import { UsageApi, usageParameterNames } from "./usage.ts";
@@ -32,7 +32,7 @@ import { deliveryParameterNames, WebhookApi, WebhookDispatcher, webhookListParam
 const credentials = z.record(z.string().regex(/^[0-9a-f]{64}$/), z.string().min(1));
 const encoder = new EventEncoder();
 const requestLimit = 128 * 1024;
-const human = decisionSchema.omit({ ownerId: true, conversationId: true, argumentDigest: true, nativeCallId: true });
+const human = routes.decide.body;
 
 class HttpError extends Error {
   readonly status: number;
@@ -349,27 +349,27 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     if (requestRoute) {
       const conversationId = z.uuid().parse(requestRoute[1]);
       if (!requestRoute[2] && request.method === "POST") {
-        const prompt = submitSchema.omit({ ownerId: true, conversationId: true }).parse(await body(request));
+        const prompt = routes.submit.body.parse(await body(request));
         return json(response, 202, await integration.submit({ ownerId, conversationId, ...prompt }));
       }
       if (requestRoute[2]) {
         const requestId = z.uuid().parse(requestRoute[2]);
         if (!requestRoute[3] && request.method === "GET") return json(response, 200, await integration.status({ ownerId, conversationId, requestId }));
         if (requestRoute[3] && request.method === "POST") {
-          z.strictObject({}).parse(await body(request));
+          routes.cancel.body.parse(await body(request));
           return json(response, 202, await integration.cancel({ ownerId, conversationId, requestId }));
         }
       }
       throw new HttpError(405, "method_not_allowed");
     }
     if (path === "/members" && request.method === "POST") {
-      const input = spawnSchema.omit({ ownerId: true }).parse(await body(request, true));
+      const input = routes.createMember.body.parse(await body(request, true));
       const published = await store.pool.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2", [input.engine, input.profile]);
       if (!published.rowCount) throw new HttpError(409, "unknown_profile");
       return json(response, 201, await store.spawn({ ownerId, ...input }));
     }
     if (path === "/conversations" && request.method === "POST") {
-      const input = openSchema.omit({ ownerId: true }).parse(await body(request));
+      const input = routes.openConversation.body.parse(await body(request));
       await members.open({ ownerId, ...input });
       return json(response, 201, await readSnapshot(store.pool, ownerId, input.conversationId));
     }
@@ -386,7 +386,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     const input = await body(request);
     switch (parts[2]) {
       case "inputs": {
-        const prompt = submitSchema.omit({ ownerId: true, conversationId: true }).parse(input);
+        const prompt = routes.submit.body.parse(input);
         return json(response, 202, await members.accept({ ownerId, conversationId, ...prompt }));
       }
       case "cancel": {
@@ -420,6 +420,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     void route(request, response).catch((error: unknown) => {
       if (response.destroyed || response.headersSent) return response.end();
       if (error instanceof HttpError) return json(response, error.status, { error: error.message });
+      if (error instanceof ReceiptContractError) return json(response, 500, { error: "retry_same_request" });
       if (error instanceof z.ZodError) return json(response, 400, { error: "invalid_input" });
       if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : 409, { error: error.code });
       if (error instanceof WorkflowUpdateFailedError) return json(response, 409, { error: "update_rejected" });
