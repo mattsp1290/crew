@@ -42,5 +42,18 @@ jobs:
               test -s /etc/ssl/certs/ca-certificates.crt
               test "$BIRBCREW_STATE_DIR" = /var/lib/birbcrew/native
               node -e "require(\"@swc/core\")"
+              test -s /app/packages/client/LICENSE
+              node --input-type=module -e "
+                import assert from \"node:assert/strict\";
+                import { CrewClient } from \"@birbcrew/client\";
+                import { engineSchema } from \"@birbcrew/client/contract\";
+                import { createCrewObserver } from \"@birbcrew/client/agui\";
+                import { spawnSchema } from \"/app/src/service/domain.ts\";
+                assert.equal(typeof CrewClient, \"function\");
+                assert.equal(typeof createCrewObserver, \"function\");
+                assert.equal(engineSchema.parse(\"codex\"), \"codex\");
+                assert.equal(spawnSchema.shape.engine, engineSchema);
+                assert.throws(() => import.meta.resolve(\"typescript\"), { code: \"ERR_MODULE_NOT_FOUND\" });
+              "
               node --input-type=module -e "await import(\"/app/src/service/gateway.ts\"); await import(\"/app/src/service/worker.ts\")"
             '

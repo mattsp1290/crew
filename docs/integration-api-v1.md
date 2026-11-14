@@ -6,6 +6,12 @@ store, native SDKs, or Temporal workflows. Start the normal gateway described in
 one owner. All routes below require that bearer token. Never send proxy credentials,
 trusted scopes, tool registries, or engine configuration in a turn request.
 
+The portable [TypeScript client](../packages/client/README.md) provides one-attempt
+commands and explicit receipt reconciliation. Its [generated OpenAPI 3.1 document](../packages/client/openapi.json)
+covers the core integration routes and lists excluded extensions in `x-excluded-routes`.
+It is not a complete specification of every `/v1` route. Run `npm run openapi` to
+regenerate it and `npm run check:openapi` to reject a stale document.
+
 ## Discovery and routes
 
 `GET /v1/capabilities` returns `apiVersion: "1"`, request and cancellation contract
@@ -393,7 +399,10 @@ carries one; its ID sent with a deadline fails `409 conflict`. See
 `GET /v1/audit` returns the authenticated owner's durable record of who acted and
 when. It covers member spawn, conversation open, request admission, approval and
 question decisions, committed work-item and trusted effects, cancellation requests
-and terminal request status. Unlike the AG-UI tail, it is not truncated. Each fact
+and terminal request status, and the facts later releases added: pending cards,
+grants and automatic approvals, approval expiry, routines and their firings, memory,
+handoffs, instructions and packs, usage budgets and refusals, and webhook endpoints.
+Unlike the AG-UI tail, it is not truncated. Each fact
 is written in the same transaction as the change it records, appears once despite
 retries, and cannot be updated or deleted. Only releases that include the audit
 migration write facts: while a process of an earlier release still runs, during an
@@ -451,13 +460,14 @@ are strict and the owner comes only from the bearer token.
 
 An owner can save up to 32 active entries of at most 1024 bytes for each member. A
 conversation records the member's active entries when it opens, and its native
-launches get them, framed as reference data, after any project notes. Entries created
+launches get them, framed as reference data, after any project notes; Pi children and
+the trusted-context lane do not. Entries created
 later never reach it. Only the owner writes memory; the model cannot. A create is
 idempotent by `requestId`; a replay of a deleted entry fails `409 memory_deleted`,
 and a 33rd active entry `409 memory_limit`. `POST /v1/conversations` also fails
 `409 memory_limit` when the conversation's project notes fit what the member's engine
 can be given but notes and entries together do not, counting any member instructions
-with the notes; nothing is opened. Deleting an
+and instruction packs with the notes; nothing is opened. Deleting an
 entry erases its text and keeps a tombstone. A deletion reaches every later launch on
 Pi with Crew's Pi models. Codex replays the context its rollout recorded on a
 conversation's first turn, and Claude's SDK may resend the prompt it recorded then, so
@@ -486,8 +496,9 @@ errors, costs and the trust boundary.
 character rules. The route now decodes its body strictly, so bytes that are not UTF-8
 fail `400 invalid_json` with or without the field. Instructions are fixed for the life
 of the member; a spawn replay must repeat them exactly, or fails `409 conflict`. Every native launch of the member's conversations
-gets them first, before project notes and memory; Pi children and the trusted-context
-lane do not. They never change the member's tools, approvals or limits.
+gets them after any [instruction packs](#instruction-packs) and before project notes and
+memory; Pi children and the trusted-context lane do not. They never change the member's
+tools, approvals or limits.
 `GET /v1/members/{memberId}/instructions` returns the text to its owner only; spawn
 responses, `GET /v1/members` and the `member.instructions_set` audit row carry its
 SHA-256 and byte count. `POST /v1/conversations`, and a handoff to the member, which

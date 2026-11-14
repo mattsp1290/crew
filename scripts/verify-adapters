@@ -14,13 +14,24 @@ mkdir -p "$consumer/tests/fixtures"
 cp package.json package-lock.json "$consumer/"
 mkdir -p "$consumer/packages/pi-subagents"
 cp packages/pi-subagents/*.tgz "$consumer/packages/pi-subagents/"
+mkdir -p "$consumer/packages/client"
+cp packages/client/package.json packages/client/tsconfig.json packages/client/LICENSE packages/client/README.md "$consumer/packages/client/"
+cp -R packages/client/src "$consumer/packages/client/"
 cp -R vendor "$consumer/"
 cp -R tests/fixtures/engines "$consumer/tests/fixtures/"
+cp -R tests/service "$consumer/tests/"
+mkdir -p "$consumer/src" "$consumer/native" "$consumer/scripts"
+cp -R src/service "$consumer/src/"
+cp native/member-launch.c "$consumer/native/"
+cp scripts/build-native "$consumer/scripts/"
 
 run() {
   docker run --rm --init --user "$(id -u):$(id -g)" --env HOME=/tmp \
     --volume "$consumer:/consumer" --workdir /consumer "$@"
 }
 
-run "$node_image" npm ci --omit=dev --no-audit --no-fund
+run "$node_image" npm ci --include=dev --no-audit --no-fund
+run --network none "$node_image" scripts/build-native
+run --network none "$node_image" npm run build:client
+run --network none "$node_image" npm prune --omit=dev --no-audit --no-fund
 run --network none "$node_image" npm test

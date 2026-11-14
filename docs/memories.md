@@ -175,8 +175,8 @@ control characters are refused, and other characters keep their own bytes. The
 largest block is 32 entries of 1024 quote characters: 67,637 bytes, plus the newline
 before it, so `injectedBytesPerConversation` is 67,638.
 
-Each engine has its own ceiling on the whole system context, notes and memory
-together:
+Each engine has its own ceiling on the whole system context, which holds any
+instruction packs and instructions as well as notes and memory:
 
 - Claude takes at most 262,144 UTF-16 code units of project context (`claude.ts`).
   A character outside the Basic Multilingual Plane counts as two.

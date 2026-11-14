@@ -3,55 +3,20 @@ import type { ChildKey } from "./children.ts";
 import type { Approval } from "./approvals.ts";
 import { z } from "zod";
 
-export const engineSchema = z.enum(["pi", "claude", "codex"]);
+import { engineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
+  createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema,
+  requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
+export { engineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
-
-function boundedText(bytes: number) {
-  return z.string().min(1).refine(
-    (text) => !text.includes("\0") && text.isWellFormed()
-      && new TextEncoder().encode(text).length <= bytes,
-    { message: `Expected valid UTF-8 text of at most ${bytes} bytes` },
-  );
-}
-
-// \p{Cc} is C0, DEL and C1. Tab and newline are the only control characters owner text may hold.
-const disallowedControl = /(?![\t\n])\p{Cc}/u;
-/** Text an owner writes for a model to read: member memory (memories.ts), member instructions and
- * instruction packs. */
-export function ownerText(bytes: number) {
-  return z.string().min(1).refine(text => text.isWellFormed() && !disallowedControl.test(text) && Buffer.byteLength(text) <= bytes,
-    { message: `Expected well-formed UTF-8 text of at most ${bytes} bytes without control characters other than tab and newline` });
-}
-/** The most UTF-8 bytes of member instructions (docs/member-instructions.md); the body CHECK in
- * 029-member-instructions.sql repeats it. */
-export const instructionsBytes = 16_384;
-/** The most instruction packs a member can be spawned with (docs/instruction-packs.md); the
- * position CHECK in 033-instruction-packs.sql repeats it. */
-export const instructionPacksPerMember = 8;
-
-const uuid = z.uuid().transform((value) => value.toLowerCase());
 const ownerId = boundedText(256);
-const profile = boundedText(128);
-
-export const spawnSchema = z.strictObject({
-  ownerId, requestId: uuid, engine: engineSchema, profile, instructions: ownerText(instructionsBytes).optional(),
-  // In the order the model reads them, each once.
-  instructionPacks: z.array(uuid).min(1).max(instructionPacksPerMember).refine(ids => new Set(ids).size === ids.length).optional(),
-});
-export const conversationKey = z.strictObject({ ownerId, conversationId: uuid });
-export const openSchema = conversationKey.extend({ memberId: uuid });
-export const turnKey = conversationKey.extend({ requestId: uuid });
-/** The prompt bound for every request an owner, the CLI or a routine submits. */
-export const promptBytes = 16_384;
-/** The bound on every internal path from MemberClient to the engine. Only a conversation
- * handoff's first request may use more than promptBytes: admission allows it only for the
- * request a handoff row reserved (handoffs.ts), never on a caller's say-so. */
+const uuid = requestIdentitySchema.shape.requestId;
+export const spawnSchema = createMemberSchema.extend({ ownerId });
+export const conversationKey = conversationIdentitySchema.extend({ ownerId });
+export const openSchema = openConversationSchema.extend({ ownerId });
+export const turnKey = requestIdentitySchema.extend({ ownerId });
+export const submitSchema = submitRequestSchema.extend({ ownerId });
+/** Only a handoff's reserved first request may exceed promptBytes. Admission checks the reservation. */
 export const turnTextBytes = 65_536;
-/** How long a Claude or Pi card of the request may wait for a decision (docs/approval-expiry.md).
- * 028-approval-expiry.sql repeats the bounds. Absent, a card waits until someone answers it. */
-export const approvalDeadline = { minimumSeconds: 60, maximumSeconds: 604_800 } as const;
-export const approvalDeadlineSeconds = z.int().min(approvalDeadline.minimumSeconds).max(approvalDeadline.maximumSeconds);
-export const submitSchema = turnKey.extend({ text: boundedText(promptBytes), approvalDeadlineSeconds: approvalDeadlineSeconds.optional() });
 export const turnRequestSchema = submitSchema.extend({ text: boundedText(turnTextBytes) });
 export const executionSchema = z.strictObject({
   workflowRunId: boundedText(256),
@@ -69,19 +34,6 @@ export const checkpointSchema = z.strictObject({
 
 export const commitSchema = claimSchema.extend({ reply: boundedText(65_536), checkpoint: checkpointSchema });
 
-/** What started a request, recorded once with its durable admission. The closed set of kinds:
- * a later kind is a new member here, a case in initiatorColumns, and a migration widening
- * request_admissions_initiator_kind_check and audit_events_initiator_check. The owner carries
- * no id because the conversation's owner_id already names them. A routine is named by its id;
- * only its firing row can make an admission record it (025-routines.sql). A handoff is named by
- * its id; only its own row can make an admission record it, for the one request it reserved
- * (027-handoffs.sql). */
-export const requestInitiator = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("owner") }),
-  z.strictObject({ kind: z.literal("routine"), id: z.uuid() }),
-  z.strictObject({ kind: z.literal("handoff"), id: z.uuid() }),
-]);
-export type RequestInitiator = z.infer<typeof requestInitiator>;
 export const initiatorKinds = requestInitiator.options.map(option => option.shape.kind.value);
 export const ownerInitiator: RequestInitiator = Object.freeze({ kind: "owner" });
 

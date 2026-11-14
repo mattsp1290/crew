@@ -101,8 +101,9 @@ new 256-bit local token. Codex acquires a separate relay/token for each invocati
 its host `AbortSignal` directly closes that invocation's upstream requests, even
 when the native SDK has not yet disconnected its socket. The driver awaits lease
 cleanup in `finally`; cancelling one turn cannot cancel another concurrent turn.
-Profile shutdown closes all outstanding leases. The native SDK receives only that local token, never the
-upstream credential. Each **actual forwarded HTTP request** invokes the resolver
+Profile shutdown closes all outstanding leases. The Claude and Codex SDKs receive only that
+local token, never the upstream credential. The confined Pi worker receives neither: the
+host makes each Pi model request through the relay and passes the reply to the worker. Each **actual forwarded HTTP request** invokes the resolver
 and checks expiry immediately before fetch, including SDK-internal tool
 continuations and any compaction requests using the same route. Nothing caches a
 credential for a turn. On restart, the trusted module creates a new relay/token
