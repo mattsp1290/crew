@@ -28,6 +28,7 @@ import { TemporalSettingsError, temporalConnectionOptions, temporalSettings } fr
 import { UsageApi, usageParameterNames } from "./usage.ts";
 import { defaultTargetPolicy, TargetRefusedError, type TargetPolicy } from "./webhook-target.ts";
 import { deliveryParameterNames, WebhookApi, WebhookDispatcher, webhookListParameterNames } from "./webhooks.ts";
+import { observerFanout, ObserverHubs, ObserverSettingsError, type FanoutBounds, type Feed, type ObservedRow } from "./observer-hub.ts";
 
 const credentials = z.record(z.string().regex(/^[0-9a-f]{64}$/), z.string().min(1));
 const encoder = new EventEncoder();
@@ -117,8 +118,9 @@ async function health(schemaVersion: () => Promise<number | null>, members: Memb
   } as const;
 }
 
+/** `hubs` is the fan-out; without it this observer polls the database on its own. */
 async function observe(
-  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse,
+  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse, hubs?: ObserverHubs,
 ) {
   if (response.destroyed) return;
   const { conversationId: threadId } = snapshot.state;
@@ -163,17 +165,48 @@ async function observe(
       for (const event of toolBootstrap(tool)) await send(event);
     }
     if (await finish(snapshot.state.phase)) return;
+    // Sends one committed row; true once the stream has ended. Rows go out in cursor order whoever read them,
+    // so a row that is not the next cursor means this observer fell behind the retained tail.
+    async function deliver(row: ObservedRow) {
+      if (row.cursor !== cursor + 1) {
+        await send({ type: E.RUN_ERROR, code: "CURSOR_EXPIRED", message: "Reconnect for the current conversation snapshot" });
+        return true;
+      }
+      await send(row.event, row.cursor);
+      cursor = row.cursor;
+      return row.event.type === E.STATE_SNAPSHOT && await finish(row.event.snapshot.phase);
+    }
+    // Reads this observer's own rows from the database up to a cursor the hub has already published. True once
+    // the stream has ended; false when caught up, or when the database has no more rows to give.
+    async function readUntil(target: number) {
+      while (cursor < target) {
+        const rows = await readEvents(pool, owner, threadId, cursor);
+        if (!rows.length) return false;
+        for (const row of rows) if (await deliver(row)) return true;
+      }
+      return false;
+    }
+    // Takes rows from the hub after catching up to it from the database. True once the stream has ended; false
+    // when the subscription ended or the database and the hub disagree, so the database alone decides from here.
+    async function follow(feed: Feed) {
+      if (await readUntil(feed.from)) return true;
+      for (let row = await feed.next(); row; row = await feed.next()) {
+        if (row.cursor > cursor + 1 && await readUntil(row.cursor - 1)) return true;
+        if (row.cursor <= cursor) continue;
+        if (row.cursor !== cursor + 1) return false;
+        if (await deliver(row)) return true;
+      }
+      return false;
+    }
+    const feed = hubs?.attach(owner, threadId, cursor, stop.signal);
+    try {
+      if (feed && await follow(feed)) return;
+    } finally {
+      feed?.dispose();
+    }
     while (!stop.signal.aborted) {
       const rows = await readEvents(pool, owner, threadId, cursor);
-      for (const row of rows) {
-        if (row.cursor !== cursor + 1) {
-          await send({ type: E.RUN_ERROR, code: "CURSOR_EXPIRED", message: "Reconnect for the current conversation snapshot" });
-          return;
-        }
-        await send(row.event, row.cursor);
-        cursor = row.cursor;
-        if (row.event.type === E.STATE_SNAPSHOT && await finish(row.event.snapshot.phase)) return;
-      }
+      for (const row of rows) if (await deliver(row)) return;
       if (!rows.length) await delay(75, undefined, { signal: stop.signal });
     }
   } catch {
@@ -192,9 +225,13 @@ function queryOf(url: URL, names: readonly string[]) {
 }
 
 /** `clock` drives routine schedules and webhook retries; tests inject one. `webhookTargets` is
- * where webhooks may be sent: HTTPS to public addresses unless the operator allows insecure targets. */
+ * where webhooks may be sent: HTTPS to public addresses unless the operator allows insecure targets.
+ * `fanout` shares one database reader among the observers of each conversation (BIRBCREW_OBSERVER_FANOUT);
+ * false restores one poll per observer. Bounds are for tests. */
 export function createGateway(store: MemberStore, members: MemberClient, owners: Record<string, string>,
-  { clock = () => new Date(), webhookTargets = defaultTargetPolicy }: { clock?: Clock; webhookTargets?: TargetPolicy } = {}) {
+  { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env) }:
+    { clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean | Partial<FanoutBounds> } = {}) {
+  const hubs = fanout === false ? undefined : new ObserverHubs(store.pool, fanout === true ? {} : fanout);
   const integration = new IntegrationApi(store, members);
   const accounts = Object.entries(credentials.parse(owners)).map(([hash, actor]) => ({ digest: Buffer.from(hash, "hex"), actor }));
   // One database probe at a time, shared by concurrent health calls, so polling holds at most one probe connection.
@@ -411,7 +448,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
         const snapshot = await readSnapshot(store.pool, ownerId, conversationId);
         const after = url.searchParams.get("after");
         if (after !== null && after !== String(snapshot.cursor)) throw new HttpError(410, "CURSOR_EXPIRED");
-        return observe(store.pool, ownerId, snapshot, run.runId, response);
+        return observe(store.pool, ownerId, snapshot, run.runId, response, hubs);
       }
       default: throw new HttpError(404, "not_found");
     }
@@ -446,10 +483,12 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
   let stopping = Promise.resolve();
   server.once("close", () => {
     for (const timer of timers) clearInterval(timer);
+    hubs?.close();
     stopping = Promise.all([dispatcher.stop(), deliveries.stop()]).then(() => {});
   });
   // Settles once the close has ended both dispatchers' passes; await it before closing the pool.
-  return Object.assign(server, { stopped: () => stopping });
+  // `fanout` reports the observer hubs, or undefined when every observer polls on its own.
+  return Object.assign(server, { stopped: () => stopping, fanout: () => hubs?.stats() });
 }
 
 const configSchema = z.strictObject({ tokenHashes: credentials, port: z.number().int().min(0).max(65535) });
@@ -458,6 +497,7 @@ async function main() {
   if (!file || !database) throw new Error("Set BIRBCREW_DATABASE_URL and supply the gateway configuration file");
   const config = configSchema.parse(JSON.parse(await readFile(file, "utf8")));
   const temporal = temporalSettings(process.env);
+  const fanout = observerFanout(process.env);
   const pool = new Pool({ connectionString: database });
   const connection = await Connection.connect(await temporalConnectionOptions(temporal));
   try {
@@ -466,7 +506,7 @@ async function main() {
     // Off unless exactly "1": plain http and loopback or private addresses, for local testing only.
     const webhookTargets = { allowInsecure: process.env.BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS === "1" };
     const server = createGateway(store, new MemberClient(store, new Client({ connection, namespace: temporal.namespace })), config.tokenHashes,
-      { webhookTargets });
+      { webhookTargets, fanout });
     server.listen(config.port, "127.0.0.1");
     await once(server, "listening");
     const address = server.address();
@@ -484,7 +524,7 @@ async function main() {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((error: unknown) => {
-    console.error(error instanceof TemporalSettingsError ? error.message : "Gateway could not start");
+    console.error(error instanceof TemporalSettingsError || error instanceof ObserverSettingsError ? error.message : "Gateway could not start");
     process.exitCode = 1;
   });
 }

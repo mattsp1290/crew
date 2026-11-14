@@ -30,6 +30,7 @@
     "test:recovery:native": "node tests/proof/recovery-native.mts",
     "test:rollover": "node tests/proof/rollover.mts",
     "test:api": "node --test tests/service/integration-api.test.ts",
+    "test:observers": "node --test tests/service/observer-fanout.test.ts",
     "test:audit": "node --test tests/service/audit.test.ts",
     "test:routines": "node --test tests/service/routine-schedule.test.ts tests/service/routines.test.ts",
     "test:routines:service": "node tests/proof/routines.mts",

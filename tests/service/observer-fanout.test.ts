@@ -1,0 +1,386 @@
+import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { request, type IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { bundleWorkflowCode } from "@temporalio/worker";
+import { Pool } from "pg";
+import type { MemberClient } from "../../src/service/client.ts";
+import { createGateway } from "../../src/service/gateway.ts";
+import { publishObservation } from "../../src/service/observation.ts";
+import { fanoutByDefault, ObserverHubs, observerFanout, ObserverSettingsError, type FanoutBounds } from "../../src/service/observer-hub.ts";
+import { MemberStore } from "../../src/service/store.ts";
+
+// The gateway's observer fan-out against PostgreSQL alone: changes are published straight into the public event
+// ledger, as the store does inside its transactions, so no Temporal server or worker is needed. Each comparison
+// attaches a polling observer (the fan-out turned off) beside the hub's observers: the bytes must be identical.
+
+type Change = Parameters<typeof publishObservation>[2];
+const digest = (token: string) => createHash("sha256").update(token).digest("hex");
+
+async function until<T>(check: () => T | undefined | Promise<T | undefined>, label: string, timeout = 30_000): Promise<T> {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    const value = await check();
+    if (value !== undefined && value !== false) return value;
+    await delay(20);
+  }
+  throw new Error("Timed out waiting for " + label);
+}
+
+async function fixture(t: TestContext) {
+  const pool = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 8 });
+  t.after(() => pool.end());
+  const store = new MemberStore(pool);
+  await store.migrate();
+  const owner = randomUUID(), stranger = randomUUID(), ownerId = "owner-" + randomUUID(), strangerId = "owner-" + randomUUID();
+  const tokens = { [digest(owner)]: ownerId, [digest(stranger)]: strangerId };
+  // Observation never reaches Temporal; anything that tries fails the test.
+  const members = new Proxy({}, { get: () => () => { throw new Error("Temporal is not part of observation"); } }) as MemberClient;
+  const directory = await mkdtemp(join(tmpdir(), "birb-fanout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  /** A gateway on its own Unix socket, whose small fixed buffer lets a client that stops reading block the server's writes. */
+  async function gateway(fanout: boolean | Partial<FanoutBounds>, on = store) {
+    const server = createGateway(on, members, tokens, { fanout });
+    const socketPath = join(directory, randomUUID() + ".sock");
+    server.listen(socketPath);
+    await once(server, "listening");
+    let stopped = false;
+    const stop = async () => {
+      if (stopped) return;
+      stopped = true;
+      const closed = once(server, "close");
+      server.close(); server.closeAllConnections();
+      await closed;
+      await server.stopped();
+    };
+    t.after(stop);
+    return { socketPath, stats: () => server.fanout(), stop };
+  }
+
+  /**
+   * A conversation on the four-turn budget whose first three turns are done, so the next reply completes it.
+   * `items` 64 KiB native items in the third turn make every later bootstrap that much larger.
+   */
+  async function conversation(items = 0) {
+    const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: "fixture.v1" });
+    const conversationId = randomUUID();
+    await store.openConversation({ ownerId, memberId, conversationId });
+    await pool.query("UPDATE birbcrew_ts.conversations SET turn_limit=4 WHERE conversation_id=$1", [conversationId]);
+    for (let turn = 0; turn < 3; turn++) {
+      const requestId = randomUUID(), count = turn === 2 ? items : 0;
+      await publish(conversationId, { kind: "input", requestId, text: "earlier" },
+        ...Array.from({ length: count }, (_, index): Change => ({ kind: "nativeItem", requestId, index, text: "h".repeat(65_536) })),
+        count ? { kind: "reply", requestId, itemCount: count } : { kind: "reply", requestId, text: "done" });
+    }
+    return conversationId;
+  }
+
+  /** Commits changes in one transaction, as the store does, with the conversation lock publishObservation takes. */
+  async function publish(conversationId: string, ...changes: Change[]) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const change of changes) await publishObservation(client, conversationId, change);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async function ledger(conversationId: string) {
+    const { rows } = await pool.query<{ cursor: number; event: unknown }>(
+      "SELECT cursor, event FROM birbcrew_ts.public_events WHERE conversation_id=$1 ORDER BY cursor", [conversationId]);
+    return rows;
+  }
+  return { pool, store, owner, stranger, ownerId, strangerId, gateway, conversation, publish, ledger };
+}
+
+/** A raw SSE observer: the exact bytes the gateway wrote, in order. `paused` reads nothing past the headers. */
+function observe(socketPath: string, token: string, conversationId: string, runId = randomUUID(), paused = false) {
+  const body = JSON.stringify({ threadId: conversationId, runId, messages: [], tools: [], context: [], state: {}, forwardedProps: {} });
+  let raw = "", response: IncomingMessage | undefined;
+  const call = request({ socketPath, path: `/v1/conversations/${conversationId}/events`, method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json", "content-length": Buffer.byteLength(body) } });
+  const done = new Promise<number | undefined>((resolve, reject) => {
+    call.on("response", (incoming) => {
+      response = incoming;
+      incoming.setEncoding("utf8");
+      incoming.on("data", (chunk: string) => { raw += chunk; });
+      if (paused) incoming.pause();
+      incoming.on("end", () => resolve(incoming.statusCode));
+      incoming.on("error", reject);
+    });
+    call.on("error", reject);
+  });
+  void done.catch(() => {});
+  call.end(body);
+  // Only complete frames: a chunk can end inside one.
+  const frames = () => raw.slice(0, raw.lastIndexOf("\n\n") + 1).split("\n\n").filter((block) => block.trim()).map((block) => {
+    const id = /^id: (\d+)$/m.exec(block)?.[1];
+    const data = /^data: (.*)$/m.exec(block)?.[1];
+    return { id: id === undefined ? undefined : Number(id), event: JSON.parse(data!) as { type: string; [key: string]: unknown } };
+  });
+  return {
+    runId, done, frames,
+    get raw() { return raw; },
+    get status() { return response?.statusCode; },
+    has: (type: string) => frames().some((frame) => frame.event.type === type),
+    pause: () => response!.pause(),
+    resume: () => response!.resume(),
+    close: () => call.destroy(),
+  };
+}
+type Observer = ReturnType<typeof observe>;
+
+/** The bootstrap's state snapshot carries the snapshot cursor as its SSE id; every later id'd frame must be exactly
+ * the ledger's rows after it, in cursor order. */
+function assertLedger(observer: Observer, rows: { cursor: number; event: unknown }[]) {
+  const from = observer.frames().find((frame) => frame.id !== undefined)!.id!;
+  const tail = observer.frames().filter((frame) => frame.id !== undefined && frame.id > from);
+  assert.ok(tail.length > 0);
+  assert.deepEqual(tail.map((frame) => frame.id), rows.filter((row) => row.cursor > from).map((row) => row.cursor));
+  assert.deepEqual(tail.map((frame) => frame.event), rows.filter((row) => row.cursor > from).map((row) => row.event));
+}
+
+const input = (requestId: string, text = "go"): Change => ({ kind: "input", requestId, text });
+const text = (requestId: string, index: number, delta: string): Change => ({ kind: "text", messageId: requestId + "/assistant", index, delta });
+
+for (const ending of ["complete", "failed", "stopped"] as const) {
+  test(`hub observers and a polling observer receive identical bytes through ${ending}`, { timeout: 60_000 }, async (t) => {
+    const f = await fixture(t);
+    const hub = await f.gateway(true), polling = await f.gateway(false);
+    const cid = await f.conversation();
+    const runId = randomUUID();
+    const first = [observe(hub.socketPath, f.owner, cid, runId), observe(hub.socketPath, f.owner, cid, runId),
+      observe(polling.socketPath, f.owner, cid, runId)];
+    await until(() => first.every((o) => o.has("STATE_SNAPSHOT")), "bootstrap");
+    assert.deepEqual(hub.stats(), { hubs: 1, observers: 2, fallbacks: 0 });
+    assert.equal(polling.stats(), undefined);
+    const requestId = randomUUID(), words = ["one", " two", " three", " four"];
+    await f.publish(cid, input(requestId));
+    await f.publish(cid, text(requestId, 0, words[0]), text(requestId, 1, words[1]));
+    await until(() => first.every((o) => o.raw.includes(words[1])), "first deltas");
+    // A late observer of each kind joins an open text message; the hub's joins behind its reader or level with it.
+    const late = [observe(hub.socketPath, f.owner, cid, runId), observe(polling.socketPath, f.owner, cid, runId)];
+    await until(() => late.every((o) => o.has("STATE_SNAPSHOT")), "late bootstrap");
+    for (const [index, delta] of words.slice(2).entries()) await f.publish(cid, text(requestId, index + 2, delta));
+    await f.publish(cid, ending === "complete" ? { kind: "reply", requestId, text: words.join("") } : { kind: ending, requestId });
+    const statuses = await Promise.all([...first, ...late].map((o) => o.done));
+    assert.deepEqual(statuses, [200, 200, 200, 200, 200]);
+    const last = first[0].frames().at(-1)!.event;
+    if (ending === "failed") assert.deepEqual([last.type, last.code], ["RUN_ERROR", "MEMBER_FAILED"]);
+    else assert.equal(last.type, "RUN_FINISHED");
+    assert.equal(first[0].raw, first[1].raw);
+    assert.equal(first[0].raw, first[2].raw);
+    assert.equal(late[0].raw, late[1].raw);
+    assertLedger(first[0], await f.ledger(cid));
+    await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+    assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+  });
+}
+
+test("a slow observer overflows, reads the database itself and still receives every event in order", { timeout: 90_000 }, async (t) => {
+  const f = await fixture(t);
+  // Above one read's 32 rows, so the observer that keeps up never overflows.
+  const hub = await f.gateway({ capacity: 40 });
+  const cid = await f.conversation();
+  const runId = randomUUID();
+  const fast = observe(hub.socketPath, f.owner, cid, runId), slow = observe(hub.socketPath, f.owner, cid, runId);
+  await until(() => fast.has("STATE_SNAPSHOT") && slow.has("STATE_SNAPSHOT"), "bootstrap");
+  slow.pause();
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId));
+  // Each item is five rows, among them a snapshot of every message so far, so the paused client's socket fills
+  // within a few items and its rows then queue in the hub until they pass the capacity.
+  let items = 0, extra = 0;
+  while (extra < 2) {
+    assert.ok(items < 60, "the paused observer never overflowed");
+    await f.publish(cid, { kind: "nativeItem", requestId, index: items, text: String(items).padEnd(8192, ".") });
+    items++;
+    const head = (await f.ledger(cid)).at(-1)!.cursor;
+    await until(() => fast.frames().at(-1)?.id === head || undefined, "the fast observer to keep up");
+    if (hub.stats()!.fallbacks) extra++;
+  }
+  assert.deepEqual(hub.stats(), { hubs: 1, observers: 1, fallbacks: 1 });
+  await f.publish(cid, { kind: "reply", requestId, itemCount: items });
+  // The fast observer finishes while the slow one is still paused: nobody waited for it.
+  assert.equal(await fast.done, 200);
+  assert.equal(fast.frames().at(-1)!.event.type, "RUN_FINISHED");
+  assert.ok(!slow.has("RUN_FINISHED"));
+  slow.resume();
+  assert.equal(await slow.done, 200);
+  assert.equal(slow.raw, fast.raw);
+  assertLedger(slow, await f.ledger(cid));
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+});
+
+test("an observer that attaches behind its hub reads the gap from the database, then follows the hub", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const hub = await f.gateway(true), polling = await f.gateway(false);
+  // A 1 MiB message history, several times a socket's buffer: a client that has read nothing holds its observer
+  // inside the bootstrap, after the snapshot was read and before the observer attaches.
+  const cid = await f.conversation(16);
+  const leader = observe(hub.socketPath, f.owner, cid);
+  await until(() => leader.has("STATE_SNAPSHOT"), "leader bootstrap");
+  const runId = randomUUID();
+  const behind = observe(hub.socketPath, f.owner, cid, runId, true), reference = observe(polling.socketPath, f.owner, cid, runId, true);
+  await until(() => behind.status && reference.status, "snapshots read");
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId), text(requestId, 0, "while"));
+  await f.publish(cid, text(requestId, 1, " held"));
+  await until(() => leader.raw.includes(" held"), "the hub to move past the held snapshot");
+  assert.deepEqual(hub.stats(), { hubs: 1, observers: 1, fallbacks: 0 }, "the held observer has not attached yet");
+  behind.resume(); reference.resume();
+  await until(() => hub.stats()?.observers === 2 || undefined, "the held observer to attach");
+  // Nothing new is published, so only the observer's own database read can deliver what it missed.
+  await until(() => behind.raw.includes(" held") || undefined, "the missed rows from the database", 5_000);
+  await f.publish(cid, text(requestId, 2, " then"));
+  await f.publish(cid, { kind: "reply", requestId, text: "while held then" });
+  assert.deepEqual(await Promise.all([leader.done, behind.done, reference.done]), [200, 200, 200]);
+  assert.equal(behind.raw, reference.raw);
+  assertLedger(behind, await f.ledger(cid));
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+});
+
+test("an observer overtaken while its hub could not read gets CURSOR_EXPIRED, as a polling one does", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  // The gateways share one connection, so holding it stops every read they make while the ledger moves on.
+  const single = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 1 });
+  t.after(() => single.end());
+  const held = new MemberStore(single);
+  const hub = await f.gateway(true, held), polling = await f.gateway(false, held);
+  const cid = await f.conversation();
+  const runId = randomUUID();
+  const observers = [observe(hub.socketPath, f.owner, cid, runId), observe(polling.socketPath, f.owner, cid, runId)];
+  await until(() => observers.every((o) => o.has("STATE_SNAPSHOT")), "bootstrap");
+  const slot = await single.connect();
+  try {
+    const requestId = randomUUID(), deltas = Array.from({ length: 300 }, () => "x");
+    await f.publish(cid, input(requestId), ...deltas.map((delta, index) => text(requestId, index, delta)),
+      { kind: "reply", requestId, text: deltas.join("") });
+  } finally { slot.release(); }
+  assert.deepEqual(await Promise.all(observers.map((o) => o.done)), [200, 200]);
+  const last = observers[0].frames().at(-1)!.event;
+  assert.deepEqual([last.type, last.code], ["RUN_ERROR", "CURSOR_EXPIRED"]);
+  assert.equal(observers[0].raw, observers[1].raw);
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+});
+
+test("another owner's observer is refused before subscribing, and a hub only reads its owner's rows", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const hub = await f.gateway(true);
+  const cid = await f.conversation();
+  const refused = observe(hub.socketPath, f.stranger, cid);
+  assert.equal(await refused.done, 404);
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+  assert.ok(!refused.raw.includes("STATE_SNAPSHOT"));
+
+  // Below the route's check: a hub keyed by the other owner never receives this owner's rows.
+  const hubs = new ObserverHubs(f.pool);
+  t.after(() => hubs.close());
+  const stop = new AbortController();
+  t.after(() => stop.abort());
+  const own = hubs.attach(f.ownerId, cid, 0, stop.signal)!, other = hubs.attach(f.strangerId, cid, 0, stop.signal)!;
+  assert.deepEqual(hubs.stats(), { hubs: 2, observers: 2, fallbacks: 0 });
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId), text(requestId, 0, "private"));
+  const rows = await f.ledger(cid);
+  const received = [];
+  while (received.length < rows.length) received.push(await own.next());
+  assert.deepEqual(received, rows);
+  const nothing = await Promise.race([other.next(), delay(500, "nothing")]);
+  assert.equal(nothing, "nothing");
+  own.dispose(); other.dispose();
+  await until(() => hubs.stats().hubs === 0 || undefined, "both hubs released");
+});
+
+test("the last observer to leave stops the hub's reader and releases it", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  let reads = 0;
+  const query = f.pool.query.bind(f.pool);
+  f.pool.query = ((...args: Parameters<typeof query>) => {
+    if (typeof args[0] === "string" && args[0].includes("FROM birbcrew_ts.public_events e JOIN")) reads++;
+    return query(...args);
+  }) as typeof f.pool.query;
+  const hub = await f.gateway(true);
+  const cid = await f.conversation();
+  const observers = [observe(hub.socketPath, f.owner, cid), observe(hub.socketPath, f.owner, cid)];
+  await until(() => observers.every((o) => o.has("STATE_SNAPSHOT")), "bootstrap");
+  assert.deepEqual(hub.stats(), { hubs: 1, observers: 2, fallbacks: 0 });
+  observers[0].close();
+  await until(() => hub.stats()?.observers === 1 || undefined, "one observer left");
+  assert.equal(hub.stats()!.hubs, 1);
+  const before = reads;
+  await delay(300);
+  assert.ok(reads > before, "the remaining observer's hub keeps reading");
+  observers[1].close();
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+  const after = reads;
+  await delay(300);
+  assert.equal(reads, after, "no reader runs for a conversation nobody observes");
+  // A new observer opens a new hub at its own snapshot.
+  const again = observe(hub.socketPath, f.owner, cid);
+  await until(() => again.has("STATE_SNAPSHOT") && hub.stats()?.hubs === 1 || undefined, "a new hub");
+  again.close();
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+});
+
+test("a gateway restart mid-stream ends its hub, and observers of the new gateway match polling ones", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const polling = await f.gateway(false);
+  let hub = await f.gateway(true);
+  const cid = await f.conversation();
+  const runId = randomUUID();
+  const before = observe(hub.socketPath, f.owner, cid, runId), steady = observe(polling.socketPath, f.owner, cid, runId);
+  await until(() => before.has("STATE_SNAPSHOT") && steady.has("STATE_SNAPSHOT"), "bootstrap");
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId), text(requestId, 0, "before"));
+  await until(() => before.raw.includes("before") && steady.raw.includes("before"), "first delta");
+  await hub.stop();
+  await before.done.catch(() => {});
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+  assert.ok(steady.raw.startsWith(before.raw), "up to the restart both paths sent the same bytes");
+  assert.ok(!before.has("RUN_ERROR") && !before.has("RUN_FINISHED"));
+  await f.publish(cid, text(requestId, 1, " during"));
+  hub = await f.gateway(true);
+  const after = observe(hub.socketPath, f.owner, cid, runId), fresh = observe(polling.socketPath, f.owner, cid, runId);
+  await until(() => after.has("STATE_SNAPSHOT") && fresh.has("STATE_SNAPSHOT"), "reattached bootstrap");
+  await f.publish(cid, text(requestId, 2, " after"));
+  await f.publish(cid, { kind: "reply", requestId, text: "before during after" });
+  assert.deepEqual(await Promise.all([after.done, fresh.done, steady.done]), [200, 200, 200]);
+  assert.equal(after.raw, fresh.raw);
+  const resumed = after.frames().find((frame) => frame.event.type === "TEXT_MESSAGE_CONTENT")!.event;
+  assert.equal(resumed.delta, "before during", "the new gateway replays the open text prefix once");
+  assertLedger(steady, await f.ledger(cid));
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+});
+
+test("BIRBCREW_OBSERVER_FANOUT selects the path and refuses anything but true or false", () => {
+  assert.equal(observerFanout({}), fanoutByDefault);
+  assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "" }), fanoutByDefault);
+  assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "false" }), false);
+  assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: " TRUE " }), true);
+  for (const value of ["0", "1", "off", "yes"]) {
+    assert.throws(() => observerFanout({ BIRBCREW_OBSERVER_FANOUT: value }), ObserverSettingsError, value);
+  }
+});
+
+test("the Temporal workflow bundle contains no Switchboard code", { timeout: 120_000 }, async () => {
+  const { code } = await bundleWorkflowCode({
+    workflowsPath: fileURLToPath(new URL("../../src/service/workflow.ts", import.meta.url)),
+    logger: { trace() {}, debug() {}, info() {}, warn() {}, error() {}, log() {} },
+  });
+  assert.ok(code.length > 0);
+  assert.ok(!code.includes("switchboard") && !code.includes("createEventStream") && !code.includes("observer-hub"));
+});
