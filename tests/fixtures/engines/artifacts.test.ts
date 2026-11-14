@@ -23,6 +23,30 @@ for (const pkg of manifest) {
   });
 }
 
+// The archive, its pin record, the dependency spec and the lock must name the same bytes. AgentUI pins the same
+// record fields for the same artifact, so the two pins compare mechanically.
+test("Switchboard matches its pin, dependency, lock and installed package", async () => {
+  const pin = JSON.parse(await readFile(new URL("vendor/switchboard/switchboard.json", root), "utf8"));
+  assert.match(pin.sourceRevision, /^[a-f0-9]{40}$/);
+  assert.equal(pin.artifact, `switchboard-${pin.sourceRevision}.tgz`);
+  const bytes = await readFile(new URL(`vendor/switchboard/${pin.artifact}`, root));
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), pin.sha256);
+  assert.equal(`sha512-${createHash("sha512").update(bytes).digest("base64")}`, pin.integrity);
+  const spec = `file:vendor/switchboard/${pin.artifact}`;
+  const { dependencies } = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
+  assert.equal(dependencies[pin.name], spec);
+  const { packages } = JSON.parse(await readFile(new URL("package-lock.json", root), "utf8"));
+  assert.equal(packages[""].dependencies[pin.name], spec);
+  const locked = packages[`node_modules/${pin.name}`];
+  assert.deepEqual([locked.version, locked.resolved, locked.integrity, locked.license], [pin.version, spec, pin.integrity, pin.license]);
+  const installed = new URL(`node_modules/${pin.name}/`, root);
+  const metadata = JSON.parse(await readFile(new URL("package.json", installed), "utf8"));
+  assert.deepEqual([metadata.name, metadata.version, metadata.license], [pin.name, pin.version, pin.license]);
+  for (const notice of pin.notices) assert.ok((await readFile(new URL(notice, installed))).length > 0, notice);
+  const { createEventStream } = await import(pin.name);
+  assert.equal(typeof createEventStream, "function");
+});
+
 // npm ci can install a cached copy under the lock's integrity, so a repacked archive must match it here.
 test("the packed pi-subagents archive is the one the lock names", async () => {
   const { packages } = JSON.parse(await readFile(new URL("package-lock.json", root), "utf8"));

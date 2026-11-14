@@ -418,9 +418,18 @@ export async function publishObservation(db: PoolClient, id: string, change: Cha
   await db.query("DELETE FROM birbcrew_ts.public_events WHERE conversation_id=$1 AND cursor<=$2", [id, cursor - retainedEvents]);
 }
 
-export async function readEvents(db: Pool, owner: string, id: string, cursor: number) {
-  const { rows } = await db.query<{ cursor: number; event: Event }>(
+/** The most rows one readEvents call returns. */
+export const readEventsLimit = 32;
+
+/** How long a reader of the ledger waits after a read that returned no rows. */
+export const readEventsIdleMs = 75;
+
+/** A committed public event and its cursor in the conversation's ledger. */
+export interface ObservedRow { cursor: number; event: Event }
+
+export async function readEvents(db: Pool, owner: string, id: string, cursor: number): Promise<ObservedRow[]> {
+  const { rows } = await db.query<ObservedRow>(
     `SELECT e.cursor,e.event FROM birbcrew_ts.public_events e JOIN birbcrew_ts.conversations c USING (conversation_id)
-     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT 32`, [owner, id, cursor]);
+     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT $4`, [owner, id, cursor, readEventsLimit]);
   return rows;
 }

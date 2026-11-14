@@ -60,6 +60,7 @@ jobs:
       - run: npm run test:client
       - run: npm run check:openapi
       - run: npm run test:api
+      - run: npm run test:observers
       - run: npm run test:audit
       - run: npm run test:routines
       - run: npm run test:memories

@@ -1,0 +1,18 @@
+{
+  "name": "@mattsp1290/switchboard",
+  "version": "0.0.0",
+  "sourceRepository": "https://github.com/mattsp1290/switchboard",
+  "sourceRevision": "58c7922d8fade3617cc86fedcf41677f897025ef",
+  "sourceTree": "1cd287a7ed95acdf82bc7f0b1c4cd5118a52fe86",
+  "artifact": "switchboard-58c7922d8fade3617cc86fedcf41677f897025ef.tgz",
+  "sha256": "15416f5505eb8c3f5b0e3236a48f879f873661e46d27a652ad845f08cb0b9421",
+  "integrity": "sha512-BYqLGxoq3QOZ3cpJOleAcMj+WcEc/BQIO+GnB3tR9cHiX3L1e2MGeTxl16P7zAmAfnV1koK8BX80IAGIzqtvxw==",
+  "license": "MIT",
+  "notices": ["LICENSE"],
+  "copiedFrom": {
+    "repository": "https://github.com/mattsp1290/agentui",
+    "revision": "a9483be31cc301d7d9cb4d403a922098814cadb4",
+    "path": "vendor/switchboard-58c7922d8fade3617cc86fedcf41677f897025ef.tgz",
+    "pin": "vendor/switchboard.json"
+  }
+}
