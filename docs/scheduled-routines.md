@@ -174,8 +174,8 @@ A routine's request reaches a human decision like an owner's.
   no deny choice. However the request then ends, even with a committed reply after
   the cancelled card, the firing fails with `approval_required`.
 
-Standing approval grants, if a later release adds them, match only owner-initiated
-requests, so a routine's request always gets a card.
+[Standing approval grants](standing-grants.md) match only owner-initiated requests, so
+a routine's request always gets a card, and the card offers no standing choice.
 
 ## What a firing records
 

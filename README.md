@@ -112,11 +112,11 @@ it by member, event type, actor or initiator kind, routine or handoff, and time 
 schedule and a fixed prompt; the gateway submits each run in a new conversation,
 with nobody present, and records the routine as the request's initiator.
 [Outbound webhooks](docs/webhooks.md) tell an owner's HTTPS endpoint, through
-`/v1/webhooks`, when a card or question becomes pending, a request finishes or a
-routine firing settles. Each call to a `crew` endpoint is signed and carries only
-IDs and a status. A `slack` or `ntfy` endpoint instead gets an unsigned, short
-readable message of the same IDs, status and tool name, which a chat or push
-service shows to a person.
+`/v1/webhooks`, when a card or question becomes pending, a request finishes, a
+routine firing settles or Crew disables a routine after ten failures in a row. Each
+call to a `crew` endpoint is signed and carries only IDs and a status. A `slack` or
+`ntfy` endpoint instead gets an unsigned, short readable message of the same IDs,
+status and tool name, which a chat or push service shows to a person.
 
 An owner can answer a work-item approval with a [standing grant](docs/standing-grants.md)
 for the rest of the conversation or for every conversation of the member. Later calls
@@ -129,19 +129,21 @@ of one minute to seven days. A Claude or Pi card still undecided at its deadline
 settled without a person: Crew cancels the request and records `approval.expired`.
 
 [Usage metering](docs/usage-metering.md) records the token counts each engine reports
-for every native segment, in the member and trusted-context lanes, with a provider-billed
-cost or, from a price table the operator supplies, an estimated one, kept apart; Crew
-ships no prices. An owner reads totals per member and conversation through `/v1/usage`
-and can give a member a daily token budget; a member at its budget is refused new
-requests with `409 usage_limit`, as a soft cap.
+for every native segment that returns, one row per segment in the member lane and one
+per request in the trusted-context lane, with a provider-billed cost or, from a price
+table the operator supplies, an estimated one, kept apart; Crew ships no prices. An
+owner reads totals per member and conversation through `/v1/usage` and can give a
+member a daily token budget; a member at its budget is refused new requests with
+`409 usage_limit`, as a soft cap.
 
 An owner can save [member memory](docs/memories.md) through `/v1/memories`: up to 32
-short facts per member. Each conversation of the member gets the facts that were
-active when it opened, as system context framed as reference data. Only the owner
-writes memory; the model cannot. Deleting a fact erases its text, but Codex, and
-Claude where its SDK records the prompt, keep the context a conversation's first turn
-saw, and native session files and Pi checkpoints keep copies. Memory reaches every
-later conversation of the member, so whoever holds the owner's token can steer them all.
+short facts per member. Each conversation of the member outside the trusted-context
+lane gets the facts that were active when it opened, as system context framed as
+reference data. Only the owner writes memory; the model cannot. Deleting a fact erases
+its text, but Codex, and Claude where its SDK records the prompt, keep the context a
+conversation's first turn saw, and native session files and Pi checkpoints keep copies.
+Memory reaches every later conversation of the member outside that lane, so whoever
+holds the owner's token can steer them all.
 
 An owner can [hand a conversation off](docs/handoffs.md) to another of their members,
 often of another engine, through `/v1/conversations/{conversationId}/handoffs`. The source
@@ -153,14 +155,15 @@ hand off only conversations whose replies you would paste into a prompt yourself
 
 An owner can give a member [instructions](docs/member-instructions.md) when they spawn
 it: up to 16,384 bytes describing its role. They are fixed for the life of the member,
-come before project notes and memory in every native launch of its conversations, and
-never change its tools, approvals or limits. Only the owner reads the text back, through
-`/v1/members/{memberId}/instructions`; listings and the audit trail carry its digest.
+come before project notes and memory in every native launch of its conversations except
+a Pi child's and the trusted-context lane's, and never change its tools, approvals or
+limits. Only the owner reads the text back, through `/v1/members/{memberId}/instructions`;
+listings and the audit trail carry its digest.
 
 An owner can write [instruction packs](docs/instruction-packs.md) through
 `/v1/instruction-packs`, text several members share, and attach up to eight to a member when
 they spawn it. A pack never changes, a member's packs are fixed for its life, and a pack any
-member has cannot be deleted. Packs come before the member's own instructions in every native
-launch and share their 16,384 bytes. They never change a member's tools, approvals or limits,
+member has cannot be deleted. Packs come before the member's own instructions in the same
+launches and share their 16,384 bytes. They never change a member's tools, approvals or limits,
 but the model follows them as the owner's instructions, so a pack built from untrusted text is
 a prompt-injection path to every member that has it.

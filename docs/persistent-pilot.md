@@ -1,6 +1,6 @@
 # Approved documentation delivery pilot
 
-Birbforge owns approval and the delivery workflow. Crew runs three versioned Temporal activities on the subscription-authenticated executor host. The activities author an approved documentation change, obtain an independent review from the installed reviewer, and publish the reviewed commit as a draft GitHub PR. They do not merge or deploy it.
+Birbforge owns approval and the delivery workflow. Crew runs four versioned Temporal activities on the subscription-authenticated executor host. Three author an approved documentation change, obtain an independent review from the installed reviewer, and publish the reviewed commit as a draft GitHub PR. They do not merge or deploy it. The fourth, `birbcrew.check_review_recovery.v1`, is read-only: it reports whether a stored legacy review was misclassified and is eligible for recovery.
 
 The public contract is generated from `execution/contract.py` into `contracts/execution.v1/schema.json`. Approval binds an immutable goal record, its content digest, repository, base commit, installed policy revision, exact documentation paths and trusted acceptance identifier. Birbforge computes the offer digest and clients echo it. Digests use UTF-8 JSON with sorted object keys, no insignificant whitespace and unescaped Unicode. Contract offers contain no floating-point values. The installation selects one record from a dedicated Beans hub; it must not read the owner's default hub or reuse `FixtureHub` as a live adapter.
 
@@ -30,7 +30,7 @@ The worker registers activities only. It does not start another scheduler or man
 
 ## Recovery and cancellation
 
-Each activity claims `(kind, operation_id)` before effects. A changed payload conflicts. A repeat reconciles the same identity. Author checkpoints use whole-record compare-and-swap, so two attempts cannot both freeze the candidate or overwrite a terminal result. The claim, known thread and turn remain durable in PostgreSQL.
+Each of the three delivery activities claims `(kind, operation_id)` before effects. A changed payload conflicts. A repeat reconciles the same identity. Author checkpoints use whole-record compare-and-swap, so two attempts cannot both freeze the candidate or overwrite a terminal result. The claim, known thread and turn remain durable in PostgreSQL.
 
 A lost turn-start reply is reconciled only against the new, owned thread. Exactly one turn can be adopted. Zero or several turns leave uncertainty; the activity never blindly submits a replacement turn. A worker shutdown is not a cancellation request and must not interrupt the daemon. Interrupted preparation or candidate freezing also leaves uncertainty instead of repeating an ambiguous mutation.
 
