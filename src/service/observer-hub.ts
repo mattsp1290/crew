@@ -20,10 +20,14 @@ export interface FanoutBounds {
   readonly capacity: number;
 }
 
-// A read returns at most 32 rows and publishes them together, so an observer that keeps up never holds more
-// than one read's worth. 128 lets a briefly slow client fall four reads behind before it overflows and
-// continues from the database, which keeps the last 256 frames.
-export const defaultFanoutBounds: FanoutBounds = { maxObservers: 64, capacity: 128 };
+// readEvents' LIMIT. One read's rows are published together, so an observer that keeps up never holds more.
+const readRows = 32;
+
+// 64 lets a briefly slow client fall two reads behind before it overflows and continues from the database,
+// which keeps the last 256 frames. Capacity is also the hub's memory bound: rows are shared by reference, and a
+// MESSAGES_SNAPSHOT row carries the whole message history, so a client that stops reading keeps up to 64 rows
+// alive until it overflows or leaves. A polling observer kept one read, up to 32 rows, of its own.
+export const defaultFanoutBounds: FanoutBounds = { maxObservers: 64, capacity: 64 };
 
 // Same idle wait as the per-observer loop this replaces.
 const idleMs = 75;
@@ -51,6 +55,8 @@ export interface Feed {
    * the observer disconnected. The observer then reads the database from its own cursor.
    */
   next(): Promise<ObservedRow | undefined>;
+  /** Leaves because the database could not supply a row the hub published; counted and logged as a fallback. */
+  abandon(): void;
   /** Idempotent. The last observer to leave stops the hub's reader and releases the hub. */
   dispose(): void;
 }
@@ -62,6 +68,8 @@ interface Hub {
   /** The highest cursor read and published, or the first observer's snapshot cursor before any read. */
   cursor: number;
   observers: number;
+  /** A full hub logs once, not once per refused connection. */
+  fullReported: boolean;
 }
 
 function freeze<T>(value: T): T {
@@ -83,10 +91,12 @@ export class ObserverHubs {
   constructor(pool: Pool, bounds: Partial<FanoutBounds> = {}) {
     this.#pool = pool;
     this.#bounds = { ...defaultFanoutBounds, ...bounds };
+    // Below one read's rows, even an observer that keeps up would overflow on every full read.
+    if (!(this.#bounds.capacity >= readRows)) throw new RangeError(`Observer capacity must be at least ${readRows} rows`);
     createEventStream(this.#bounds).close(); // Invalid bounds throw here, not on the first observer.
   }
 
-  /** Open hubs, attached observers, and observers sent back to the database (overflow, full hub, failed read). */
+  /** Open hubs, attached observers, and observers sent back to the database (overflow, full hub, failed read, gap). */
   stats() {
     return { hubs: this.#hubs.size, observers: this.#observers, fallbacks: this.#fallbacks };
   }
@@ -107,14 +117,15 @@ export class ObserverHubs {
     let offered: { row: ObservedRow; sent: () => void } | undefined;
     let sending: (() => void) | undefined;
     let wake: (() => void) | undefined;
-    let ended = false;
+    let ended = false, abandoned = false;
     const subscribed = hub.stream.subscribe((row) => new Promise<void>((sent) => {
       offered = { row, sent };
       wake?.();
     }), { signal });
     if (subscribed.kind === "error") {
       this.#fallbacks++;
-      warn("observer_hub_full", { maxObservers: this.#bounds.maxObservers });
+      if (!hub.fullReported) warn("observer_hub_full", { maxObservers: this.#bounds.maxObservers });
+      hub.fullReported = true;
       if (!hub.observers) this.#close(hub);
       return undefined;
     }
@@ -122,19 +133,26 @@ export class ObserverHubs {
     this.#observers++;
     const subscription = subscribed.value;
     void subscription.ended.then((reason: SubscriptionEnd) => {
-      ended = true;
-      // Settles the pending listener call, so the stream releases this observer's lease.
-      offered?.sent();
-      sending?.();
-      offered = sending = undefined;
-      wake?.();
-      hub.observers--;
-      this.#observers--;
-      if (reason === "overflow" || reason === "listener-error" || (reason === "closed" && !this.#closed && !signal.aborted)) {
-        this.#fallbacks++;
-        if (reason !== "closed") warn("observer_fallback", { reason, capacity: this.#bounds.capacity });
+      try {
+        ended = true;
+        // Settles the pending listener call, so the stream releases this observer's lease.
+        offered?.sent();
+        sending?.();
+        offered = sending = undefined;
+        wake?.();
+        // A closed stream on a failed read (not on shutdown or disconnect) sends this observer back too.
+        const fallback = abandoned ? "gap" : reason === "overflow" || reason === "listener-error" ? reason
+          : reason === "closed" && !this.#closed && !signal.aborted ? "closed" : undefined;
+        if (fallback) {
+          this.#fallbacks++;
+          // A failed read is logged once for its hub, as observer_hub_failed.
+          if (fallback !== "closed") warn("observer_fallback", { reason: fallback, capacity: this.#bounds.capacity });
+        }
+      } finally {
+        hub.observers--;
+        this.#observers--;
+        if (!hub.observers) this.#close(hub);
       }
-      if (!hub.observers) this.#close(hub);
     });
     return {
       from,
@@ -153,6 +171,10 @@ export class ObserverHubs {
           wake = undefined;
         }
       },
+      abandon() {
+        if (!ended) abandoned = true;
+        subscription.dispose();
+      },
       dispose: () => subscription.dispose(),
     };
   }
@@ -164,7 +186,8 @@ export class ObserverHubs {
   }
 
   #open(key: string, owner: string, conversationId: string, cursor: number): Hub {
-    const hub: Hub = { key, stream: createEventStream(this.#bounds), reader: new AbortController(), cursor, observers: 0 };
+    const hub: Hub = { key, stream: createEventStream(this.#bounds), reader: new AbortController(), cursor, observers: 0,
+      fullReported: false };
     this.#hubs.set(key, hub);
     void this.#read(hub, owner, conversationId);
     return hub;

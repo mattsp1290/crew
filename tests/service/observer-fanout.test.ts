@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request, type IncomingMessage } from "node:http";
@@ -42,13 +42,17 @@ async function fixture(t: TestContext) {
   const tokens = { [digest(owner)]: ownerId, [digest(stranger)]: strangerId };
   // Observation never reaches Temporal; anything that tries fails the test.
   const members = new Proxy({}, { get: () => () => { throw new Error("Temporal is not part of observation"); } }) as MemberClient;
-  const directory = await mkdtemp(join(tmpdir(), "birb-fanout-"));
+  // Short names: a Unix socket path has to fit in about 104 bytes.
+  const directory = await mkdtemp(join(tmpdir(), "bf-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
 
-  /** A gateway on its own Unix socket, whose small fixed buffer lets a client that stops reading block the server's writes. */
+  /**
+   * A gateway on its own Unix socket. Linux keeps a fixed buffer per Unix stream socket (the stock wmem_default is
+   * 212,992 bytes), so a client that stops reading blocks the server's writes after a few hundred KiB.
+   */
   async function gateway(fanout: boolean | Partial<FanoutBounds>, on = store) {
     const server = createGateway(on, members, tokens, { fanout });
-    const socketPath = join(directory, randomUUID() + ".sock");
+    const socketPath = join(directory, randomBytes(4).toString("hex") + ".sock");
     server.listen(socketPath);
     await once(server, "listening");
     let stopped = false;
@@ -172,6 +176,9 @@ for (const ending of ["complete", "failed", "stopped"] as const) {
     const late = [observe(hub.socketPath, f.owner, cid, runId), observe(polling.socketPath, f.owner, cid, runId)];
     await until(() => late.every((o) => o.has("STATE_SNAPSHOT")), "late bootstrap");
     for (const [index, delta] of words.slice(2).entries()) await f.publish(cid, text(requestId, index + 2, delta));
+    await until(() => [...first, ...late].every((o) => o.raw.includes(words[3])), "last delta");
+    // Still on the hub: the byte comparison is not between polling observers.
+    assert.deepEqual(hub.stats(), { hubs: 1, observers: 3, fallbacks: 0 });
     await f.publish(cid, ending === "complete" ? { kind: "reply", requestId, text: words.join("") } : { kind: ending, requestId });
     const statuses = await Promise.all([...first, ...late].map((o) => o.done));
     assert.deepEqual(statuses, [200, 200, 200, 200, 200]);
@@ -243,6 +250,8 @@ test("an observer that attaches behind its hub reads the gap from the database, 
   // Nothing new is published, so only the observer's own database read can deliver what it missed.
   await until(() => behind.raw.includes(" held") || undefined, "the missed rows from the database", 5_000);
   await f.publish(cid, text(requestId, 2, " then"));
+  await until(() => behind.raw.includes(" then") || undefined, "the next row from the hub");
+  assert.deepEqual(hub.stats(), { hubs: 1, observers: 2, fallbacks: 0 }, "the caught-up observer follows the hub");
   await f.publish(cid, { kind: "reply", requestId, text: "while held then" });
   assert.deepEqual(await Promise.all([leader.done, behind.done, reference.done]), [200, 200, 200]);
   assert.equal(behind.raw, reference.raw);
@@ -264,9 +273,10 @@ test("an observer overtaken while its hub could not read gets CURSOR_EXPIRED, as
   await until(() => observers.every((o) => o.has("STATE_SNAPSHOT")), "bootstrap");
   const slot = await single.connect();
   try {
+    // Two commits: without the held connection the readers would take the first before the second prunes it.
     const requestId = randomUUID(), deltas = Array.from({ length: 300 }, () => "x");
-    await f.publish(cid, input(requestId), ...deltas.map((delta, index) => text(requestId, index, delta)),
-      { kind: "reply", requestId, text: deltas.join("") });
+    await f.publish(cid, input(requestId), ...deltas.map((delta, index) => text(requestId, index, delta)));
+    await f.publish(cid, { kind: "reply", requestId, text: deltas.join("") });
   } finally { slot.release(); }
   assert.deepEqual(await Promise.all(observers.map((o) => o.done)), [200, 200]);
   const last = observers[0].frames().at(-1)!.event;
@@ -274,6 +284,58 @@ test("an observer overtaken while its hub could not read gets CURSOR_EXPIRED, as
   assert.equal(observers[0].raw, observers[1].raw);
   await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
   assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+});
+
+test("an observer refused by a full hub reads the database itself and receives the same bytes", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const hub = await f.gateway({ maxObservers: 1 }), polling = await f.gateway(false);
+  const cid = await f.conversation();
+  const runId = randomUUID();
+  const observers = [observe(hub.socketPath, f.owner, cid, runId), observe(hub.socketPath, f.owner, cid, runId),
+    observe(polling.socketPath, f.owner, cid, runId)];
+  await until(() => observers.every((o) => o.has("STATE_SNAPSHOT")), "bootstrap");
+  assert.deepEqual(hub.stats(), { hubs: 1, observers: 1, fallbacks: 1 });
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId), text(requestId, 0, "full"));
+  await f.publish(cid, { kind: "reply", requestId, text: "full" });
+  assert.deepEqual(await Promise.all(observers.map((o) => o.done)), [200, 200, 200]);
+  assert.equal(observers[0].raw, observers[2].raw);
+  assert.equal(observers[1].raw, observers[2].raw);
+  await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
+});
+
+test("a failed hub read releases the hub, and its observers finish from the database without loss", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  let failNext = false;
+  const query = f.pool.query.bind(f.pool);
+  f.pool.query = ((...args: Parameters<typeof query>) => {
+    if (failNext && typeof args[0] === "string" && args[0].includes("FROM birbcrew_ts.public_events e JOIN")) {
+      failNext = false;
+      return Promise.reject(new Error("injected hub read failure"));
+    }
+    return query(...args);
+  }) as typeof f.pool.query;
+  // The polling reference reads through its own pool, so the injected failure can only reach the hub.
+  const other = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 4 });
+  t.after(() => other.end());
+  const hub = await f.gateway(true), polling = await f.gateway(false, new MemberStore(other));
+  const cid = await f.conversation();
+  const runId = randomUUID();
+  const observers = [observe(hub.socketPath, f.owner, cid, runId), observe(hub.socketPath, f.owner, cid, runId),
+    observe(polling.socketPath, f.owner, cid, runId)];
+  await until(() => observers.every((o) => o.has("STATE_SNAPSHOT")), "bootstrap");
+  assert.deepEqual(hub.stats(), { hubs: 1, observers: 2, fallbacks: 0 });
+  // Attached observers that are level with their hub make no reads of their own, so the next one is the hub's.
+  failNext = true;
+  await until(() => hub.stats()?.hubs === 0 || undefined, "the failed hub to be released");
+  assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 2 });
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId), text(requestId, 0, "after"));
+  await f.publish(cid, { kind: "reply", requestId, text: "after" });
+  assert.deepEqual(await Promise.all(observers.map((o) => o.done)), [200, 200, 200]);
+  assert.equal(observers[0].raw, observers[2].raw);
+  assert.equal(observers[1].raw, observers[2].raw);
+  assertLedger(observers[0], await f.ledger(cid));
 });
 
 test("another owner's observer is refused before subscribing, and a hub only reads its owner's rows", { timeout: 60_000 }, async (t) => {
@@ -300,8 +362,10 @@ test("another owner's observer is refused before subscribing, and a hub only rea
   assert.deepEqual(received, rows);
   const nothing = await Promise.race([other.next(), delay(500, "nothing")]);
   assert.equal(nothing, "nothing");
-  own.dispose(); other.dispose();
+  // Leaving because the database disagreed with the hub counts as a fallback; disposing does not.
+  own.abandon(); other.dispose();
   await until(() => hubs.stats().hubs === 0 || undefined, "both hubs released");
+  assert.deepEqual(hubs.stats(), { hubs: 0, observers: 0, fallbacks: 1 });
 });
 
 test("the last observer to leave stops the hub's reader and releases it", { timeout: 60_000 }, async (t) => {
@@ -366,7 +430,7 @@ test("a gateway restart mid-stream ends its hub, and observers of the new gatewa
   await until(() => hub.stats()?.hubs === 0 || undefined, "hub release");
 });
 
-test("BIRBCREW_OBSERVER_FANOUT selects the path and refuses anything but true or false", () => {
+test("BIRBCREW_OBSERVER_FANOUT selects the path and refuses anything but true or false; bounds are checked", () => {
   assert.equal(observerFanout({}), fanoutByDefault);
   assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "" }), fanoutByDefault);
   assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "false" }), false);
@@ -374,6 +438,9 @@ test("BIRBCREW_OBSERVER_FANOUT selects the path and refuses anything but true or
   for (const value of ["0", "1", "off", "yes"]) {
     assert.throws(() => observerFanout({ BIRBCREW_OBSERVER_FANOUT: value }), ObserverSettingsError, value);
   }
+  // Below one read's 32 rows even an observer that keeps up would overflow.
+  assert.throws(() => new ObserverHubs({} as Pool, { capacity: 31 }), RangeError);
+  assert.throws(() => new ObserverHubs({} as Pool, { maxObservers: 0 }), RangeError);
 });
 
 test("the Temporal workflow bundle contains no Switchboard code", { timeout: 120_000 }, async () => {

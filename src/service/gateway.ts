@@ -193,7 +193,10 @@ async function observe(
       for (let row = await feed.next(); row; row = await feed.next()) {
         if (row.cursor > cursor + 1 && await readUntil(row.cursor - 1)) return true;
         if (row.cursor <= cursor) continue;
-        if (row.cursor !== cursor + 1) return false;
+        if (row.cursor !== cursor + 1) {
+          feed.abandon();
+          return false;
+        }
         if (await deliver(row)) return true;
       }
       return false;
@@ -226,8 +229,9 @@ function queryOf(url: URL, names: readonly string[]) {
 
 /** `clock` drives routine schedules and webhook retries; tests inject one. `webhookTargets` is
  * where webhooks may be sent: HTTPS to public addresses unless the operator allows insecure targets.
- * `fanout` shares one database reader among the observers of each conversation (BIRBCREW_OBSERVER_FANOUT);
- * false restores one poll per observer. Bounds are for tests. */
+ * `fanout` shares one database reader among the observers of each conversation; false restores one poll per
+ * observer. It defaults to BIRBCREW_OBSERVER_FANOUT so the kill switch also reaches gateways that suites build
+ * in process; an invalid value throws ObserverSettingsError. Bounds are for tests. */
 export function createGateway(store: MemberStore, members: MemberClient, owners: Record<string, string>,
   { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env) }:
     { clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean | Partial<FanoutBounds> } = {}) {

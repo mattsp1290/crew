@@ -8,9 +8,12 @@ No registry publication is claimed.
 
 The gateway uses only the root entry's `createEventStream`, for the observer
 fan-out (see [the gateway guide](../../docs/member-gateway.md)). Nothing imports
-the `./agui` entry, whose optional peer is `@ag-ui/core@1.0.4`. Workflow code
-must not import Switchboard: the root entry loads `node:fs` and other built-ins
-that the Temporal workflow bundle refuses.
+the `./agui` entry. Workflow code must not import Switchboard: the root entry
+loads `node:fs` and other built-ins that the Temporal workflow bundle refuses.
+
+The package declares an exact optional peer, `@ag-ui/core@1.0.4`. Crew installs
+`@ag-ui/core` itself, so npm checks that peer against Crew's version. A change
+that moves Crew's `@ag-ui/core` should move this pin in the same change.
 
 ## One artifact for both consumers
 
@@ -58,6 +61,13 @@ npm pack --pack-destination /path/to/package-output
 
 AgentUI found two packs of one build byte-identical, which does not establish
 identical output across machines. Compare a rebuilt package with the recorded
-SHA-256 before adopting it, and rename it to the commit-named filename. To move
-the pin, replace the archive and the record together and refresh the lock with
-`npm install --package-lock-only`.
+SHA-256 before adopting it, and rename it to the commit-named filename.
+
+To move the pin, in one change:
+
+1. Add the new `switchboard-<revision>.tgz` and delete the old one; the service
+   image copies every `*.tgz` in this directory.
+2. Update every field of `switchboard.json`.
+3. Point the dependency and the lock at it with npm 11.19.1:
+   `npm install --package-lock-only --ignore-scripts @mattsp1290/switchboard@file:vendor/switchboard/switchboard-<revision>.tgz`.
+4. Run the artifact test above.
