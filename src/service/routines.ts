@@ -6,7 +6,7 @@ import { z } from "zod";
 import { appendAudit } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
 import { approvalDeadlineSeconds, MemberStoreError, submitSchema, type RequestInitiator } from "./domain.ts";
-import type { IntegrationApi, RequestReceipt } from "./integration-api.ts";
+import type { IntegrationApi, ServerRequestReceipt } from "./integration-api.ts";
 import { latestWindow, minimumIntervalMinutes, nextWindow, parseSchedule, scheduleProblem, type Schedule } from "./routine-schedule.ts";
 import type { MemberStore } from "./store.ts";
 
@@ -84,7 +84,7 @@ export function decideWindow(schedule: Schedule, due: Date, now: Date, armedAt: 
  * does a firing whose card expired, which counts as a failure like any other. */
 export function observedFiring(
   firing: { status: "admitted" | "waiting"; reason: FiringReason | null },
-  receipt: Pick<RequestReceipt, "status" | "expiredApproval">, policy: ApprovalPolicy,
+  receipt: Pick<ServerRequestReceipt, "status" | "expiredApproval">, policy: ApprovalPolicy,
 ): { status: FiringStatus; reason: FiringReason | null; outcome?: "success" | "failure"; cancel: boolean } {
   const closed: FailReason | undefined = firing.reason === "approval_required" ? "approval_required"
     : receipt.expiredApproval ? "approval_expired" : undefined;

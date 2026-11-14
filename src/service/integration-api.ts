@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { serverRequestReceiptSchema, type ServerRequestReceipt } from "@birbcrew/client/contract";
 import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
 import { approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
-  turnKey, type Engine, type RequestInitiator } from "./domain.ts";
+  turnKey, type Engine } from "./domain.ts";
 import { standingChoice } from "./deferral.ts";
 import { grantListLimit } from "./grants.ts";
 import { handoffCapabilities } from "./handoffs.ts";
@@ -80,23 +81,11 @@ function page<T>(kind: Listing, rows: T[], size: number, id: (row: T) => string)
 
 const keySchema = turnKey;
 type Key = z.infer<typeof keySchema>;
-type Status = "accepted" | "waiting" | "running" | "completed" | "cancellation_requested" | "cancelled" | "failed" | "uncertain";
-export interface RequestReceipt {
-  apiVersion: "1";
-  conversationId: string;
-  requestId: string;
-  acceptance: { boundary: "sql_admission_and_temporal_queue" };
-  status: Status;
-  /** Absent for a request admitted before admissions were durable. */
-  initiator?: RequestInitiator;
-  result?: { text: string };
-  reason?: string;
-  cancellation?: { receiptId: string; delivery: "pending" | "delivered"; nativeTermination: "confirmed" | "unconfirmed"; effects: "not_assessed" };
-  /** The deadline the request was admitted with (docs/approval-expiry.md). */
-  approvalDeadlineSeconds?: number;
-  /** Present once a card of this request reached its deadline undecided and Crew cancelled the request. */
-  expiredApproval?: { approvalId: string; expiresAt: string; expiredAt: string };
+export type { ServerRequestReceipt } from "@birbcrew/client/contract";
+export class ReceiptContractError extends Error {
+  constructor() { super("Request receipt violates the public contract"); this.name = "ReceiptContractError"; }
 }
+type Status = ServerRequestReceipt["status"];
 
 /** Public contract adapter; no SDK or Temporal internals are exposed to HTTP consumers. */
 export class IntegrationApi {
@@ -110,7 +99,7 @@ export class IntegrationApi {
     this.members = members;
   }
 
-  async submit(input: unknown): Promise<RequestReceipt> {
+  async submit(input: unknown): Promise<ServerRequestReceipt> {
     const request = submitSchema.parse(input);
     // Unlike the legacy ACCEPTED stage, acceptTurn waits for SQL admission.
     // On lost acknowledgement the caller must reconcile, never choose a new UUID.
@@ -118,7 +107,7 @@ export class IntegrationApi {
     return this.status({ ownerId: request.ownerId, conversationId: request.conversationId, requestId: request.requestId });
   }
 
-  async status(input: unknown): Promise<RequestReceipt> {
+  async status(input: unknown): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
     // Reconcile an accepted/no-turn receipt against a terminal logical workflow.
     // This observes Temporal only: it never starts a workflow or dispatches inference.
@@ -148,7 +137,7 @@ export class IntegrationApi {
       : row.phase === "uncertain" ? "uncertain"
       : row.receipt_id ? "cancellation_requested"
       : row.waiting ? "waiting" : row.phase === "started" ? "running" : "accepted";
-    return {
+    const receipt = serverRequestReceiptSchema.safeParse({
       apiVersion: "1", conversationId: key.conversationId, requestId: key.requestId,
       acceptance: { boundary: "sql_admission_and_temporal_queue" }, status,
       ...(row.initiator_kind ? { initiator: initiatorFromColumns(row.initiator_kind, row.initiator_id) } : {}),
@@ -161,11 +150,13 @@ export class IntegrationApi {
       ...(row.approval_deadline_seconds !== null ? { approvalDeadlineSeconds: row.approval_deadline_seconds } : {}),
       ...(row.expired_id ? { expiredApproval: { approvalId: row.expired_id, expiresAt: row.expires_at!.toISOString(),
         expiredAt: row.expired_at!.toISOString() } } : {}),
-    };
+    });
+    if (!receipt.success) throw new ReceiptContractError();
+    return receipt.data;
   }
 
   /** `policy` marks an intent a routine's fail_closed policy requested rather than the owner. */
-  async cancel(input: unknown, policy?: "fail_closed"): Promise<RequestReceipt> {
+  async cancel(input: unknown, policy?: "fail_closed"): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
     // Backfill active legacy turns created after migration17, without inventing an
     // admission for an unknown UUID or accepting a new payload. Such turns come from

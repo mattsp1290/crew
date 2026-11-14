@@ -89,3 +89,29 @@ test("a Pi turn runs in a launcher-confined worker with no inherited environment
   assert.deepEqual(worker.command, [process.execPath, join(root, "src/service/pi-worker.ts")]);
   assert.deepEqual(worker.environment.sort(), ["HOME", "TMPDIR"]);
 });
+
+test("the linked client exposes compiled schemas without exposing package source or allowing writes", { timeout: 20_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "birb-pi-client-scope-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = {
+    compiled: join(root, "packages/client/dist/contract.js"),
+    manifest: join(root, "packages/client/package.json"),
+    source: join(root, "packages/client/src/contract.ts"),
+    readme: join(root, "packages/client/README.md"),
+  };
+  const probe = `
+    const fs = require("node:fs");
+    const attempt = (action) => { try { action(); return "allowed"; } catch (error) { return error.code; } };
+    const paths = ${JSON.stringify(paths)};
+    const result = Object.fromEntries(Object.entries(paths).map(([name, path]) => [name, attempt(() => fs.readFileSync(path))]));
+    result.write = attempt(() => fs.closeSync(fs.openSync(paths.compiled, "a")));
+    result.neighborWrite = attempt(() => fs.closeSync(fs.openSync(${JSON.stringify(join(root, "package.json"))}, "a")));
+    fs.writeSync(3, JSON.stringify(result));
+  `;
+  const launch = piLaunch(directory, ["-e", probe]);
+  const child = spawn(launch.command, launch.args, launch.options);
+  let output = "";
+  child.stdio[3]!.on("data", (chunk: Buffer) => { output += chunk; });
+  assert.deepEqual(await once(child, "close"), [0, null]);
+  assert.deepEqual(JSON.parse(output), { compiled: "allowed", manifest: "allowed", source: "EACCES", readme: "EACCES", write: "EACCES", neighborWrite: "EACCES" });
+});

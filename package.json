@@ -14,7 +14,7 @@
     "x64"
   ],
   "scripts": {
-    "build": "scripts/build-native && npm run typecheck",
+    "build": "npm run build:client && scripts/build-native && npm run typecheck",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/fixtures/engines/artifacts.test.ts tests/fixtures/engines/consumer.test.mjs tests/fixtures/engines/codex/qualification.test.ts tests/fixtures/engines/pi/confinement.test.ts tests/service/temporal-config.test.ts tests/service/gateway-auth.test.ts",
     "gateway": "node src/service/gateway.ts",
@@ -49,7 +49,12 @@
     "test:webhooks": "node --test tests/service/webhook-target.test.ts tests/service/webhooks.test.ts",
     "test:api:service": "node tests/proof/integration-api.mts",
     "test:recovery:coordinated": "node tests/proof/coordinated-recovery.mts",
-    "test:temporal:tls": "node tests/proof/temporal-tls.mts"
+    "test:temporal:tls": "node tests/proof/temporal-tls.mts",
+    "build:client": "npm run build --prefix packages/client",
+    "openapi": "node scripts/generate-openapi.mjs",
+    "check:openapi": "node scripts/generate-openapi.mjs --check",
+    "test:client": "node --test tests/client/*.test.mts",
+    "verify:client": "node scripts/verify-client-package.mjs"
   },
   "dependencies": {
     "@ag-ui/claude-agent-sdk": "file:vendor/ag-ui/claude-agent-sdk-0.0.8.tgz",
@@ -59,6 +64,7 @@
     "@ag-ui/pi": "file:vendor/ag-ui/ag-ui-pi-0.0.1.tgz",
     "@anthropic-ai/claude-agent-sdk": "0.3.306",
     "@anthropic-ai/sdk": "0.113.0",
+    "@birbcrew/client": "file:packages/client",
     "@birbcrew/pi-subagents": "file:packages/pi-subagents/birbcrew-pi-subagents-0.1.0.tgz",
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
@@ -81,6 +87,8 @@
   "devDependencies": {
     "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "typescript": "5.9.3"
   },
   "description": "Durable Claude, Codex and Pi coding coworkers",

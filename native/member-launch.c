@@ -263,6 +263,9 @@ int main(int argc, char **argv) {
             permit_under(rules, source, "package.json", read);
             permit_under(rules, source, "node_modules", read | list);
             permit_under(rules, source, "src/service", read | list);
+            // npm's local dependency link resolves outside node_modules to compiled shared schemas.
+            permit_under(rules, source, "packages/client/package.json", read);
+            permit_under(rules, source, "packages/client/dist", read | list);
             unsetenv("BIRBCREW_NATIVE_SOURCE");
         }
         argv += 2;

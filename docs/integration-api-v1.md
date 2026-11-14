@@ -6,6 +6,12 @@ store, native SDKs, or Temporal workflows. Start the normal gateway described in
 one owner. All routes below require that bearer token. Never send proxy credentials,
 trusted scopes, tool registries, or engine configuration in a turn request.
 
+The portable [TypeScript client](../packages/client/README.md) provides one-attempt
+commands and explicit receipt reconciliation. Its [generated OpenAPI 3.1 document](../packages/client/openapi.json)
+covers the core integration routes and lists excluded extensions in `x-excluded-routes`.
+It is not a complete specification of every `/v1` route. Run `npm run openapi` to
+regenerate it and `npm run check:openapi` to reject a stale document.
+
 ## Discovery and routes
 
 `GET /v1/capabilities` returns `apiVersion: "1"`, request and cancellation contract

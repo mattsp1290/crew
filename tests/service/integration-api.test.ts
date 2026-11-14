@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { fullFormats } from "ajv-formats/dist/formats.js";
+import { routes } from "@birbcrew/client/contract";
 import { once } from "node:events";
 import { connect as connectTcp, createServer as createTcpServer, type Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, before, test } from "node:test";
 import { Pool } from "pg";
+import { CrewClient, CrewUnknownOutcomeError } from "@birbcrew/client";
+import { createCrewObserver } from "@birbcrew/client/agui";
 import type { Client } from "@temporalio/client";
 import { MemberClient } from "../../src/service/client.ts";
 import { ApprovalStore } from "../../src/service/approvals.ts";
@@ -13,6 +19,21 @@ import { MemberStore } from "../../src/service/store.ts";
 import { createGateway, probeTimeout } from "../../src/service/gateway.ts";
 import { IntegrationApi } from "../../src/service/integration-api.ts";
 import { ownerInitiator, type TurnRequest } from "../../src/service/domain.ts";
+
+const openApi = JSON.parse(readFileSync(new URL("../../packages/client/openapi.json", import.meta.url), "utf8"));
+const ajv = new Ajv2020({ strict: false, allErrors: true, formats: fullFormats });
+function responseValidator(operation: keyof typeof routes, status: number) {
+  const route = routes[operation];
+  const response = openApi.paths[route.path][route.method.toLowerCase()].responses[status];
+  assert.ok(response?.content, `${operation} documents HTTP ${status}`);
+  return ajv.compile({ ...response.content["application/json"].schema, components: openApi.components });
+}
+async function validateResponse(operation: keyof typeof routes, response: Response) {
+  const validate = responseValidator(operation, response.status);
+  const body = await response.json();
+  assert.equal(validate(body), true, `${operation} HTTP ${response.status}: ${ajv.errorsText(validate.errors)}`);
+  return body;
+}
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -57,6 +78,8 @@ async function fixture(automaticallyComplete = false) {
     }
   }
   const members = {
+    async open(input: Parameters<MemberStore["openConversation"]>[0]) { return store.openConversation(input); },
+    async decide(input: Parameters<ApprovalStore["decide"]>[0]) { return new ApprovalStore(pool).decide(input); },
     async accept(input: TurnRequest) {
       accepts++;
       await store.recordAcceptance(input, ownerInitiator);
@@ -435,7 +458,7 @@ test("v1 health is authenticated, strict and reports every ready dependency", as
   assert.equal((await gateway.get("/v1/health", "invalid")).status, 401);
   const response = await gateway.get("/v1/health");
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { apiVersion: "1", status: "ready", dependencies: {
+  assert.deepEqual(await validateResponse("health", response), { apiVersion: "1", status: "ready", dependencies: {
     database: { status: "ready", schemaVersion: version }, temporal: { status: "ready" } } });
   assert.equal((await gateway.get("/v1/health?verbose=1")).status, 400);
   assert.equal((await gateway.get("/health")).status, 404, "health is versioned-only");
@@ -464,7 +487,7 @@ test("v1 health answers 503 with the same shape, bounded and without dependency 
       const response = await gateway.get("/v1/health");
       assert.ok(Date.now() - started < probeTimeout + 1_500, "both dependency probes run concurrently, each bounded");
       assert.equal(response.status, 503);
-      const report = await response.json();
+      const report = await validateResponse("health", response);
       assert.deepEqual(report, { apiVersion: "1", status: "not_ready", dependencies });
       const text = JSON.stringify(report);
       assert.ok(!text.includes(secret) && !text.includes("ECONNREFUSED") && !text.includes("127.0.0.1"), text);
@@ -700,4 +723,102 @@ test("v1 listings reject unknown, repeated, out-of-range and forged query parame
     assert.equal((await f.api("/v1/conversations?" + query)).status, 400, query);
   }
   for (const path of ["/members", "/conversations"]) assert.equal((await f.api(path)).status, 404, "listings are versioned-only");
+});
+
+
+test("committed admission with an invalid stored receipt is a server fault and unknown client outcome", async t => {
+  const f = await fixture(); t.after(f.stop);
+  const requestId = randomUUID(), path = `/v1/conversations/${f.conversationId}/requests`;
+  assert.equal((await f.api(path, { requestId, text: "original" })).status, 202);
+  assert.equal((await f.api(path + "/" + requestId + "/cancel", {})).status, 202);
+  await pool.query("UPDATE birbcrew_ts.integration_cancellations SET receipt_id='00000000-0000-0000-0000-000000000001' WHERE conversation_id=$1 AND request_id=$2", [f.conversationId, requestId]);
+  const response = await f.api(path, { requestId, text: "original" });
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "retry_same_request" });
+  const client = new CrewClient({ baseUrl: f.endpoint, token: f.token });
+  await assert.rejects(client.submit({ conversationId: f.conversationId, requestId, text: "original" }), error =>
+    error instanceof CrewUnknownOutcomeError && error.command.kind === "request" && error.command.requestId === requestId);
+  assert.equal((await pool.query("SELECT count(*)::integer n FROM birbcrew_ts.request_admissions WHERE conversation_id=$1 AND request_id=$2", [f.conversationId, requestId])).rows[0].n, 1);
+  assert.equal(f.counts().effects, 0);
+});
+
+test("one observer receives fresh gateway snapshots across repeated connections", { timeout: 10_000 }, async t => {
+  const f = await fixture(); t.after(f.stop);
+  const observer = createCrewObserver({ baseUrl: f.endpoint, token: f.token, conversationId: f.conversationId });
+  const projected = Promise.withResolvers<void>();
+  for (let run = 0; run < 2; run++) {
+    const snapshot = Promise.withResolvers<void>();
+    const done = observer.runAgent({ tools: [{ name: "ignored", description: "ignored", parameters: {} }], context: [{ description: "ignored", value: "ignored" }], forwardedProps: { ignored: true } }, {
+      onStateSnapshotEvent() { snapshot.resolve(); },
+      onStateChanged({ state }) { if (state.conversationId === f.conversationId) projected.resolve(); },
+      onRunFailed({ error }) { snapshot.reject(error); },
+    });
+    try { await Promise.all([snapshot.promise, projected.promise]); assert.equal(observer.state.conversationId, f.conversationId); }
+    finally { observer.abortRun(); await observer.detachActiveRun(); await done.catch(() => undefined); }
+  }
+  assert.deepEqual(f.counts(), { accepts: 0, cancels: 0, effects: 0 });
+});
+
+
+test("published OpenAPI accepts real core gateway responses and keeps request bodies strict", async t => {
+  const f = await fixture(); t.after(f.stop);
+  const checked = new Set<keyof typeof routes>();
+  async function check(operation: keyof typeof routes, path: string, body?: unknown) {
+    const response = await f.api(path, body);
+    assert.equal(response.status, routes[operation].statuses[0]);
+    checked.add(operation);
+    return validateResponse(operation, response);
+  }
+  await check("capabilities", "/v1/capabilities");
+  await validateResponse("health", await f.api("/v1/health"));
+  checked.add("health");
+  const profile = "openapi-" + randomUUID();
+  await pool.query("INSERT INTO birbcrew_ts.profiles(name,engine,account_digest) VALUES($1,'pi',$2)",
+    [profile, Buffer.from("fixture")]);
+  const member = await check("createMember", "/v1/members", { requestId: randomUUID(), engine: "pi", profile });
+  assert.equal(member.ownerId, f.ownerId, "validate the actual additive spawn field");
+  await check("listMembers", "/v1/members");
+  const opened = await check("openConversation", "/v1/conversations", {
+    conversationId: randomUUID(), memberId: member.memberId,
+  });
+  assert.ok("openStep" in opened.state && "pendingApprovals" in opened.state);
+  const conversationPath = `/v1/conversations/${f.conversationId}`;
+  await check("conversation", conversationPath);
+  const requestId = randomUUID();
+  const key = { ownerId: f.ownerId, conversationId: f.conversationId, requestId };
+  const input = { ...key, text: "OpenAPI receipt" };
+  await check("submit", conversationPath + "/requests", { requestId, text: input.text });
+  await check("requestStatus", conversationPath + "/requests/" + requestId);
+  const turn = await store.beginTurn(input, { workflowRunId: randomUUID(), activityId: "openapi", attempt: 1 });
+  assert.equal(turn.kind, "start"); if (turn.kind !== "start") return;
+  const conversation = await store.getConversation({ ownerId: f.ownerId, conversationId: f.conversationId });
+  const approval = await new ApprovalStore(pool).propose({ ...key, memberId: conversation.memberId,
+    invocationId: requestId, token: turn.token, nativeCallId: "openapi-call", toolName: "record_work_item",
+    arguments: { operation_id: requestId, note: "OpenAPI decision" } });
+  await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
+    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "deny" });
+  await check("cancel", conversationPath + "/requests/" + requestId + "/cancel", {});
+  assert.deepEqual([...checked].sort(), Object.keys(routes).sort());
+
+  const validateMember = responseValidator("createMember", 201);
+  assert.equal(validateMember({ ...member, futureField: { value: true } }), true);
+  assert.equal(validateMember({ ...member, memberId: "not-a-uuid" }), false);
+  const { memberId, ...missingMemberId } = member;
+  assert.equal(validateMember(missingMemberId), false);
+  const requestBodies = {
+    createMember: { requestId: randomUUID(), engine: "pi", profile },
+    openConversation: { conversationId: randomUUID(), memberId: member.memberId },
+    submit: { requestId, text: input.text },
+    cancel: {},
+    decide: { requestId, memberId: conversation.memberId, invocationId: requestId,
+      approvalId: approval.approvalId, version: approval.version, choice: "deny" },
+  };
+  for (const [operation, body] of Object.entries(requestBodies)) {
+    const route = routes[operation as keyof typeof requestBodies];
+    const bodySchema = openApi.paths[route.path][route.method.toLowerCase()].requestBody.content["application/json"].schema;
+    const validateBody = ajv.compile({ ...bodySchema, components: openApi.components });
+    assert.ok(validateBody(body), ajv.errorsText(validateBody.errors));
+    assert.equal(validateBody({ ...body, ownerId: f.ownerId }), false,
+      `${route.path} rejects extra request properties`);
+  }
 });
