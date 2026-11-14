@@ -12,8 +12,8 @@ import { bundleWorkflowCode } from "@temporalio/worker";
 import { Pool } from "pg";
 import type { MemberClient } from "../../src/service/client.ts";
 import { createGateway } from "../../src/service/gateway.ts";
-import { publishObservation } from "../../src/service/observation.ts";
-import { fanoutByDefault, ObserverHubs, observerFanout, ObserverSettingsError, type FanoutBounds } from "../../src/service/observer-hub.ts";
+import { publishObservation, readEventsLimit } from "../../src/service/observation.ts";
+import { ObserverHubs, observerFanout, ObserverSettingsError, type FanoutBounds } from "../../src/service/observer-hub.ts";
 import { MemberStore } from "../../src/service/store.ts";
 
 // The gateway's observer fan-out against PostgreSQL alone: changes are published straight into the public event
@@ -35,7 +35,13 @@ async function until<T>(check: () => T | undefined | Promise<T | undefined>, lab
 
 async function fixture(t: TestContext) {
   const pool = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 8 });
-  t.after(() => pool.end());
+  // Hooks run in the order they are added, and every gateway stops before any pool ends: a query still queued for a
+  // client when its pool ends never settles, so a gateway's background pass waiting on one would hang its stop.
+  const gateways: (() => Promise<void>)[] = [];
+  t.after(async () => {
+    try { for (const stop of gateways) await stop(); }
+    finally { await pool.end(); }
+  });
   const store = new MemberStore(pool);
   await store.migrate();
   const owner = randomUUID(), stranger = randomUUID(), ownerId = "owner-" + randomUUID(), strangerId = "owner-" + randomUUID();
@@ -51,7 +57,8 @@ async function fixture(t: TestContext) {
    * 212,992 bytes), so a client that stops reading blocks the server's writes after a few hundred KiB.
    */
   async function gateway(fanout: boolean | Partial<FanoutBounds>, on = store) {
-    const server = createGateway(on, members, tokens, { fanout });
+    const server = createGateway(on, members, tokens,
+      typeof fanout === "boolean" ? { fanout } : { fanout: true, fanoutBounds: fanout });
     const socketPath = join(directory, randomBytes(4).toString("hex") + ".sock");
     server.listen(socketPath);
     await once(server, "listening");
@@ -64,8 +71,8 @@ async function fixture(t: TestContext) {
       await closed;
       await server.stopped();
     };
-    t.after(stop);
-    return { socketPath, stats: () => server.fanout(), stop };
+    gateways.push(stop);
+    return { socketPath, stats: () => server.observerStats(), stop };
   }
 
   /**
@@ -104,7 +111,16 @@ async function fixture(t: TestContext) {
       "SELECT cursor, event FROM birbcrew_ts.public_events WHERE conversation_id=$1 ORDER BY cursor", [conversationId]);
     return rows;
   }
-  return { pool, store, owner, stranger, ownerId, strangerId, gateway, conversation, publish, ledger };
+
+  /** Runs `before` ahead of each read of the public event ledger through this pool; a promise it returns replaces the read. */
+  function onLedgerRead(before: () => Promise<never> | undefined) {
+    const query = pool.query.bind(pool);
+    pool.query = ((...args: Parameters<typeof query>) => {
+      const read = typeof args[0] === "string" && args[0].includes("FROM birbcrew_ts.public_events e JOIN");
+      return (read ? before() : undefined) ?? query(...args);
+    }) as typeof pool.query;
+  }
+  return { pool, store, owner, stranger, ownerId, strangerId, gateway, conversation, publish, ledger, onLedgerRead };
 }
 
 /** A raw SSE observer: the exact bytes the gateway wrote, in order. `paused` reads nothing past the headers. */
@@ -260,6 +276,30 @@ test("an observer that attaches behind its hub reads the gap from the database, 
   assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
 });
 
+test("an observer ahead of its hub skips the rows its snapshot holds and stays on the hub", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const cid = await f.conversation();
+  const head = (await f.ledger(cid)).at(-1)!.cursor;
+  const hubs = new ObserverHubs(f.pool);
+  t.after(() => hubs.close());
+  const stop = new AbortController();
+  t.after(() => stop.abort());
+  // The leader opens the hub at the start of the ledger. The other observer, whose snapshot is at the head, attaches
+  // before the hub's first read returns, so the hub then publishes every row that observer already has.
+  const leader = hubs.attach(f.ownerId, cid, 0, stop.signal)!;
+  const ahead = hubs.rows(f.ownerId, cid, head, stop.signal);
+  const first = ahead.next();
+  assert.deepEqual(hubs.stats(), { hubs: 1, observers: 2, fallbacks: 0 });
+  for (let cursor = 1; cursor <= head; cursor++) assert.equal((await leader.next())?.cursor, cursor);
+  await f.publish(cid, input(randomUUID()));
+  assert.equal((await first).value?.cursor, head + 1);
+  assert.deepEqual(hubs.stats(), { hubs: 1, observers: 2, fallbacks: 0 }, "the skipped rows did not send it to the database");
+  await ahead.return();
+  leader.dispose();
+  await until(() => hubs.stats().hubs === 0 || undefined, "hub release");
+  assert.deepEqual(hubs.stats(), { hubs: 0, observers: 0, fallbacks: 0 });
+});
+
 test("an observer overtaken while its hub could not read gets CURSOR_EXPIRED, as a polling one does", { timeout: 60_000 }, async (t) => {
   const f = await fixture(t);
   // The gateways share one connection, so holding it stops every read they make while the ledger moves on.
@@ -311,14 +351,11 @@ test("an observer refused by a full hub reads the database itself and receives t
 test("a failed hub read releases the hub, and its observers finish from the database without loss", { timeout: 60_000 }, async (t) => {
   const f = await fixture(t);
   let failNext = false;
-  const query = f.pool.query.bind(f.pool);
-  f.pool.query = ((...args: Parameters<typeof query>) => {
-    if (failNext && typeof args[0] === "string" && args[0].includes("FROM birbcrew_ts.public_events e JOIN")) {
-      failNext = false;
-      return Promise.reject(new Error("injected hub read failure"));
-    }
-    return query(...args);
-  }) as typeof f.pool.query;
+  f.onLedgerRead(() => {
+    if (!failNext) return undefined;
+    failNext = false;
+    return Promise.reject(new Error("injected hub read failure"));
+  });
   // The polling reference reads through its own pool, so the injected failure can only reach the hub.
   const other = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 4 });
   t.after(() => other.end());
@@ -342,6 +379,38 @@ test("a failed hub read releases the hub, and its observers finish from the data
   assertLedger(observers[0], await f.ledger(cid));
   // The observers that fell back opened no new hub.
   assert.deepEqual(hub.stats(), { hubs: 0, observers: 0, fallbacks: 2 });
+});
+
+test("an observer that leaves while the hub holds its row gives its place back", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const cid = await f.conversation();
+  const head = (await f.ledger(cid)).at(-1)!.cursor;
+  // Two places, and the smallest capacity: the stream keeps a place until its pending call for a row settles.
+  const hubs = new ObserverHubs(f.pool, { maxObservers: 2, capacity: readEventsLimit });
+  t.after(() => hubs.close());
+  const stop = new AbortController();
+  t.after(() => stop.abort());
+  const leader = hubs.attach(f.ownerId, cid, head, stop.signal)!;
+  const following = (async () => { for (let row = await leader.next(); row; row = await leader.next()); })();
+  // Never asks for a row, so its first row stays offered until it overflows.
+  hubs.attach(f.ownerId, cid, head, stop.signal);
+  const requestId = randomUUID();
+  await f.publish(cid, input(requestId), ...Array.from({ length: readEventsLimit + 8 }, (_, index) => text(requestId, index, "x")));
+  await until(() => hubs.stats().fallbacks === 1 || undefined, "the stalled observer to overflow");
+  const newcomer = hubs.attach(f.ownerId, cid, head, stop.signal);
+  assert.ok(newcomer, "the observer that overflowed with a row offered still held its place");
+  // Leaves while sending a row: that row's call settles too.
+  await f.publish(cid, text(requestId, readEventsLimit + 8, "y"));
+  assert.ok(await newcomer.next());
+  newcomer.dispose();
+  await until(() => hubs.stats().observers === 1 || undefined, "the newcomer to leave");
+  const last = hubs.attach(f.ownerId, cid, head, stop.signal);
+  assert.ok(last, "the observer that left while sending still held its place");
+  last.dispose();
+  leader.dispose();
+  await following;
+  await until(() => hubs.stats().hubs === 0 || undefined, "hub release");
+  assert.deepEqual(hubs.stats(), { hubs: 0, observers: 0, fallbacks: 1 });
 });
 
 test("another owner's observer is refused before subscribing, and a hub only reads its owner's rows", { timeout: 60_000 }, async (t) => {
@@ -377,11 +446,10 @@ test("another owner's observer is refused before subscribing, and a hub only rea
 test("the last observer to leave stops the hub's reader and releases it", { timeout: 60_000 }, async (t) => {
   const f = await fixture(t);
   let reads = 0;
-  const query = f.pool.query.bind(f.pool);
-  f.pool.query = ((...args: Parameters<typeof query>) => {
-    if (typeof args[0] === "string" && args[0].includes("FROM birbcrew_ts.public_events e JOIN")) reads++;
-    return query(...args);
-  }) as typeof f.pool.query;
+  f.onLedgerRead(() => {
+    reads++;
+    return undefined;
+  });
   const hub = await f.gateway(true);
   const cid = await f.conversation();
   const observers = [observe(hub.socketPath, f.owner, cid), observe(hub.socketPath, f.owner, cid)];
@@ -437,8 +505,9 @@ test("a gateway restart mid-stream ends its hub, and observers of the new gatewa
 });
 
 test("BIRBCREW_OBSERVER_FANOUT selects the path and refuses anything but true or false; bounds are checked", () => {
-  assert.equal(observerFanout({}), fanoutByDefault);
-  assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "" }), fanoutByDefault);
+  // On by default, as docs/persistent-deployment.md says.
+  assert.equal(observerFanout({}), true);
+  assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "" }), true);
   assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: "false" }), false);
   assert.equal(observerFanout({ BIRBCREW_OBSERVER_FANOUT: " TRUE " }), true);
   for (const value of ["0", "1", "off", "yes"]) {

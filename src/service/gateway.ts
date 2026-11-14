@@ -20,7 +20,7 @@ import { MemoryApi, memoryListParameterNames } from "./memories.ts";
 import { readInstructions } from "./instructions.ts";
 import { PackApi, packListParameterNames } from "./instruction-packs.ts";
 import { MemberStoreError, openSchema, spawnSchema, submitSchema, turnKey } from "./domain.ts";
-import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
+import { readEvents, readEventsIdleMs, readSnapshot, toolBootstrap, type ObservedRow, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
 import { IntegrationApi, integrationCapabilities } from "./integration-api.ts";
 import { firingParameterNames, RoutineApi, RoutineDispatcher, routineListParameterNames, type Clock } from "./routines.ts";
@@ -28,7 +28,7 @@ import { TemporalSettingsError, temporalConnectionOptions, temporalSettings } fr
 import { UsageApi, usageParameterNames } from "./usage.ts";
 import { defaultTargetPolicy, TargetRefusedError, type TargetPolicy } from "./webhook-target.ts";
 import { deliveryParameterNames, WebhookApi, WebhookDispatcher, webhookListParameterNames } from "./webhooks.ts";
-import { observerFanout, ObserverHubs, ObserverSettingsError, type FanoutBounds, type Feed, type ObservedRow } from "./observer-hub.ts";
+import { observerFanout, ObserverHubs, ObserverSettingsError, type FanoutBounds } from "./observer-hub.ts";
 
 const credentials = z.record(z.string().regex(/^[0-9a-f]{64}$/), z.string().min(1));
 const encoder = new EventEncoder();
@@ -176,41 +176,12 @@ async function observe(
       cursor = row.cursor;
       return row.event.type === E.STATE_SNAPSHOT && await finish(row.event.snapshot.phase);
     }
-    // Reads this observer's own rows from the database up to a cursor the hub has already published. True once
-    // the stream has ended; false when caught up, or when the database has no more rows to give.
-    async function readUntil(target: number) {
-      while (cursor < target) {
-        const rows = await readEvents(pool, owner, threadId, cursor);
-        if (!rows.length) return false;
-        for (const row of rows) if (await deliver(row)) return true;
-      }
-      return false;
-    }
-    // Takes rows from the hub after catching up to it from the database. True once the stream has ended; false
-    // when the subscription ended or the database and the hub disagree, so the database alone decides from here.
-    async function follow(feed: Feed) {
-      if (await readUntil(feed.from)) return true;
-      for (let row = await feed.next(); row; row = await feed.next()) {
-        if (row.cursor > cursor + 1 && await readUntil(row.cursor - 1)) return true;
-        if (row.cursor <= cursor) continue;
-        if (row.cursor !== cursor + 1) {
-          feed.abandon();
-          return false;
-        }
-        if (await deliver(row)) return true;
-      }
-      return false;
-    }
-    const feed = hubs?.attach(owner, threadId, cursor, stop.signal);
-    try {
-      if (feed && await follow(feed)) return;
-    } finally {
-      feed?.dispose();
-    }
+    // A hub's rows for as long as this observer can use one; after that, or without a hub, its own reads.
+    if (hubs) for await (const row of hubs.rows(owner, threadId, cursor, stop.signal)) if (await deliver(row)) return;
     while (!stop.signal.aborted) {
       const rows = await readEvents(pool, owner, threadId, cursor);
       for (const row of rows) if (await deliver(row)) return;
-      if (!rows.length) await delay(75, undefined, { signal: stop.signal });
+      if (!rows.length) await delay(readEventsIdleMs, undefined, { signal: stop.signal });
     }
   } catch {
     if (!stop.signal.aborted && !response.destroyed) {
@@ -231,11 +202,11 @@ function queryOf(url: URL, names: readonly string[]) {
  * where webhooks may be sent: HTTPS to public addresses unless the operator allows insecure targets.
  * `fanout` shares one database reader among the observers of each conversation; false restores one poll per
  * observer. It defaults to BIRBCREW_OBSERVER_FANOUT so the kill switch also reaches gateways that suites build
- * in process; an invalid value throws ObserverSettingsError. Bounds are for tests. */
+ * in process; an invalid value throws ObserverSettingsError. `fanoutBounds` are for tests. */
 export function createGateway(store: MemberStore, members: MemberClient, owners: Record<string, string>,
-  { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env) }:
-    { clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean | Partial<FanoutBounds> } = {}) {
-  const hubs = fanout === false ? undefined : new ObserverHubs(store.pool, fanout === true ? {} : fanout);
+  { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env), fanoutBounds }:
+    { clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean; fanoutBounds?: Partial<FanoutBounds> } = {}) {
+  const hubs = fanout ? new ObserverHubs(store.pool, fanoutBounds) : undefined;
   const integration = new IntegrationApi(store, members);
   const accounts = Object.entries(credentials.parse(owners)).map(([hash, actor]) => ({ digest: Buffer.from(hash, "hex"), actor }));
   // One database probe at a time, shared by concurrent health calls, so polling holds at most one probe connection.
@@ -491,8 +462,8 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     stopping = Promise.all([dispatcher.stop(), deliveries.stop()]).then(() => {});
   });
   // Settles once the close has ended both dispatchers' passes; await it before closing the pool.
-  // `fanout` reports the observer hubs, or undefined when every observer polls on its own.
-  return Object.assign(server, { stopped: () => stopping, fanout: () => hubs?.stats() });
+  // `observerStats` reports the observer hubs, or undefined when every observer polls on its own.
+  return Object.assign(server, { stopped: () => stopping, observerStats: () => hubs?.stats() });
 }
 
 const configSchema = z.strictObject({ tokenHashes: credentials, port: z.number().int().min(0).max(65535) });
