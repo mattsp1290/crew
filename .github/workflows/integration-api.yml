@@ -44,7 +44,7 @@ jobs:
         run: |
           mkdir -p "$BIRBCREW_PROOF_ARTIFACTS" .proof/bin
           printf 'fixture setup started\n' > "$BIRBCREW_PROOF_ARTIFACTS/setup-phase.txt"
-          node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
+          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
             npm ci
             npm ci --prefix clients --ignore-scripts --no-audit --no-fund
             npm run build
@@ -56,7 +56,7 @@ jobs:
           '
       - name: Run actual native fixture
         timeout-minutes: 21
-        run: node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node tests/proof/qualification-isolated-cancel.mts "$QUALIFICATION_MODE"
+        run: exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node tests/proof/qualification-isolated-cancel.mts "$QUALIFICATION_MODE"
       - name: Record tracked source identity after qualification
         if: ${{ always() }}
         timeout-minutes: 1
