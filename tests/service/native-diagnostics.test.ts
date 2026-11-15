@@ -8,8 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Pool } from "pg";
-import type { ThreadEvent } from "@openai/codex-sdk";
+import { Thread, type ThreadEvent } from "@openai/codex-sdk";
 import { errorSummary, forwardWarnings, redact, relayWarning, warn } from "../../src/service/diagnostics.ts";
+import { runCodexTurn } from "../../src/service/codex.ts";
 import { MemberStore } from "../../src/service/store.ts";
 
 const plantedJwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJwbGFudGVkIn0.cGxhbnRlZA";
@@ -278,3 +279,65 @@ export const profiles = new Map([[${JSON.stringify(profile)}, { accountId: ${JSO
     assert.deepEqual(await readdir(scratch), []);
   });
 }
+
+async function syntheticCodexFailure(t: TestContext, event: ThreadEvent) {
+  const stateDir = await mkdtemp(join(tmpdir(), "birb-diagnostics-adapter-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  t.mock.method(Thread.prototype, "runStreamed", async () => ({ events: (async function* () { yield event; })() }));
+  const text: string[] = [];
+  let failure: Error | undefined;
+  await assert.rejects(runCodexTurn({ threadId: randomUUID(), runId: randomUUID(), text: "hello", checkpoint: null,
+    signal: t.signal, onText: (delta) => { text.push(delta); } },
+  { ownerId: randomUUID(), memberId: randomUUID(), stateDir, model: "fixture", baseUrl: "http://127.0.0.1:1/closed" }),
+  (error) => {
+    assert.ok(error instanceof Error);
+    assert.equal(String(error), "Error: Codex native turn failed");
+    assert.equal(error.cause, undefined);
+    failure = error;
+    return true;
+  });
+  assert.deepEqual(text, []);
+  assert.ok(failure);
+  return failure;
+}
+
+test("a Codex failure retains only a bounded redacted prefix before the runner summarizes it", async (t) => {
+  const message = "Connection failed: " + "detail ".repeat(4) + plantedKey + " " + "later context ".repeat(2000);
+  const event = { type: "turn.failed", error: { message } } satisfies ThreadEvent;
+  const failure = await syntheticCodexFailure(t, event);
+  const reason: unknown = Reflect.get(failure, "reason");
+  assert.equal(typeof reason, "string");
+  assert.ok(typeof reason === "string" && reason.startsWith("Connection failed: ") && reason.length <= 65);
+  assert.ok(!JSON.stringify(failure).includes(plantedKey.slice(0, 16)), "retention never cuts a raw credential");
+  assert.ok(!JSON.stringify(failure).includes("later context"), "the adapter does not retain the full provider message");
+  assert.ok(Object.values(failure).every(value => value !== event && value !== event.error && value !== message));
+  assert.doesNotMatch(String(failure), /Connection failed|detail|sk-proj/);
+});
+
+test("malformed Codex messages omit diagnostic reasons without coercing provider values", async (t) => {
+  let coerced = false;
+  const event = { type: "error", message: "unused" } satisfies ThreadEvent;
+  Object.defineProperty(event, "message", { value: { toString() { coerced = true; throw new Error("must not coerce"); } } });
+  const failure = await syntheticCodexFailure(t, event);
+  assert.equal(coerced, false);
+  assert.equal(errorSummary(failure).reason, undefined);
+});
+
+test("an absent nested Codex failure message preserves the fixed failure", async (t) => {
+  const event = { type: "turn.failed", error: { message: "unused" } } satisfies ThreadEvent;
+  Object.defineProperty(event, "error", { value: null });
+  const failure = await syntheticCodexFailure(t, event);
+  assert.equal(errorSummary(failure).reason, undefined);
+});
+
+test("an unreadable Codex message cannot replace the original failure", async (t) => {
+  const event = { type: "error", get message(): string { throw new Error("provider read failed " + plantedKey); } } satisfies ThreadEvent;
+  const failure = await syntheticCodexFailure(t, event);
+  assert.equal(errorSummary(failure).reason, undefined);
+  assert.doesNotMatch(JSON.stringify(failure), /provider read failed|sk-proj/);
+});
+
+test("a Codex message with no usable redacted text omits the reason", async (t) => {
+  const failure = await syntheticCodexFailure(t, { type: "turn.failed", error: { message: " \n\u200b " } });
+  assert.equal(errorSummary(failure).reason, undefined);
+});
