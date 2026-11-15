@@ -37,6 +37,7 @@ export const integrationCapabilities = {
     filters: auditFilterNames, actorKinds,
   },
   routines: routineCapabilities,
+  approvalDetails: { version: 1, tools: ["record_work_item"] },
   standingGrants: {
     version: 1, choices: standingChoice.options, cardField: "standingChoices", stateField: "grantedCalls", tools: ["record_work_item"], policyVersion: 1,
     initiatorKinds: ["owner"], route: "/v1/members/{memberId}/grants", inactiveListLimit: grantListLimit,

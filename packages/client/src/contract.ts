@@ -107,6 +107,32 @@ export const decideSchema = requestIdentitySchema.extend({
   version: z.int(),
   choice: decisionChoice,
 });
+/** Complete proposal arguments. An absent note and an empty note remain distinct. */
+export const recordWorkItemArgumentsSchema = z.strictObject({
+  operation_id: uuid,
+  note: z.string().refine(
+    (text) => text.isWellFormed() && !text.includes("\0") && new TextEncoder().encode(text).length <= 4096,
+    { message: "Expected valid UTF-8 text of at most 4096 bytes" },
+  ).meta({ "x-maxUtf8Bytes": 4096, "x-forbidden": "NUL; unpaired surrogates" }).optional(),
+});
+export const approvalDetailIdentitySchema = decideSchema.omit({ choice: true });
+export const approvalDetailQuerySchema = approvalDetailIdentitySchema.pick({
+  memberId: true, invocationId: true, version: true,
+});
+/** Immutable proposal material, without a claim about current actionability. */
+export const ownerApprovalDetailSchema = approvalDetailIdentitySchema.extend({
+  apiVersion: z.literal("1"),
+  version: z.literal(1),
+  policyVersion: z.literal(1),
+  toolName: z.literal("record_work_item"),
+  arguments: recordWorkItemArgumentsSchema,
+}).refine((detail) => detail.arguments.operation_id === detail.requestId, {
+  message: "Proposal operation must match requestId",
+});
+export const approvalDetailsCapabilitySchema = z.looseObject({
+  version: z.int().positive(),
+  tools: z.array(z.string().min(1)),
+});
 export const decisionReceiptSchema = z.object({
   approvalId: z.uuid(),
   decision: decisionChoice,
@@ -235,6 +261,7 @@ export const capabilitiesSchema = z.looseObject({
     mode: z.literal("snapshot-and-bounded-tail"),
   }),
   initiatorKinds: z.array(z.string().min(1)),
+  approvalDetails: approvalDetailsCapabilitySchema.optional(),
 });
 const dependencyStatus = z.enum(["ready", "unavailable"]);
 export const healthSchema = z.object({
@@ -272,6 +299,9 @@ export type ServerRequestReceipt = z.infer<typeof serverRequestReceiptSchema>;
 export type InstructionsSummary = z.infer<typeof instructionsSummarySchema>;
 export type Member = z.infer<typeof memberSchema>;
 export type MemberPage = z.infer<typeof memberPageSchema>;
+export type RecordWorkItemArguments = z.infer<typeof recordWorkItemArgumentsSchema>;
+export type ApprovalDetailIdentity = z.infer<typeof approvalDetailIdentitySchema>;
+export type OwnerApprovalDetail = z.infer<typeof ownerApprovalDetailSchema>;
 export type Decide = z.input<typeof decideSchema>;
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
@@ -345,6 +375,14 @@ export const routes = {
     response: requestReceiptResponseSchema,
     statuses: [202],
     command: true,
+  },
+  approvalDetail: {
+    method: "GET",
+    path: "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}",
+    query: approvalDetailQuerySchema,
+    response: ownerApprovalDetailSchema,
+    statuses: [200],
+    command: false,
   },
   decide: {
     method: "POST",

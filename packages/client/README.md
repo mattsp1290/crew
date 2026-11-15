@@ -50,3 +50,11 @@ await observer.runAgent();
 The client requires Node 22 or newer, or a browser with fetch, Web Streams, TextEncoder, and String.prototype.isWellFormed.
 
 The server and client import the same public contract schemas. After `npm ci` or editing client sources, run `npm run build:client` before starting the server. Builds clear old outputs. From the repository root, run `npm run openapi` to generate the document and `npm run check:openapi` to check freshness directly against source. `npm run verify:client` packs the artifact and tests clean Node 22.23.3 and 24.22.3 consumers, browser types and bundling. Set `CREW_NODE22` and `CREW_NODE24` to those binaries. Full native service qualification remains `npm run test:api:service`, after `scripts/build-native` and the existing service prerequisites.
+
+`approvalDetail({ conversationId, memberId, requestId, invocationId, approvalId, version })` reads the complete immutable `record_work_item` proposal for the authenticated owner. Use it only when capabilities advertise `approvalDetails.version === 1` and include `record_work_item` in `tools`. An absent capability or unknown version means this feature is unsupported. This capability is independent of standing grants.
+
+The response includes the exact proposed `arguments`, policy version and every requested identity. The client validates the entire identity and requires `arguments.operation_id === requestId`. The optional note preserves whitespace, Unicode and the difference between absent and empty, with a 4096-byte UTF-8 limit, no NUL and no unpaired surrogates. The response excludes native call IDs and credentials. Passive observation, events and audit previews retain their redaction.
+
+The documented GET route is `/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}` with required `memberId`, `invocationId` and integer `version` query parameters. Unknown or repeated parameters are rejected. Foreign owners, mismatched identities and unsupported tools return the same bounded `not_found` response. All responses use `Cache-Control: no-store`.
+
+Details remain readable after settlement. Reading them does not assert that a proposal is pending or actionable, reserve an approval, extend a deadline, create a grant or execute a tool. The existing decision endpoint remains the authority for whether a choice can execute.
