@@ -1,0 +1,479 @@
+diff --git a/.github/workflows/integration-api.yml b/.github/workflows/integration-api.yml
+index 80adcb6..993a344 100644
+--- a/.github/workflows/integration-api.yml
++++ b/.github/workflows/integration-api.yml
+@@ -20,87 +20,16 @@ on:
+ permissions:
+   contents: read
+ jobs:
+-  portable-client:
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 10
+-    steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
+-        with:
+-          node-version: '22.23.3'
+-          cache: npm
+-      - run: npm ci
+-      - run: echo "CREW_NODE22=$(command -v node)" >> "$GITHUB_ENV"
+-      - uses: actions/setup-node@v4
+-        with:
+-          node-version: '24.22.3'
+-      - run: echo "CREW_NODE24=$(command -v node)" >> "$GITHUB_ENV"
+-      - run: '"$CREW_NODE22" scripts/verify-client-package.mjs'
+-  consumer-contract:
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 15
+-    services:
+-      postgres:
+-        image: postgres:17
+-        env:
+-          POSTGRES_USER: birbcrew
+-          POSTGRES_PASSWORD: fixture-only
+-          POSTGRES_DB: integration_test
+-        ports:
+-          - 5432:5432
+-        options: >-
+-          --health-cmd pg_isready
+-          --health-interval 5s
+-          --health-timeout 5s
+-          --health-retries 10
+-    env:
+-      BIRBCREW_TEST_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/integration_test
+-    steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
+-        with:
+-          node-version: '24.22.3'
+-          cache: npm
+-      - run: npm ci
+-      - run: npm run build
+-      - run: npm run test:client
+-      - run: npm run check:openapi
+-      - run: npm run test:api
+-      - run: npm run test:observers
+-      - run: npm run test:audit
+-      - run: npm run test:routines
+-      - run: npm run test:memories
+-      - run: npm run test:instructions
+-      - run: npm run test:packs
+-      - run: npm run test:grants
+-      - run: npm run test:handoffs
+-      - run: npm run test:expiry
+-      - run: npm run test:usage
+-      - run: npm run test:usage:capture
+-      - run: npm run test:webhooks
+-      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts
+-      - run: node --test tests/service/approvals.test.ts tests/service/codex-calls.test.ts tests/service/codex-registration.test.ts
+-      - name: Turn failure diagnostics
+-        run: node --test tests/service/native-diagnostics.test.ts
+-      - name: Install pinned Temporal CLI
+-        run: |
+-          mkdir -p .proof/bin
+-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
+-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
+-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
+-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
+-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+-      - run: npm run test:child-targets
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+   actual-service:
++    env:
++      CREW_QUALIFICATION_MODE: unknown-acquisition
+     runs-on: ubuntu-24.04
+     timeout-minutes: 30
+     steps:
+       - name: Prepare proof diagnostic directory
+         run: |
+-          mkdir -p "$RUNNER_TEMP/crew-service-proofs"
+-          echo "BIRBCREW_PROOF_ARTIFACTS=$RUNNER_TEMP/crew-service-proofs" >> "$GITHUB_ENV"
++          mkdir -p "$RUNNER_TEMP/crew-unknown-acquisition"
++          echo "BIRBCREW_PROOF_ARTIFACTS=$RUNNER_TEMP/crew-unknown-acquisition" >> "$GITHUB_ENV"
+       - uses: actions/checkout@v4
+       - uses: actions/setup-node@v4
+         with:
+@@ -119,82 +48,53 @@ jobs:
+           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+       - name: Proof lifecycle failure contracts
+         id: lifecycle_contracts
+-        run: node --test tests/proof/member-services.test.mts
++        run: node --test --test-name-pattern='^remote qualification unknown acquisition boundaries$' tests/proof/member-services.test.mts
+         env:
+           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+       - name: Recover lifecycle contract fixtures
++        id: lifecycle_recovery
+         if: ${{ always() }}
+         timeout-minutes: 1
+-        run: node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
++        shell: bash
++        run: |
++          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification"
++          set +e
++          node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
++          status=$?
++          printf '%s\n' "$status" > "$BIRBCREW_PROOF_ARTIFACTS/qualification/recovery-exit.txt"
++          exit "$status"
+         env:
+           CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
+       - name: Inspect lifecycle contract fixtures
++        id: lifecycle_inspection
+         if: ${{ always() }}
+         timeout-minutes: 1
+-        run: node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+-        env:
+-          CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
+-      - name: test:api:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/api.stdout.log" npm run test:api:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:temporal:tls
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:observers:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/observers.stdout.log" npm run test:observers:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:routines:service
+         shell: bash
+         run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/routines.stdout.log" npm run test:routines:service
++          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification"
++          set +e
++          node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
++          status=$?
++          printf '%s\n' "$status" > "$BIRBCREW_PROOF_ARTIFACTS/qualification/inspection-exit.txt"
++          exit "$status"
+         env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:memories:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/memories.stdout.log" npm run test:memories:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:instructions:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/instructions.stdout.log" npm run test:instructions:service
++          CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
++      - name: Record qualification evidence
++        if: ${{ always() }}
++        timeout-minutes: 1
+         env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:handoffs:service
+-        shell: bash
++          QUALIFICATION_CONTRACTS: ${{ steps.lifecycle_contracts.conclusion }}
++          QUALIFICATION_RECOVERY: ${{ steps.lifecycle_recovery.conclusion }}
++          QUALIFICATION_INSPECTION: ${{ steps.lifecycle_inspection.conclusion }}
+         run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/handoffs.stdout.log" npm run test:handoffs:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
++          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification"
++          cp tests/proof/qualification-inputs.json tests/proof/qualification-instrumentation.patch "$BIRBCREW_PROOF_ARTIFACTS/qualification/"
++          node tests/proof/qualification-unknown.mts --observe "$BIRBCREW_PROOF_ARTIFACTS"
+       - name: Retain actual-service failure diagnostics
+-        if: ${{ failure() || cancelled() }}
++        if: ${{ always() }}
+         uses: actions/upload-artifact@v4
+         with:
+-          name: actual-service-${{ github.run_id }}-${{ github.run_attempt }}
+-          path: ${{ runner.temp }}/crew-service-proofs
++          name: final-unknown-acquisition-${{ github.run_id }}-${{ github.run_attempt }}
++          path: ${{ runner.temp }}/crew-unknown-acquisition
+           if-no-files-found: warn
+           retention-days: 7
+diff --git a/tests/proof/member-services.mts b/tests/proof/member-services.mts
+index 20675eb..40ce485 100644
+--- a/tests/proof/member-services.mts
++++ b/tests/proof/member-services.mts
+@@ -288,6 +288,28 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
+     allocation = boundedCommand("docker", ["run", "--rm", "--name", db, "--label", "birb-proof-owner=" + db, "-d", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=birbcrew_ts",
+       "-p", "127.0.0.1::5432", "postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"],
+       now() + 30_000, { env: { ...process.env, POSTGRES_PASSWORD: password }, signal: controller.signal });
++    if (process.env.CREW_QUALIFICATION_MODE === "unknown-acquisition") {
++      void allocation.catch(() => {});
++
++      const { createHash } = await import("node:crypto");
++      const { dirname } = await import("node:path");
++      const contractRoot = process.env.BIRBCREW_CONTRACT_ROOT;
++      assert.ok(contractRoot, "Qualification contract root missing");
++      const qualification = join(dirname(contractRoot), "qualification");
++      mkdirSync(qualification, { recursive: true });
++      void allocation.then(result => atomicReceipt(join(qualification, "docker-allocation-result.json"), { settledUTC: new Date().toISOString(), kind: "fulfilled", result }),
++        error => atomicReceipt(join(qualification, "docker-allocation-result.json"), { settledUTC: new Date().toISOString(), kind: "rejected", error: describe(error) })).catch(error => console.error("Qualification allocation observation failed", error));
++      const ownershipText = regularFileSync(join(artifacts, "ownership.json"));
++      const ownerText = regularFileSync(join(artifacts, "owner.json"));
++      const contractText = regularFileSync(join(contractRoot, "contract-run.json"));
++      atomicReceipt(join(qualification, "pending-docker-started.json"), { directory: contractRoot, artifacts, container: db,
++        fixtureOwner: fixtureOwnerSchema.parse(JSON.parse(ownerText)).fixtureOwner,
++        worker: contractRunSchema.parse(JSON.parse(contractText)).worker,
++        ownershipSHA256: createHash("sha256").update(ownershipText).digest("hex"),
++        ownerSHA256: createHash("sha256").update(ownerText).digest("hex"), readyUTC: new Date().toISOString() });
++      console.log("QUALIFICATION_PENDING_DOCKER_STARTED");
++      await new Promise<void>((_, reject) => setTimeout(() => reject(new Error("qualification cancellation was not delivered")), 60_000));
++    }
+     const allocated = await allocation;
+     assert.ok(allocated.stdout.kind === "complete", "Docker allocation stdout was truncated");
+     allocationState = { kind: "settled", container: z.string().regex(/^[a-f0-9]{64}$/).parse(allocated.stdout.text.trim()) };
+diff --git a/tests/proof/member-services.test.mts b/tests/proof/member-services.test.mts
+index f3d8e47..57ab8f0 100644
+--- a/tests/proof/member-services.test.mts
++++ b/tests/proof/member-services.test.mts
+@@ -678,6 +678,13 @@ async function fixtureNode(directory: string, args: string[]) {
+   let recovery: Awaited<ReturnType<typeof recoverFixture>>;
+   const run = contractRunSchema.parse(JSON.parse(await regularFile(join(directory, "contract-run.json"))));
+   atomicReceipt(join(directory, "contract-run.json"), { ...run, launch: { kind: "requested" } });
++  if (process.env.CREW_QUALIFICATION_MODE === "unknown-acquisition" && args.some(arg => arg.includes("qualification-requested-before-spawn"))) {
++    const qualification = join(dirname(directory), "qualification");
++    await mkdir(qualification, { recursive: true });
++    atomicReceipt(join(qualification, "requested-before-spawn.json"), { directory, worker: run.worker, readyUTC: new Date().toISOString() });
++    console.log("QUALIFICATION_REQUESTED_BEFORE_SPAWN_READY");
++    await new Promise<void>((_, reject) => setTimeout(() => reject(new Error("qualification cancellation was not delivered")), 60_000));
++  }
+   try { command = await node(args, { ...process.env, BIRBCREW_PROOF_ARTIFACTS: directory, BIRBCREW_CONTRACT_ROOT: directory }, 100_000); }
+   catch (error) { failure = { error }; }
+   finally { recovery = await recoverFixture(directory, command?.processes ?? [],
+@@ -878,3 +885,24 @@ for (const mode of ["catchable", "forced"] as const) {
+     }
+   });
+ }
++
++test("remote qualification unknown acquisition boundaries", { timeout: 120_000 }, async t => {
++  assert.equal(process.env.CREW_QUALIFICATION_MODE, "unknown-acquisition");
++  const requestedDirectory = await contractDirectory(t), pendingDirectory = await contractDirectory(t);
++  const requested = fixtureNode(requestedDirectory, ["--input-type=module", "-e", "throw new Error('qualification-requested-before-spawn')"]);
++  void requested.catch(() => {});
++  const pending = fixtureNode(pendingDirectory, ["--input-type=module", "-e",
++    "import {withServices} from './tests/proof/member-services.mts'; await withServices({label:'contract'},async()=>{throw new Error('qualification pending callback unexpectedly reached')});"]);
++  void pending.catch(() => {});
++  const qualification = join(dirname(requestedDirectory), "qualification");
++  await until(async () => {
++    try {
++      await Promise.all([readFile(join(qualification, "requested-before-spawn.json"), "utf8"), readFile(join(qualification, "pending-docker-started.json"), "utf8")]);
++      return true;
++    } catch (error) { if (missingProcess(error)) return undefined; throw error; }
++  }, "qualification acquisition boundaries", 30_000);
++  atomicReceipt(join(qualification, "unknown-acquisition-ready.json"), { requestedDirectory, pendingDirectory, workerPID: process.pid, readyUTC: new Date().toISOString() });
++  console.log("QUALIFICATION_UNKNOWN_ACQUISITION_READY");
++  await Promise.all([requested, pending]);
++  throw new Error("qualification cancellation was not delivered");
++});
+diff --git a/tests/proof/qualification-unknown.mts b/tests/proof/qualification-unknown.mts
+new file mode 100644
+--- /dev/null
++++ b/tests/proof/qualification-unknown.mts
+@@ -0,0 +1,189 @@
++import assert from "node:assert/strict";
++import { createHash } from "node:crypto";
++import { lstat, readFile, readdir } from "node:fs/promises";
++
++import { basename, dirname, isAbsolute, join, resolve } from "node:path";
++import { z } from "zod";
++import { before, boundedCommand, describe, now } from "./member-service-diagnostics.mts";
++import { atomicReceipt, contractRecoveryReportSchema, contractRunSchema, fixtureOwnerSchema, ownershipSchema, regularFile, missingProcess } from "./member-service-recovery.mts";
++import { positiveGroupProcessSchema, processKey } from "./member-service-processes.mts";
++const root = process.argv[3];
++assert.ok(root && isAbsolute(root), "Absolute artifact root required");
++const qualification = join(root, "qualification"), deadline = now() + 20_000;
++const watchdog = setTimeout(() => { console.error("Qualification observation deadline exceeded"); process.exit(1); }, 21_000);
++const hash = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
++const json = async (path: string): Promise<unknown> => JSON.parse(await regularFile(path));
++const utc = z.string().datetime(), sha = z.string().regex(/^[a-f0-9]{64}$/);
++const requestedSchema = z.object({ directory: z.string(), worker: positiveGroupProcessSchema, readyUTC: utc }).strict();
++const pendingSchema = z.object({ directory: z.string(), artifacts: z.string(), container: z.string(), fixtureOwner: positiveGroupProcessSchema,
++  worker: positiveGroupProcessSchema, ownershipSHA256: sha, ownerSHA256: sha, readyUTC: utc }).strict();
++const readySchema = z.object({ requestedDirectory: z.string(), pendingDirectory: z.string(), workerPID: z.number().int().positive(), readyUTC: utc }).strict();
++const commandSchema = z.object({ pid: z.number().int().positive(), diagnostics: z.string(), received: z.number(), retained: z.number(), stdout: z.object({ kind: z.literal("complete"), text: z.string(), received: z.number(), retained: z.number() }) });
++const allocationResultSchema = z.object({ settledUTC: utc, kind: z.literal("fulfilled"), result: commandSchema });
++const status = z.discriminatedUnion("status", [z.object({ status: z.literal("absent") }), z.object({ status: z.literal("present"), evidence: z.string() }), z.object({ status: z.literal("unknown"), reason: z.string() })]);
++const inspectionSchema = z.object({ version: z.literal(1), kind: z.literal("contract-inspection"), conclusion: z.string(), started: utc,
++  completed: z.boolean(), failures: z.array(z.string()), observations: z.array(z.object({ observedAt: utc, failures: z.array(z.string()), roots: z.array(z.object({ directory: z.string(), worker: status, owner: status, processes: status, container: status, directoryResource: status, failures: z.array(z.string()) })) })) });
++async function work() {
++  if (process.argv[2] === "--observe") {
++    atomicReceipt(join(qualification, "step-conclusions.json"), { workflowSHA: process.env.GITHUB_SHA,
++      contracts: process.env.QUALIFICATION_CONTRACTS, recovery: process.env.QUALIFICATION_RECOVERY, inspection: process.env.QUALIFICATION_INSPECTION });
++    const manifest = z.object({ preparedSHA256: z.record(z.string(), sha) }).parse(await json(join(qualification, "qualification-inputs.json")));
++    for (const [path, expected] of Object.entries(manifest.preparedSHA256)) {
++      assert.ok(!isAbsolute(path) && !path.split("/").includes(".."));
++      const metadata = await lstat(resolve(path));
++      assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.size <= 1_048_576, "Source input must be a bounded regular file");
++      assert.equal(hash(await readFile(resolve(path))), expected, path + " changed from prepared source");
++    }
++    atomicReceipt(join(qualification, "source-verification.json"), { passed: true, inputsSHA256: hash(await regularFile(join(qualification, "qualification-inputs.json"))) });
++    const marker = pendingSchema.parse(await json(join(qualification, "pending-docker-started.json")));
++    const captured = allocationResultSchema.parse(await json(join(qualification, "docker-allocation-result.json")));
++    const allocatedID = captured.result.stdout.text.trim();
++    assert.match(allocatedID, /^[a-f0-9]{64}$/);
++    const byID = await boundedCommand("docker", ["ps", "--no-trunc", "-aq", "--filter", "id=" + allocatedID], Math.min(deadline, now() + 2_000));
++    assert.ok(byID.stdout.kind === "complete");
++    assert.ok(byID.stdout.text.trim() === "" || byID.stdout.text.trim() === allocatedID);
++    const result = await boundedCommand("docker", ["ps", "--no-trunc", "-aq", "--filter", "name=^/" + marker.container + "$"], Math.min(deadline, now() + 2_000));
++    assert.ok(result.stdout.kind === "complete");
++    const ids = result.stdout.text.trim().split(/\s+/).filter(Boolean);
++    assert.ok(ids.length <= 1, "Exact Docker name has multiple matches");
++    assert.deepEqual(ids, byID.stdout.text.trim() ? [allocatedID] : []);
++    const inspections = [];
++    for (const id of ids) {
++      assert.match(id, /^[a-f0-9]{64}$/);
++      const observed = await boundedCommand("docker", ["inspect", "--format", '{{.Id}} {{.Name}} {{index .Config.Labels "birb-proof-owner"}}', id], Math.min(deadline, now() + 2_000));
++      assert.ok(observed.stdout.kind === "complete");
++      assert.equal(observed.stdout.text.trim(), id + " /" + marker.container + " " + marker.container);
++      inspections.push({ id, result: observed });
++    }
++    const ownership = ownershipSchema.parse(await json(join(marker.artifacts, "ownership.json")));
++    let directory: { observed: "present" | "absent"; path: string };
++    try {
++      const metadata = await lstat(ownership.directory);
++      assert.ok(metadata.isDirectory() && !metadata.isSymbolicLink());
++      assert.equal(await regularFile(join(ownership.directory, ".fixture-owner")), marker.container);
++      directory = { observed: "present", path: ownership.directory };
++    } catch (error) { if (!missingProcess(error)) throw error; directory = { observed: "absent", path: ownership.directory }; }
++    atomicReceipt(join(qualification, "docker-after-production.json"), { observedUTC: new Date().toISOString(), container: marker.container, allocatedID, byID, result, inspections, directory });
++    return;
++  }
++  assert.equal(process.argv[2], "--assert");
++  const cancelPath = process.argv[4];
++  assert.ok(cancelPath, "Actual cancellation request evidence required");
++  const cancel = z.object({ requestUTC: utc, workflowSHA: z.string().regex(/^[a-f0-9]{40}$/), inputsSHA256: sha }).strict().parse(await json(resolve(cancelPath)));
++  const manifestText = await regularFile(join(qualification, "qualification-inputs.json"));
++  assert.equal(hash(manifestText), cancel.inputsSHA256);
++  const manifest = z.object({ candidate: z.literal("8f8700846937c501c8ef48ed3d7a7d307e43ab9b"), patchSHA256: sha }).parse(JSON.parse(manifestText));
++  assert.equal(hash(await regularFile(join(qualification, "qualification-instrumentation.patch"))), manifest.patchSHA256);
++  assert.deepEqual(await json(join(qualification, "source-verification.json")), { passed: true, inputsSHA256: cancel.inputsSHA256 });
++  const steps = z.object({ workflowSHA: z.string(), contracts: z.literal("cancelled"), recovery: z.literal("failure"), inspection: z.literal("failure") }).strict().parse(await json(join(qualification, "step-conclusions.json")));
++  assert.equal(steps.workflowSHA, cancel.workflowSHA);
++  for (const name of ["recovery", "inspection"]) assert.equal((await regularFile(join(qualification, name + "-exit.txt"))).trim(), "1");
++  const requested = requestedSchema.parse(await json(join(qualification, "requested-before-spawn.json")));
++  const pending = pendingSchema.parse(await json(join(qualification, "pending-docker-started.json")));
++  const ready = readySchema.parse(await json(join(qualification, "unknown-acquisition-ready.json")));
++  for (const marker of [requested, pending, ready]) {
++    assert.ok(Date.parse(marker.readyUTC) < Date.parse(cancel.requestUTC), "Cancellation preceded readiness");
++    assert.ok(Date.parse(cancel.requestUTC) - Date.parse(marker.readyUTC) < 60_000, "Cancellation missed qualification hold");
++  }
++  assert.equal(ready.requestedDirectory, requested.directory);
++  assert.equal(ready.pendingDirectory, pending.directory);
++  assert.equal(dirname(pending.directory), dirname(requested.directory));
++  assert.notEqual(pending.directory, requested.directory);
++  assert.equal(processKey(pending.worker), processKey(requested.worker));
++  assert.equal(ready.workerPID, requested.worker.pid);
++  assert.equal(pending.fixtureOwner.parent, requested.worker.pid);
++  assert.equal(pending.fixtureOwner.pid, pending.fixtureOwner.group);
++  const local = (directory: string) => { assert.match(basename(directory), /^crew-contract-[a-zA-Z0-9]+$/); return join(root, basename(directory)); };
++  assert.deepEqual((await readdir(root)).filter(name => name.startsWith("crew-contract-")).sort(), [basename(requested.directory), basename(pending.directory)].sort());
++  for (const marker of [requested, pending]) {
++    const run = contractRunSchema.parse(await json(join(local(marker.directory), "contract-run.json")));
++    assert.equal(run.launch.kind, "requested");
++    assert.deepEqual(run.worker, marker.worker);
++  }
++  assert.deepEqual((await readdir(local(requested.directory))).filter(name => name !== "recovery.json"), ["contract-run.json"]);
++  assert.equal(dirname(pending.artifacts), pending.directory);
++  assert.match(basename(pending.artifacts), /^contract-[a-zA-Z0-9]+$/);
++  const artifacts = join(local(pending.directory), basename(pending.artifacts));
++  const ownerText = await regularFile(join(artifacts, "owner.json")), ownershipText = await regularFile(join(artifacts, "ownership.json"));
++  assert.equal(hash(ownerText), pending.ownerSHA256);
++  assert.equal(hash(ownershipText), pending.ownershipSHA256);
++  assert.deepEqual(fixtureOwnerSchema.parse(JSON.parse(ownerText)).fixtureOwner, pending.fixtureOwner);
++  const ownership = ownershipSchema.parse(JSON.parse(ownershipText));
++  assert.equal(ownership.allocation.kind, "pending");
++  assert.equal(ownership.container, pending.container);
++  assert.equal(ownership.pendingProcessAcquisitions, 0);
++  assert.deepEqual(ownership.processes, []);
++  const captured = allocationResultSchema.parse(await json(join(qualification, "docker-allocation-result.json")));
++  assert.match(captured.result.stdout.text.trim(), /^[a-f0-9]{64}$/);
++  const report = contractRecoveryReportSchema.parse(await json(join(root, "ci-recovery-0001.json")));
++  assert.equal(report.completed, true);
++  assert.equal(report.conclusion, steps.contracts);
++  assert.deepEqual(report.failures, []);
++  assert.equal(report.roots.length, 2);
++  for (const marker of [requested, pending]) {
++    const found = report.roots.find(item => item.directory === marker.directory);
++    assert.ok(found);
++    assert.equal(found.worker, "absent");
++    assert.deepEqual(found.run.worker, marker.worker);
++    assert.equal(found.run.launch.kind, "requested");
++    assert.equal(found.recovery.container, "unknown");
++    assert.equal(found.recovery.directory, "unknown");
++    for (const original of found.originals.before) if (original.kind === "available") assert.ok(found.originals.after.some(after => after.kind === "available" && after.path === original.path && after.sha256 === original.sha256), "Original receipt changed during recovery");
++    if (marker === requested) {
++      assert.equal(found.fixture.kind, "unknown");
++      assert.equal(found.owner, "unknown");
++      assert.equal(found.recovery.processes, "unknown");
++      assert.match(JSON.stringify(found.failures), /Expected exactly one fixture ownership entry/);
++    } else {
++      assert.ok(found.fixture.kind === "known");
++      assert.equal(found.fixture.artifacts, pending.artifacts);
++      assert.deepEqual(found.fixture.owner.fixtureOwner, pending.fixtureOwner);
++      assert.equal(found.owner, "absent");
++      assert.equal(found.recovery.processes, "absent");
++      assert.ok(found.observed.some(proc => processKey(proc) === processKey(pending.fixtureOwner)));
++      assert.match(JSON.stringify(found.recovery.failures), /Docker allocation pending; eventual absence unknown/);
++      assert.match(JSON.stringify(found.recovery.failures), /Private directory removal requires settled Docker acquisition/);
++    }
++  }
++  const inspection = inspectionSchema.parse(await json(join(root, "ci-inspection-0001.json")));
++  assert.equal(inspection.completed, true);
++  assert.equal(inspection.conclusion, steps.contracts);
++  assert.deepEqual(inspection.failures, []);
++  assert.equal(inspection.observations.length, 2);
++  for (const sample of inspection.observations) {
++    assert.deepEqual(sample.failures, []);
++    assert.equal(sample.roots.length, 2);
++    for (const marker of [requested, pending]) {
++      const found = sample.roots.find(item => item.directory === marker.directory);
++      assert.ok(found);
++      assert.equal(found.container.status, "unknown");
++      assert.equal(found.directoryResource.status, "unknown");
++      if (marker === requested) {
++        assert.equal(found.owner.status, "unknown");
++        assert.equal(found.processes.status, "unknown");
++        assert.match(JSON.stringify(found.failures), /Expected exactly one fixture ownership entry/);
++      } else {
++        assert.equal(found.owner.status, "absent");
++        assert.equal(found.processes.status, "absent");
++        assert.deepEqual(found.failures, []);
++        assert.ok(found.container.status === "unknown" && found.directoryResource.status === "unknown");
++        assert.match(found.container.reason, /Docker allocation pending; eventual absence unknown/);
++        assert.match(found.directoryResource.reason, /Docker allocation pending; directory lifetime unknown/);
++      }
++    }
++  }
++  const observation = z.object({ observedUTC: utc, container: z.string(), allocatedID: z.string(), byID: commandSchema, result: commandSchema,
++    inspections: z.array(z.object({ id: z.string(), result: commandSchema })), directory: z.object({ observed: z.enum(["present", "absent"]), path: z.string() }) }).parse(await json(join(qualification, "docker-after-production.json")));
++  assert.equal(observation.container, pending.container);
++  assert.equal(observation.allocatedID, captured.result.stdout.text.trim());
++  assert.equal(observation.directory.path, ownership.directory);
++  assert.equal(observation.directory.observed, "present", "Pending acquisition private directory must survive production cleanup");
++  const ids = observation.result.stdout.text.trim().split(/\s+/).filter(Boolean);
++  assert.deepEqual(ids, observation.byID.stdout.text.trim() ? [observation.allocatedID] : []);
++  assert.deepEqual(observation.inspections.map(item => item.id), ids);
++  for (const item of observation.inspections) assert.equal(item.result.stdout.text.trim(), item.id + " /" + pending.container + " " + pending.container);
++  atomicReceipt(join(qualification, "assertions.json"), { passed: true, completedUTC: new Date().toISOString(), cancel, steps, ownershipSHA256: hash(ownershipText), scope: "unknown-acquisition supplemental assertions; pending acquisition remains historically unknown" });
++}
++try { await before(work(), deadline, "Qualification observations"); }
++catch (error) { atomicReceipt(join(qualification, process.argv[2] === "--observe" ? "observation-error.json" : "assertions.json"), { passed: false, error: describe(error) }); throw error; }
++finally { clearTimeout(watchdog); }

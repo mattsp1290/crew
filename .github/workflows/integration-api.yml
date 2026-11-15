@@ -20,87 +20,16 @@ on:
 permissions:
   contents: read
 jobs:
-  portable-client:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.3'
-          cache: npm
-      - run: npm ci
-      - run: echo "CREW_NODE22=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.3'
-      - run: echo "CREW_NODE24=$(command -v node)" >> "$GITHUB_ENV"
-      - run: '"$CREW_NODE22" scripts/verify-client-package.mjs'
-  consumer-contract:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: birbcrew
-          POSTGRES_PASSWORD: fixture-only
-          POSTGRES_DB: integration_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      BIRBCREW_TEST_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/integration_test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.3'
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npm run test:client
-      - run: npm run check:openapi
-      - run: npm run test:api
-      - run: npm run test:observers
-      - run: npm run test:audit
-      - run: npm run test:routines
-      - run: npm run test:memories
-      - run: npm run test:instructions
-      - run: npm run test:packs
-      - run: npm run test:grants
-      - run: npm run test:handoffs
-      - run: npm run test:expiry
-      - run: npm run test:usage
-      - run: npm run test:usage:capture
-      - run: npm run test:webhooks
-      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts
-      - run: node --test tests/service/approvals.test.ts tests/service/codex-calls.test.ts tests/service/codex-registration.test.ts
-      - name: Turn failure diagnostics
-        run: node --test tests/service/native-diagnostics.test.ts
-      - name: Install pinned Temporal CLI
-        run: |
-          mkdir -p .proof/bin
-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
-      - run: npm run test:child-targets
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
   actual-service:
+    env:
+      CREW_QUALIFICATION_MODE: unknown-acquisition
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Prepare proof diagnostic directory
         run: |
-          mkdir -p "$RUNNER_TEMP/crew-service-proofs"
-          echo "BIRBCREW_PROOF_ARTIFACTS=$RUNNER_TEMP/crew-service-proofs" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/crew-unknown-acquisition"
+          echo "BIRBCREW_PROOF_ARTIFACTS=$RUNNER_TEMP/crew-unknown-acquisition" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -119,82 +48,53 @@ jobs:
           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
       - name: Proof lifecycle failure contracts
         id: lifecycle_contracts
-        run: node --test tests/proof/member-services.test.mts
+        run: node --test --test-name-pattern='^remote qualification unknown acquisition boundaries$' tests/proof/member-services.test.mts
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: Recover lifecycle contract fixtures
+        id: lifecycle_recovery
         if: ${{ always() }}
         timeout-minutes: 1
-        run: node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+        shell: bash
+        run: |
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification"
+          set +e
+          node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+          status=$?
+          printf '%s\n' "$status" > "$BIRBCREW_PROOF_ARTIFACTS/qualification/recovery-exit.txt"
+          exit "$status"
         env:
           CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
       - name: Inspect lifecycle contract fixtures
+        id: lifecycle_inspection
         if: ${{ always() }}
         timeout-minutes: 1
-        run: node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+        shell: bash
+        run: |
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification"
+          set +e
+          node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+          status=$?
+          printf '%s\n' "$status" > "$BIRBCREW_PROOF_ARTIFACTS/qualification/inspection-exit.txt"
+          exit "$status"
         env:
           CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
-      - name: test:api:service
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/api.stdout.log" npm run test:api:service
+      - name: Record qualification evidence
+        if: ${{ always() }}
+        timeout-minutes: 1
         env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: test:temporal:tls
-        shell: bash
+          QUALIFICATION_CONTRACTS: ${{ steps.lifecycle_contracts.conclusion }}
+          QUALIFICATION_RECOVERY: ${{ steps.lifecycle_recovery.conclusion }}
+          QUALIFICATION_INSPECTION: ${{ steps.lifecycle_inspection.conclusion }}
         run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: test:observers:service
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/observers.stdout.log" npm run test:observers:service
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: test:routines:service
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/routines.stdout.log" npm run test:routines:service
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: test:memories:service
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/memories.stdout.log" npm run test:memories:service
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: test:instructions:service
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/instructions.stdout.log" npm run test:instructions:service
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: test:handoffs:service
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/handoffs.stdout.log" npm run test:handoffs:service
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification"
+          cp tests/proof/qualification-inputs.json tests/proof/qualification-instrumentation.patch "$BIRBCREW_PROOF_ARTIFACTS/qualification/"
+          node tests/proof/qualification-unknown.mts --observe "$BIRBCREW_PROOF_ARTIFACTS"
       - name: Retain actual-service failure diagnostics
-        if: ${{ failure() || cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: actual-service-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/crew-service-proofs
+          name: final-unknown-acquisition-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/crew-unknown-acquisition
           if-no-files-found: warn
           retention-days: 7
