@@ -9,9 +9,7 @@ import { createServer } from "node:tls";
 import { Connection } from "@temporalio/client";
 import { temporalConnectionOptions, temporalSettings } from "../../src/service/temporal-config.ts";
 import { run, withServices, until } from "./member-services.mts";
-import { before as boundedWait, now } from "./member-service-diagnostics.mts";
-
-type Outcome = { kind: "passed" } | { kind: "failed"; error: unknown };
+import { before as boundedWait, now, withCleanup } from "./member-service-diagnostics.mts";
 
 // Temporal's development server has no TLS listener, so a TLS terminator that requires a client
 // certificate from the proof CA is the only route from the gateway, worker and SDK children.
@@ -52,8 +50,7 @@ await withServices({ label: "temporal-tls" }, async s => {
     socket.on("error", () => upstream.destroy());
     upstream.on("error", () => socket.destroy());
   });
-  let outcome: Outcome = { kind: "passed" };
-  try {
+  await withCleanup("TLS terminator cleanup also failed", async () => {
     terminator.on("connection", socket => {
       sockets.add(socket);
       socket.once("close", () => sockets.delete(socket));
@@ -78,15 +75,11 @@ await withServices({ label: "temporal-tls" }, async s => {
     await assert.rejects(Connection.connect({ ...await temporalConnectionOptions(temporalSettings({ ...env, BIRBCREW_TEMPORAL_TLS_SERVER_NAME: "wrong.crew.test" })),
     connectTimeout }), "server name override is used for verification");
     const direct = await Connection.connect({ ...options, connectTimeout });
-    let described: Outcome = { kind: "passed" };
-    try { await direct.workflowService.describeNamespace({ namespace }); }
-    catch (error) { described = { kind: "failed", error }; }
-    try { await direct.close(); }
-    catch (error) {
-      if (described.kind === "passed") throw error;
-      console.error("TLS direct connection cleanup also failed", error);
-    }
-    if (described.kind === "failed") throw described.error;
+    await withCleanup(
+      "TLS direct connection cleanup also failed",
+      () => direct.workflowService.describeNamespace({ namespace }),
+      () => direct.close(),
+    );
     console.log("TLS endpoint refused plaintext, a missing client certificate and a wrong server name; configured mTLS connected");
 
     const absent = "crew-missing-" + randomUUID().slice(0, 8);
@@ -97,20 +90,14 @@ await withServices({ label: "temporal-tls" }, async s => {
     const stderr = missing.stderr.toArray().then((chunks) => chunks.join(""));
     void stderr.catch(() => {});
     const deadline = setTimeout(() => missing.kill("SIGKILL"), 30_000);
-    let missingOutcome: Outcome = { kind: "passed" };
-    try {
+    await withCleanup("TLS negative worker cleanup also failed", async () => {
       assert.deepEqual(await missingExit, [1, null], "a worker with a missing namespace exits nonzero");
       assert.match(await stderr, new RegExp(`Namespace ${absent} (was not found|is not found)`));
-    } catch (error) { missingOutcome = { kind: "failed", error }; }
-    clearTimeout(deadline);
-    try {
+    }, async () => {
+      clearTimeout(deadline);
       if (missing.exitCode === null && missing.signalCode === null) missing.kill("SIGKILL");
       await boundedWait(missingExit, now() + 2_000, "Missing namespace worker disposal");
-    } catch (error) {
-      if (missingOutcome.kind === "passed") throw error;
-      console.error("TLS negative worker cleanup also failed", error);
-    }
-    if (missingOutcome.kind === "failed") throw missingOutcome.error;
+    });
     console.log("A worker configured with a missing namespace reported it and exited with status 1");
 
     const ownerId = randomUUID(), token = randomUUID();
@@ -123,22 +110,16 @@ await withServices({ label: "temporal-tls" }, async s => {
     void misconfiguredExit.catch(() => {});
     const misconfiguredDeadline = setTimeout(() => misconfigured.kill("SIGKILL"), 30_000);
     let report = "";
-    let misconfiguredOutcome: Outcome = { kind: "passed" };
-    try {
+    await withCleanup("TLS negative gateway cleanup also failed", async () => {
       report = (await misconfigured.stderr.toArray()).join("");
       assert.deepEqual(await misconfiguredExit, [1, null]);
       assert.match(report, /Cannot read BIRBCREW_TEMPORAL_TLS_PRIVATE_KEY_PATH \(ENOENT\)/);
       assert.ok(!report.includes(unreadable), "the gateway does not print the private key path");
-    } catch (error) { misconfiguredOutcome = { kind: "failed", error }; }
-    clearTimeout(misconfiguredDeadline);
-    try {
+    }, async () => {
+      clearTimeout(misconfiguredDeadline);
       if (misconfigured.exitCode === null && misconfigured.signalCode === null) misconfigured.kill("SIGKILL");
       await boundedWait(misconfiguredExit, now() + 2_000, "Misconfigured gateway disposal");
-    } catch (error) {
-      if (misconfiguredOutcome.kind === "passed") throw error;
-      console.error("TLS negative gateway cleanup also failed", error);
-    }
-    if (misconfiguredOutcome.kind === "failed") throw misconfiguredOutcome.error;
+    });
     console.log("A gateway with an unreadable key file named the variable without its path and exited with status 1");
     const heartbeat = file("worker.heartbeat");
     await s.child(process.execPath, ["src/service/cli.ts", "worker", "tests/proof/fixture-profiles.mts"],
@@ -188,20 +169,15 @@ await withServices({ label: "temporal-tls" }, async s => {
       const child = spawn(process.execPath, ["src/service/cli.ts", operation], { env, stdio: ["pipe", "pipe", "inherit"] });
       const exited = once(child, "exit");
       void exited.catch(() => {});
-      let command: Outcome = { kind: "passed" }, output = "";
-      try {
+      const output = await withCleanup("TLS CLI cleanup also failed", async () => {
         child.stdin.end(JSON.stringify(input));
-        output = (await child.stdout.toArray()).join("");
+        const output = (await child.stdout.toArray()).join("");
         assert.deepEqual(await exited, [0, null], "members CLI " + operation);
-      } catch (error) { command = { kind: "failed", error }; }
-      try {
+        return output;
+      }, async () => {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
         await boundedWait(exited, now() + 2_000, "TLS CLI disposal");
-      } catch (error) {
-        if (command.kind === "passed") throw error;
-        console.error("TLS CLI cleanup also failed", error);
-      }
-      if (command.kind === "failed") throw command.error;
+      });
       return JSON.parse(output);
     }
     const cliConversation = randomUUID();
@@ -232,18 +208,15 @@ await withServices({ label: "temporal-tls" }, async s => {
     assert.ok(handshakes.length >= 3);
     assert.ok(handshakes.every(({ servername, client }) => servername === serverName && client === clientName), JSON.stringify(handshakes));
     console.log(`${handshakes.length} accepted TLS sessions all presented SNI ${serverName} and client certificate ${clientName}`);
-  } catch (error) { outcome = { kind: "failed", error }; }
-  const cleanup = await Promise.allSettled([
-    ...[...sockets].map(socket => Promise.resolve().then(() => socket.destroy())),
-    Promise.resolve().then(() => boundedWait(new Promise<void>((resolve, reject) => terminator.close(error => {
-      if (error && !("code" in error && error.code === "ERR_SERVER_NOT_RUNNING")) reject(error); else resolve();
-    })), now() + 2_000, "TLS terminator disposal")),
-  ]);
-  const failures = cleanup.filter(result => result.status === "rejected").map(result => result.reason);
-  if (outcome.kind === "failed") {
-    for (const error of failures) console.error("TLS terminator cleanup also failed", error);
-    throw outcome.error;
-  }
-  if (failures.length) throw new AggregateError(failures, "TLS terminator cleanup failed");
+  }, async () => {
+    const cleanup = await Promise.allSettled([
+      ...[...sockets].map(socket => Promise.resolve().then(() => socket.destroy())),
+      Promise.resolve().then(() => boundedWait(new Promise<void>((resolve, reject) => terminator.close(error => {
+        if (error && !("code" in error && error.code === "ERR_SERVER_NOT_RUNNING")) reject(error); else resolve();
+      })), now() + 2_000, "TLS terminator disposal")),
+    ]);
+    const failures = cleanup.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "TLS terminator cleanup failed");
+  });
 });
 console.log("Temporal mTLS and namespace proof passed; no live inference.");

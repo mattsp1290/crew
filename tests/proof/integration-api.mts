@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CrewClient, CrewHttpError } from "@birbcrew/client";
 import { createCrewObserver } from "@birbcrew/client/agui";
 import { commands, pendingSchema } from "./member-commands.mts";
+import { withCleanup } from "./member-service-diagnostics.mts";
 import { withServices, until, type Engine } from "./member-services.mts";
 import { startRestartFixtures } from "./proxy-restart-fixtures.mts";
 
@@ -44,8 +45,7 @@ await withServices({ label: "integration-api" }, async s => {
   }
   const fixtures = await startRestartFixtures({ codexUsage: () => ({ input_tokens: 1000, input_tokens_details: { cached_tokens: 400 },
     output_tokens: 50, output_tokens_details: { reasoning_tokens: 10 }, total_tokens: 1050 }) });
-  let outcome: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
-  try {
+  await withCleanup("API provider cleanup also failed", async () => {
     s.env.BIRBCREW_PROXY_FIXTURE_ENDPOINTS = JSON.stringify(fixtures.endpoints);
     await s.startTemporal();
     let stopWorker = await s.child(process.execPath, ["src/service/cli.ts", "worker", "tests/proof/proxy-restart-profiles.mts"]);
@@ -67,8 +67,7 @@ await withServices({ label: "integration-api" }, async s => {
         await client.openConversation({ memberId: member.memberId, conversationId });
         const marker = randomUUID(), submissions: { requestId: string; text: string }[] = [];
         let observer = observe(conversationId);
-        let observed: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
-        try {
+        await withCleanup("API observer cleanup also failed", async () => {
           await until(async () => observer.seen.includes("STATE_SNAPSHOT") || undefined, "independent official AG-UI snapshot");
           for (let i = 0; i < 6; i++) {
             const payload = { requestId: randomUUID(), text: i === 5 ? "recall" : "remember " + marker };
@@ -121,13 +120,7 @@ await withServices({ label: "integration-api" }, async s => {
             inputTokens: r.inputTokens, outputTokens: r.outputTokens, costUsd: r.costUsd, estimatedCostUsd: r.estimatedCostUsd })),
           Array.from({ length: 6 }, () => ({ lane: "member", costUsd: null, ...metered })));
           console.log(`${engine}: v1 HTTP acceptance, six turns across rollover, gateway SIGKILL/restart, original results, official AG-UI observation, no-inference duplicate reconciliation and metered usage passed`);
-        } catch (error) { observed = { kind: "failed", error }; }
-        try { await observer.stop(); }
-        catch (error) {
-          if (observed.kind === "passed") throw error;
-          console.error("API observer cleanup also failed", error);
-        }
-        if (observed.kind === "failed") throw observed.error;
+        }, () => observer.stop());
       }
       // Billed and estimated cost stay apart in the owner's totals: no provider billed these turns.
       const { total } = await (await rawRequest("/v1/usage")).json();
@@ -150,15 +143,11 @@ await withServices({ label: "integration-api" }, async s => {
         await until(async () => pendingSchema.parse(await command("pending", { ownerId, conversationId }))[0], "pending protected request");
         // Reading and disconnecting the official observer cannot cancel the waiting operation.
         const observer = observe(conversationId);
-        let observed: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
-        try { await until(async () => observer.seen.includes("STATE_SNAPSHOT") || undefined, "pending observation"); }
-        catch (error) { observed = { kind: "failed", error }; }
-        try { await observer.stop(); }
-        catch (error) {
-          if (observed.kind === "passed") throw error;
-          console.error("API pending observer cleanup also failed", error);
-        }
-        if (observed.kind === "failed") throw observed.error;
+        await withCleanup(
+          "API pending observer cleanup also failed",
+          () => until(async () => observer.seen.includes("STATE_SNAPSHOT") || undefined, "pending observation"),
+          () => observer.stop(),
+        );
         assert.equal(pendingSchema.parse(await command("pending", { ownerId, conversationId })).length, 1);
         await client.submit({ conversationId, requestId: successor, text: "remember never-run" });
         const receipt = await client.cancel({ conversationId, requestId: predecessor });
@@ -193,12 +182,6 @@ await withServices({ label: "integration-api" }, async s => {
         console.log(`${engine}: installed client approval decision, duplicate receipt and denied effect passed`);
       }
     }
-  } catch (error) { outcome = { kind: "failed", error }; }
-  try { await fixtures.close(); }
-  catch (error) {
-    if (outcome.kind === "passed") throw error;
-    console.error("API provider cleanup also failed", error);
-  }
-  if (outcome.kind === "failed") throw outcome.error;
+  }, () => fixtures.close());
 });
 console.log("Versioned integration API proof passed with actual service fixtures; no live inference.");

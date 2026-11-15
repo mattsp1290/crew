@@ -7,10 +7,100 @@ import test, { type TestContext } from "node:test";
 import { z } from "zod";
 import {
   boundedCommand, captureCommand, collectArtifacts, collectFiles, CommandFailure,
-  completedCommandFailure, durableLog, exitStatus, firstFailure, now,
+  completedCommandFailure, durableLog, exitStatus, firstFailure, now, withCleanup,
 } from "./member-service-diagnostics.mts";
 import { disposeContainer } from "./member-service-container.mts";
 import { workingState } from "./member-services.mts";
+
+test("withCleanup waits for operation settlement and cleanup before returning the original value", async () => {
+  const value = { result: "original" };
+  const operation = Promise.withResolvers<typeof value>(), cleanup = Promise.withResolvers<void>();
+  const cleanupStarted = Promise.withResolvers<void>();
+  let cleanups = 0, returned = false;
+  const result = withCleanup("secondary cleanup", () => operation.promise, () => {
+    cleanups++;
+    cleanupStarted.resolve();
+    return cleanup.promise;
+  }).then(value => { returned = true; return value; });
+  assert.equal(cleanups, 0);
+  operation.resolve(value);
+  await cleanupStarted.promise;
+  assert.equal(returned, false);
+  assert.equal(cleanups, 1);
+  cleanup.resolve();
+  assert.equal(await result, value);
+  assert.equal(cleanups, 1);
+  for (const value of [undefined, null, 0, "", Symbol("result")]) {
+    assert.equal(await withCleanup("secondary cleanup", async () => value, async () => {}), value);
+  }
+});
+
+test("withCleanup preserves operation failures and cleans up exactly once", async () => {
+  for (const primary of [undefined, null, 0, "", Symbol("primary"), { failure: "primary" }]) {
+    for (const operation of [() => { throw primary; }, async () => { throw primary; }]) {
+      let cleanups = 0;
+      await assert.rejects(withCleanup("secondary cleanup", operation, async () => { cleanups++; }), error => {
+        assert.equal(error, primary);
+        return true;
+      });
+      assert.equal(cleanups, 1);
+    }
+  }
+});
+
+test("withCleanup propagates cleanup-only failures without repeating cleanup", async () => {
+  for (const secondary of [undefined, null, 0, "", Symbol("secondary"), { failure: "secondary" }]) {
+    let cleanups = 0;
+    await assert.rejects(withCleanup("secondary cleanup", async () => "passed", async () => {
+      cleanups++;
+      throw secondary;
+    }), error => {
+      assert.equal(error, secondary);
+      return true;
+    });
+    assert.equal(cleanups, 1);
+  }
+});
+
+test("withCleanup reports secondary failures while preserving every primary reason", async t => {
+  const report = t.mock.method(console, "error", () => {});
+  try {
+    for (const primary of [undefined, null, 0, "", Symbol("primary"), { failure: "primary" }]) {
+      const secondary = new Error("cleanup failed");
+      let cleanups = 0;
+      await assert.rejects(withCleanup("secondary cleanup", async () => { throw primary; }, async () => {
+        cleanups++;
+        throw secondary;
+      }), error => {
+        assert.equal(error, primary);
+        return true;
+      });
+      assert.equal(cleanups, 1);
+      assert.deepEqual(report.mock.calls.at(-1)?.arguments, ["secondary cleanup", secondary]);
+    }
+    assert.equal(report.mock.callCount(), 6);
+  } finally { report.mock.restore(); }
+});
+
+test("withCleanup preserves the primary reason even when secondary reporting throws", async t => {
+  const report = t.mock.method(console, "error", () => { throw new Error("report failed"); });
+  try {
+    for (const primary of [undefined, null, 0, "", Symbol("primary"), { failure: "primary" }]) {
+      const secondary = new Error("cleanup failed");
+      let cleanups = 0;
+      await assert.rejects(withCleanup("secondary cleanup", () => { throw primary; }, () => {
+        cleanups++;
+        throw secondary;
+      }), error => {
+        assert.equal(error, primary);
+        return true;
+      });
+      assert.equal(cleanups, 1);
+      assert.deepEqual(report.mock.calls.at(-1)?.arguments, ["secondary cleanup", secondary]);
+    }
+    assert.equal(report.mock.callCount(), 6);
+  } finally { report.mock.restore(); }
+});
 
 async function ownedDirectory(t: TestContext, parent = tmpdir()) {
   const directory = await mkdtemp(join(parent, "birb-isolated-ci-test-"));
