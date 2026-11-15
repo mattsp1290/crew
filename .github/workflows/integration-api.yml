@@ -10,6 +10,7 @@ on:
           - early-setup-failure
           - setup-cancel
           - native-failure
+          - native-diagnostics-failure
           - native-catchable
           - native-stopped
 permissions:

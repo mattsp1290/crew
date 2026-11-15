@@ -8,7 +8,7 @@ import { z } from "zod";
 import { until, withServices } from "./member-services.mts";
 
 assert.equal(process.version, "v24.22.3");
-const mode = z.enum(["native-failure", "native-catchable", "native-stopped"]).parse(process.argv[2]);
+const mode = z.enum(["native-failure", "native-diagnostics-failure", "native-catchable", "native-stopped"]).parse(process.argv[2]);
 const root = process.env.BIRBCREW_PROOF_ARTIFACTS;
 assert.ok(root && isAbsolute(root), "Expected an absolute qualification artifact directory");
 await withServices({ label: "qualification-isolated", engine: "pi" }, async s => {
@@ -28,6 +28,10 @@ await withServices({ label: "qualification-isolated", engine: "pi" }, async s =>
   z.object({ status: z.literal("ready"), dependencies: z.object({ temporal: z.object({ status: z.literal("ready") }) }) }).parse(await response.json());
   writeFileSync(join(root, "probe-ready.json"), JSON.stringify({ mode, pid: process.pid, utc: new Date().toISOString(), fixtureArtifacts: s.artifacts }), { mode: 0o600, flag: "wx" });
   console.log(`qualification synthetic native fixture ready ${mode}`);
+  if (mode === "native-diagnostics-failure") {
+    writeFileSync(join(s.artifacts, "snapshot"), "qualification intentionally obstructs the required snapshot", { mode: 0o600, flag: "wx" });
+    return;
+  }
   if (mode === "native-failure") assert.fail("Qualification synthetic native assertion failure");
   if (mode === "native-stopped") process.kill(process.pid, "SIGSTOP");
   await delay(19 * 60_000);
