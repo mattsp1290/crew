@@ -1,4 +1,4 @@
-import { decideSchema, nextStep, standingChoice } from "@birbcrew/client/contract";
+import { approvalDetailIdentitySchema, ownerApprovalDetailSchema, decideSchema, nextStep, standingChoice } from "@birbcrew/client/contract";
 import { acceptsChoice, emptyToolArguments, publicToolArguments, recordWorkItemArguments, toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
 import { createGrant, grantable, proposalGrant, standingScope } from "./grants.ts";
 import { publishObservation } from "./observation.ts";
@@ -77,6 +77,22 @@ function publicApproval(scope: Scope, row: CallRow): Approval {
     ...(row.grantId && { grantId: row.grantId }),
     ...(row.expiresAt && { expiresAt: row.expiresAt.toISOString() }),
   };
+}
+
+export async function readOwnerApprovalDetail(pool: Pool, ownerId: string, input: unknown) {
+  const key = approvalDetailIdentitySchema.parse(input);
+  const { rows: [row] } = await pool.query(
+    `SELECT c.conversation_id AS "conversationId", c.member_id AS "memberId", p.request_id AS "requestId",
+      p.invocation_id AS "invocationId", p.approval_id AS "approvalId", p.decision_version AS version,
+      p.policy_version AS "policyVersion", p.tool_name AS "toolName", p.arguments, '1' AS "apiVersion"
+     FROM birbcrew_ts.deferred_calls p JOIN birbcrew_ts.conversations c USING (conversation_id)
+     WHERE c.owner_id=$1 AND c.member_id=$2 AND c.conversation_id=$3 AND p.request_id=$4
+       AND p.invocation_id=$5 AND p.approval_id=$6 AND p.decision_version=$7 AND p.tool_name='record_work_item'`,
+    [ownerId, key.memberId, key.conversationId, key.requestId, key.invocationId, key.approvalId, key.version],
+  );
+  const detail = ownerApprovalDetailSchema.safeParse(row);
+  if (!detail.success) throw new MemberStoreError("not_found");
+  return detail.data;
 }
 
 async function lockTurn(db: PoolClient, scope: Scope) {

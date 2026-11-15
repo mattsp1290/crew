@@ -1,4 +1,5 @@
-import { routes } from "@birbcrew/client/contract";
+import { approvalDetailIdentitySchema, routes } from "@birbcrew/client/contract";
+import { readOwnerApprovalDetail } from "./approvals.ts";
 import { childOpener } from "./child-observation.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
@@ -357,6 +358,16 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       }
       if (resource === "handoff" && request.method === "GET") return json(response, 200, await handoffs.read(ownerId, z.uuid().parse(conversationId)));
       throw new HttpError(405, "method_not_allowed");
+    }
+    const detailRoute = versioned && /^\/conversations\/([^/]+)\/requests\/([^/]+)\/approvals\/([^/]+)$/.exec(path);
+    if (detailRoute) {
+      if (request.method !== "GET") throw new HttpError(405, "method_not_allowed");
+      const query = searchParams(url);
+      const key = approvalDetailIdentitySchema.parse({
+        ...routes.approvalDetail.query.extend({ version: z.string().regex(/^-?\d+$/).pipe(z.coerce.number<string>().int()) }).parse(query),
+        conversationId: detailRoute[1], requestId: detailRoute[2], approvalId: detailRoute[3],
+      });
+      return json(response, 200, await readOwnerApprovalDetail(store.pool, ownerId, key));
     }
     const requestRoute = versioned && /^\/conversations\/([^/]+)\/requests(?:\/([^/]+)(\/cancel)?)?$/.exec(path);
     if (requestRoute) {

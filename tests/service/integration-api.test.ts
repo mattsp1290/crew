@@ -795,6 +795,7 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
   const approval = await new ApprovalStore(pool).propose({ ...key, memberId: conversation.memberId,
     invocationId: requestId, token: turn.token, nativeCallId: "openapi-call", toolName: "record_work_item",
     arguments: { operation_id: requestId, note: "OpenAPI decision" } });
+  await check("approvalDetail", conversationPath + `/requests/${requestId}/approvals/${approval.approvalId}?memberId=${conversation.memberId}&invocationId=${requestId}&version=1`);
   await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
     invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "deny" });
   await check("cancel", conversationPath + "/requests/" + requestId + "/cancel", {});
@@ -821,4 +822,99 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     assert.equal(validateBody({ ...body, ownerId: f.ownerId }), false,
       `${route.path} rejects extra request properties`);
   }
+});
+
+
+test("owner proposal details require the full identity, preserve exact arguments and remain immutable after settlement", async t => {
+  const f = await fixture(); t.after(f.stop);
+  const approvals = new ApprovalStore(pool);
+  const { memberId } = await store.getConversation({ ownerId: f.ownerId, conversationId: f.conversationId });
+  const requestId = randomUUID();
+  const turn = await store.beginTurn({ ownerId: f.ownerId, conversationId: f.conversationId, requestId, text: "details" });
+  assert.equal(turn.kind, "start"); if (turn.kind !== "start") return;
+  const scope = { ownerId: f.ownerId, conversationId: f.conversationId, memberId, requestId };
+  const proposal = { ...scope, token: turn.token, invocationId: requestId, nativeCallId: "private-native-call",
+    toolName: "record_work_item" as const, arguments: { operation_id: requestId, note: "  Exact\n\t é e\u0301 🪶 <script> & \" \\  " } };
+  const approval = await approvals.propose(proposal);
+  const identity = { conversationId: f.conversationId, memberId, requestId, invocationId: requestId,
+    approvalId: approval.approvalId, version: 1 };
+  const path = (key = identity) => `/v1/conversations/${key.conversationId}/requests/${key.requestId}/approvals/${key.approvalId}`
+    + `?memberId=${key.memberId}&invocationId=${key.invocationId}&version=${key.version}`;
+  async function stored() {
+    const tables = ["conversations", "turns", "deferred_calls", "work_items", "public_events", "public_snapshots"];
+    const records = await Promise.all(tables.map(table => pool.query(`SELECT * FROM birbcrew_ts.${table} WHERE conversation_id=$1`, [f.conversationId])));
+    const audit = await pool.query("SELECT * FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [f.ownerId]);
+    const grants = await pool.query("SELECT * FROM birbcrew_ts.tool_grants WHERE owner_id=$1", [f.ownerId]);
+    return [...records, audit, grants].map(result => result.rows);
+  }
+  const before = await stored();
+  const response = await f.api(path());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const detail = await validateResponse("approvalDetail", response);
+  assert.deepEqual(detail, { ...identity, apiVersion: "1", policyVersion: 1, toolName: "record_work_item", arguments: proposal.arguments });
+  const client = new CrewClient({ baseUrl: f.endpoint, token: f.token });
+  assert.deepEqual(await client.approvalDetail(identity), detail);
+  assert.deepEqual((await client.capabilities()).approvalDetails, { version: 1, tools: ["record_work_item"] });
+  for (const field of ["conversationId", "memberId", "requestId", "invocationId", "approvalId"] as const) {
+    const denied = await f.api(path({ ...identity, [field]: randomUUID() }));
+    assert.equal(denied.status, 404, field);
+    assert.deepEqual(await denied.json(), { error: "not_found" });
+  }
+  for (const version of [0, 2]) assert.equal((await f.api(path({ ...identity, version }))).status, 404);
+  const foreign = await f.api(path(), undefined, f.stranger);
+  assert.equal(foreign.status, 404); assert.deepEqual(await foreign.json(), { error: "not_found" });
+  assert.equal((await f.api(path(), undefined, "invalid")).status, 401);
+  assert.equal((await f.api(path(), {})).status, 405);
+  for (const suffix of ["&extra=x", "&memberId=" + memberId, "&invocationId=" + requestId, "&version=1", "&ownerId=" + f.ownerId]) {
+    assert.equal((await f.api(path() + suffix)).status, 400, suffix);
+  }
+  for (const query of ["", `?memberId=${memberId}&invocationId=${requestId}`, `?memberId=${memberId}&invocationId=${requestId}&version=1.0`]) {
+    assert.equal((await f.api(path().split("?")[0] + query)).status, 400);
+  }
+  assert.deepEqual(await stored(), before, "detail reads must not mutate proposal, deadlines, grants, effects or passive publications");
+  const passive = await (await f.api(`/v1/conversations/${f.conversationId}`)).json();
+  const events = await pool.query("SELECT event FROM birbcrew_ts.public_events WHERE conversation_id=$1", [f.conversationId]);
+  const audit = await pool.query("SELECT payload FROM birbcrew_ts.audit_events WHERE owner_id=$1", [f.ownerId]);
+  assert.ok(!JSON.stringify([passive, events.rows, audit.rows]).includes('"note"'));
+  assert.ok(!JSON.stringify(detail).includes(proposal.nativeCallId));
+  const callKey = { ...identity, ownerId: f.ownerId, nativeCallId: proposal.nativeCallId };
+  await approvals.decide({ ...callKey, argumentDigest: approval.argumentDigest, choice: "deny" });
+  const { version, ...settleKey } = callKey;
+  await approvals.settle({ ...settleKey, token: turn.token });
+  const settled = await stored();
+  assert.deepEqual(await client.approvalDetail(identity), detail);
+  assert.deepEqual(await stored(), settled);
+  assert.equal(f.counts().accepts, 0);
+  assert.equal(f.counts().effects, 0);
+});
+
+test("owner details preserve absent, empty and maximum UTF-8 notes and refuse unsupported tools or invalid stored arguments", async t => {
+  const f = await fixture(); t.after(f.stop);
+  const approvals = new ApprovalStore(pool);
+  const { memberId } = await store.getConversation({ ownerId: f.ownerId, conversationId: f.conversationId });
+  const requestId = randomUUID();
+  const turn = await store.beginTurn({ ownerId: f.ownerId, conversationId: f.conversationId, requestId, text: "details limits" });
+  assert.equal(turn.kind, "start"); if (turn.kind !== "start") return;
+  const proposal = { ownerId: f.ownerId, conversationId: f.conversationId, memberId, requestId,
+    invocationId: requestId, token: turn.token, nativeCallId: "limits", toolName: "record_work_item" as const };
+  const client = new CrewClient({ baseUrl: f.endpoint, token: f.token });
+  for (const args of [{ operation_id: requestId }, { operation_id: requestId, note: "" },
+    { operation_id: requestId, note: "🪶".repeat(1024) }, { operation_id: requestId, note: "\u0001".repeat(4096) }]) {
+    const approval = await approvals.propose({ ...proposal, invocationId: randomUUID(), arguments: args });
+    const key = { conversationId: f.conversationId, memberId, requestId, invocationId: approval.invocationId,
+      approvalId: approval.approvalId, version: 1 };
+    assert.deepEqual((await client.approvalDetail(key)).arguments, args);
+  }
+  for (const note of ["🪶".repeat(1024) + "x", "é".repeat(2049), "\0", "\ud800"]) {
+    await assert.rejects(approvals.propose({ ...proposal, invocationId: randomUUID(), arguments: { operation_id: requestId, note } }));
+  }
+  const unsupported = await approvals.propose({ ...proposal, invocationId: randomUUID(), toolName: "choose_next_step", arguments: {} });
+  const key = { conversationId: f.conversationId, memberId, requestId, invocationId: unsupported.invocationId,
+    approvalId: unsupported.approvalId, version: 1 };
+  await assert.rejects(client.approvalDetail(key), { status: 404, code: "not_found" });
+  const corrupt = await approvals.propose({ ...proposal, invocationId: randomUUID(), arguments: { operation_id: requestId } });
+  await pool.query("UPDATE birbcrew_ts.deferred_calls SET arguments=arguments || $2::jsonb WHERE approval_id=$1",
+    [corrupt.approvalId, JSON.stringify({ extra: "must not strip" })]);
+  await assert.rejects(client.approvalDetail({ ...key, invocationId: corrupt.invocationId, approvalId: corrupt.approvalId }), { status: 404, code: "not_found" });
 });

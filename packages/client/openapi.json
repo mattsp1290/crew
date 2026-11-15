@@ -195,6 +195,28 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "approvalDetails": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "version",
+              "tools"
+            ],
+            "additionalProperties": {}
           }
         },
         "required": [
@@ -764,6 +786,84 @@
             ]
           }
         ]
+      },
+      "OwnerApprovalDetail": {
+        "type": "object",
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "memberId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "invocationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "approvalId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "apiVersion": {
+            "type": "string",
+            "const": "1"
+          },
+          "policyVersion": {
+            "type": "number",
+            "const": 1
+          },
+          "toolName": {
+            "type": "string",
+            "const": "record_work_item"
+          },
+          "arguments": {
+            "type": "object",
+            "properties": {
+              "operation_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "note": {
+                "type": "string",
+                "x-maxUtf8Bytes": 4096,
+                "x-forbidden": "NUL; unpaired surrogates"
+              }
+            },
+            "required": [
+              "operation_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "conversationId",
+          "requestId",
+          "memberId",
+          "invocationId",
+          "approvalId",
+          "version",
+          "apiVersion",
+          "policyVersion",
+          "toolName",
+          "arguments"
+        ],
+        "additionalProperties": false
       },
       "DecisionReceipt": {
         "type": "object",
@@ -1544,6 +1644,107 @@
           }
         },
         "description": "Durable cancellation intent. Delivery, native termination and effects are independent facts. This does not claim rollback."
+      }
+    },
+    "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}": {
+      "get": {
+        "operationId": "approvalDetail",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "approvalId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "memberId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "invocationId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerApprovalDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "description": "Owner-only immutable complete record_work_item proposal, retained after settlement. Exact conversation, member, request, invocation, approval and decision version required. Unknown or repeated query parameters are rejected. Unsupported tools and scope mismatches return not_found. This read does not claim actionability or change approvals, grants, deadlines or effects. Responses use Cache-Control: no-store."
       }
     },
     "/v1/conversations/{conversationId}/human": {

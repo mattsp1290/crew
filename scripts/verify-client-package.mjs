@@ -40,13 +40,16 @@ for (const [label, runtime] of [["node22", node22], ["node24", node24]]) {
     run(npm, ["install", "--save-dev", "--ignore-scripts", "--no-audit", "--no-fund", "typescript@5.9.3", "esbuild@0.25.12", "@apidevtools/swagger-parser@13.1.0"], consumer);
     await copyFile(join(root, "packages/client/openapi.json"), join(consumer, "openapi.json"));
     await writeFile(join(evidence, "openapi-validation.log"), run(runtime, ["--input-type=module", "-e", "import SwaggerParser from '@apidevtools/swagger-parser'; await SwaggerParser.validate('openapi.json'); console.log('OpenAPI 3.1 validates');"], consumer));
-    await writeFile(join(consumer, "browser.ts"), `import {CrewClient, type RequestReceipt} from '@birbcrew/client';
-import type {RequestReceipt as ContractReceipt, ServerRequestReceipt} from '@birbcrew/client/contract';
+    await writeFile(join(consumer, "browser.ts"), `import {CrewClient, type RequestReceipt, type OwnerApprovalDetail, type ApprovalDetailIdentity, type RecordWorkItemArguments} from '@birbcrew/client';
+import type {OwnerApprovalDetail as ContractDetail, RequestReceipt as ContractReceipt, ServerRequestReceipt} from '@birbcrew/client/contract';
 export const fromContract = (receipt: ContractReceipt): RequestReceipt => receipt;
 export const toContract = (receipt: RequestReceipt): ContractReceipt => receipt;
 export const fromServer = (receipt: ServerRequestReceipt): RequestReceipt => receipt;
 const client = new CrewClient({baseUrl:'https://crew.example', token:'token'});
 export const read = () => client.listMembers();
+export const detail = (key: ApprovalDetailIdentity): Promise<OwnerApprovalDetail> => client.approvalDetail(key);
+export const detailFromContract = (value: ContractDetail): OwnerApprovalDetail => value;
+export const completeArguments = (value: OwnerApprovalDetail): RecordWorkItemArguments => value.arguments;
 export function result(receipt: RequestReceipt): string | undefined { if (receipt.status === 'completed') return receipt.result.text; }
 // @ts-expect-error completed receipts require result
 const invalid: RequestReceipt = {apiVersion:'1',conversationId:'id',requestId:'id',acceptance:{boundary:'sql_admission_and_temporal_queue'},status:'completed'};

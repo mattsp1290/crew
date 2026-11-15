@@ -29,6 +29,7 @@ for (const [id, value] of Object.entries({
   MemberPage: routes.listMembers.response,
   ConversationSnapshot: routes.conversation.response,
   RequestReceipt: routes.requestStatus.response,
+  OwnerApprovalDetail: routes.approvalDetail.response,
   DecisionReceipt: routes.decide.response,
   CreateMember: routes.createMember.body,
   OpenConversation: routes.openConversation.body,
@@ -104,10 +105,14 @@ for (const [operationId, route] of Object.entries(routes)) {
       ...Object.entries(query.properties).map(([name, value]) => ({
         name,
         in: "query",
+        ...(query.required?.includes(name) ? { required: true } : {}),
         schema: value,
       })),
     );
   }
+  if (operationId === "approvalDetail")
+    operation.description =
+      "Owner-only immutable complete record_work_item proposal, retained after settlement. Exact conversation, member, request, invocation, approval and decision version required. Unknown or repeated query parameters are rejected. Unsupported tools and scope mismatches return not_found. This read does not claim actionability or change approvals, grants, deadlines or effects. Responses use Cache-Control: no-store.";
   if (operationId === "submit")
     operation.description =
       "One admission attempt. Preserve requestId and exact UTF-8 text for reconciliation. Acceptance does not prove completion or effects.";
