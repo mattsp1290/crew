@@ -1,0 +1,8 @@
+{
+  "code": "image_too_large",
+  "message": "The PNG is 7204113 bytes; the limit is 3750000. Ask for jpeg or a smaller max_long_edge.",
+  "state": "ok",
+  "details": {
+    "image_bytes": 7204113
+  }
+}

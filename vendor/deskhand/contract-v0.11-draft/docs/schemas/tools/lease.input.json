@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/lease.input.json",
+  "title": "lease arguments",
+  "description": "Acquire, renew or release the lease that lets one holder drive this Mac. It changes who may post input, so a caller classifies it as an effect.",
+  "type": "object",
+  "properties": {
+    "op": {
+      "type": "string",
+      "enum": ["acquire", "renew", "release"]
+    },
+    "holder_id": { "$ref": "../defs.json#/$defs/holder_id" },
+    "ttl_ms": {
+      "description": "Requested lease lifetime from now, for acquire and renew. It must be absent on release: deskhand refuses a release that carries it with invalid_argument. Input schemas stay flat, so this schema cannot state that rule.",
+      "type": "integer",
+      "minimum": 5000,
+      "maximum": 120000,
+      "default": 30000
+    }
+  },
+  "required": ["op", "holder_id"],
+  "additionalProperties": false
+}

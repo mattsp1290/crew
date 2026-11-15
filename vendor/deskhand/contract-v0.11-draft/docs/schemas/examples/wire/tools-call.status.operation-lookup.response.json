@@ -1,0 +1,51 @@
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "resultType": "complete",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"contract_version\":\"0.11-draft\",\"mcp_protocol_version\":\"2026-07-28\",\"server_version\":\"0.1.0\",\"mac\":\"lunus-macbook-pro\",\"time\":\"2026-11-14T15:02:11.482Z\",\"started_at\":\"2026-11-14T13:40:02Z\",\"state\":\"ok\",\"active_states\":[],\"conditions\":[],\"armed_until\":\"2026-11-14T16:00:00Z\",\"lease\":{\"held_by_caller\":true,\"acquired_at\":\"2026-11-14T15:02:11.482Z\",\"expires_at\":\"2026-11-14T15:02:41.482Z\",\"expires_in_ms\":30000},\"operation\":{\"status\":\"completed\",\"events_posted\":3},\"display_config_generation\":3,\"limits\":{\"max_long_edge\":2576,\"min_long_edge\":256,\"max_pixels\":3588000,\"max_image_bytes\":3750000,\"frame_max_age_ms\":60000,\"user_activity_lookback_ms\":3000,\"actions_per_minute\":60,\"lease_ttl_min_ms\":5000,\"lease_ttl_max_ms\":120000,\"keyboard_max_text_length\":1024,\"operation_retention_ms\":86400000,\"operation_max_records\":10000}}"
+      }
+    ],
+    "structuredContent": {
+      "contract_version": "0.11-draft",
+      "mcp_protocol_version": "2026-07-28",
+      "server_version": "0.1.0",
+      "mac": "lunus-macbook-pro",
+      "time": "2026-11-14T15:02:11.482Z",
+      "started_at": "2026-11-14T13:40:02Z",
+      "state": "ok",
+      "active_states": [],
+      "conditions": [],
+      "armed_until": "2026-11-14T16:00:00Z",
+      "lease": {
+        "held_by_caller": true,
+        "acquired_at": "2026-11-14T15:02:11.482Z",
+        "expires_at": "2026-11-14T15:02:41.482Z",
+        "expires_in_ms": 30000
+      },
+      "operation": {
+        "status": "completed",
+        "events_posted": 3
+      },
+      "display_config_generation": 3,
+      "limits": {
+        "max_long_edge": 2576,
+        "min_long_edge": 256,
+        "max_pixels": 3588000,
+        "max_image_bytes": 3750000,
+        "frame_max_age_ms": 60000,
+        "user_activity_lookback_ms": 3000,
+        "actions_per_minute": 60,
+        "lease_ttl_min_ms": 5000,
+        "lease_ttl_max_ms": 120000,
+        "keyboard_max_text_length": 1024,
+        "operation_retention_ms": 86400000,
+        "operation_max_records": 10000
+      }
+    },
+    "isError": false
+  }
+}

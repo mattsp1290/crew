@@ -1,0 +1,10 @@
+{
+  "lease_result": {
+    "op": "release",
+    "outcome": "refused",
+    "code": "disarmed"
+  },
+  "lease": {
+    "held_by_caller": false
+  }
+}

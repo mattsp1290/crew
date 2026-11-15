@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": 14,
+  "error": {
+    "code": -32022,
+    "message": "Unsupported protocol version",
+    "data": {
+      "detail": "This server supports 2026-07-28 only."
+    }
+  }
+}

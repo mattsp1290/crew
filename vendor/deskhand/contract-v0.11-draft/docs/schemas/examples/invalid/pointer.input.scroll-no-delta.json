@@ -1,0 +1,10 @@
+{
+  "holder_id": "crew:inst-7f3a:desk-lunus",
+  "frame_id": "frm_Zk3vQ8sN1xT5bYc2Lw9RaA",
+  "operation_id": "c1",
+  "action": {
+    "type": "scroll",
+    "x": 10,
+    "y": 10
+  }
+}

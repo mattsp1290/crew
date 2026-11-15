@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/wire/tools-list-result.json",
+  "title": "tools/list result",
+  "description": "The result member of deskhand's tools/list response (docs/contract.md section 3.2): every tool in one page, so there is no nextCursor. There is no wire example of it; scripts/check-contract.py builds it from the tool schemas and the 3.2 table and validates it here.",
+  "type": "object",
+  "properties": {
+    "resultType": { "const": "complete" },
+    "tools": { "type": "array", "items": { "$ref": "#/$defs/tool" }, "minItems": 1 },
+    "ttlMs": { "description": "DISCOVERY_TTL_MS.", "const": 300000 },
+    "cacheScope": { "const": "private" }
+  },
+  "required": ["resultType", "tools", "ttlMs", "cacheScope"],
+  "additionalProperties": false,
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z]+$" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "inputSchema": { "$ref": "#/$defs/object_schema" },
+        "outputSchema": { "$ref": "#/$defs/object_schema" },
+        "annotations": {
+          "description": "All four hints are always set, because the specification's defaults would be wrong for most tools.",
+          "type": "object",
+          "properties": {
+            "readOnlyHint": { "type": "boolean" },
+            "destructiveHint": { "type": "boolean" },
+            "idempotentHint": { "type": "boolean" },
+            "openWorldHint": { "type": "boolean" }
+          },
+          "required": ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["name", "title", "description", "inputSchema", "outputSchema", "annotations"],
+      "additionalProperties": false
+    },
+    "object_schema": {
+      "description": "A self-contained JSON Schema 2020-12 for an object: no $id.",
+      "type": "object",
+      "properties": {
+        "$schema": { "const": "https://json-schema.org/draft/2020-12/schema" },
+        "type": { "const": "object" }
+      },
+      "required": ["type"],
+      "not": { "required": ["$id"] }
+    }
+  }
+}

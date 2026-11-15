@@ -1,0 +1,20 @@
+{
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"code\":\"stale_frame\",\"message\":\"The pixels around the target changed since the frame was captured. Take a new screenshot.\",\"state\":\"ok\",\"operation_id\":\"call_01HZX3M9Q8\",\"details\":{\"reason\":\"pixels_changed\",\"point_index\":0}}"
+    }
+  ],
+  "structuredContent": {
+    "code": "stale_frame",
+    "message": "The pixels around the target changed since the frame was captured. Take a new screenshot.",
+    "state": "ok",
+    "operation_id": "call_01HZX3M9Q8",
+    "details": {
+      "reason": "pixels_changed",
+      "point_index": 0
+    }
+  },
+  "isError": false
+}

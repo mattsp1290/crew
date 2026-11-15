@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/pointer.output.json",
+  "title": "pointer structuredContent",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/pointer_result" },
+    { "$ref": "#/$defs/pointer_error" }
+  ],
+  "$defs": {
+    "pointer_result": {
+      "description": "A successful pointer call always measured a window under its target, so global_point is never null.",
+      "allOf": [
+        { "$ref": "../defs.json#/$defs/effect_result" },
+        {
+          "properties": {
+            "measured": {
+              "properties": {
+                "global_point": { "$ref": "../defs.json#/$defs/point" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pointer_error": {
+      "description": "A tool_error with one of the codes that pointer can return (docs/contract.md section 9.3).",
+      "allOf": [
+        { "$ref": "../defs.json#/$defs/tool_error" },
+        {
+          "properties": {
+            "code": {
+              "enum": [
+                "gated",
+                "paused",
+                "disarmed",
+                "not_console",
+                "locked",
+                "display_asleep",
+                "permission_missing",
+                "permission_stale",
+                "secure_input",
+                "out_of_frame",
+                "stale_frame",
+                "user_active",
+                "denied_app",
+                "rate_limited",
+                "busy",
+                "lease_not_held",
+                "lease_held_by_other",
+                "lease_expired",
+                "invalid_argument",
+                "operation_in_progress",
+                "operation_id_conflict",
+                "operation_capacity",
+                "log_unavailable",
+                "cleanup_pending",
+                "cancelled",
+                "interrupted",
+                "internal_error"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

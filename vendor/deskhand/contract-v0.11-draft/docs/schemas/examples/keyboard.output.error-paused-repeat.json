@@ -1,0 +1,10 @@
+{
+  "code": "paused",
+  "message": "deskhand is paused. An earlier call with this operation_id typed 18 characters before it was stopped.",
+  "state": "paused",
+  "operation_id": "call_01HZX3M9R1",
+  "operation": {
+    "status": "aborted",
+    "events_posted": 36
+  }
+}
