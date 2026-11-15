@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Pool } from "pg";
+import type { ThreadEvent } from "@openai/codex-sdk";
 import { errorSummary, forwardWarnings, redact, relayWarning, warn } from "../../src/service/diagnostics.ts";
 import { MemberStore } from "../../src/service/store.ts";
 
@@ -249,3 +250,31 @@ test("a turn runner that dies without a reply is logged with how it ended", { ti
   assert.deepEqual(logged, [{ level: "warn", logger: "birbcrew", event: "native_turn_unconfirmed", action: "start", ...turn,
     error: "Error", message: "SDK process stopped without a confirmed result (exit code 7, no reply)" }]);
 });
+
+const nativeFailureMessage = `Connection failed: error sending request Bearer ${plantedKey}`;
+const nativeFailureEvents = [
+  { type: "error", message: nativeFailureMessage },
+  { type: "turn.failed", error: { message: nativeFailureMessage } },
+] satisfies ThreadEvent[];
+
+for (const event of nativeFailureEvents) {
+  test(`a Codex ${event.type} reaches worker diagnostics without changing its public failure`,
+    { timeout: 60_000, skip: needsDatabase }, async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "birb-diagnostics-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const sdk = import.meta.resolve("@openai/codex-sdk");
+    const { stderr, logged, scratch } = await hostTurn(t, dir, (profile) => `import { Thread } from ${JSON.stringify(sdk)};
+Thread.prototype.runStreamed = async () => ({ events: (async function* () { yield ${JSON.stringify(event)}; })() });
+export const profiles = new Map([[${JSON.stringify(profile)}, { accountId: ${JSON.stringify(randomUUID())},
+  codex: { model: "fixture", baseUrl: "http://127.0.0.1:1/closed" } }]]);\n`);
+    const failed = logged.find((line) => line.event === "native_turn_failed");
+    assert.ok(failed, "the real runner emits its native failure warning");
+    assert.ok(Object.values(failed).some((value) => typeof value === "string" && value.includes("Connection failed: error sending request")),
+      `the warning retains the readable native cause: ${JSON.stringify(failed)}`);
+    assert.ok(Object.values(failed).includes(event.type), "the warning retains the SDK event type");
+    assert.equal(failed.message, "Codex native turn failed");
+    assert.ok(!stderr.includes(plantedKey), "the native diagnostic removes the planted token");
+    assert.ok(Object.values(failed).every((value) => typeof value !== "string" || value.length <= 1025), "diagnostic strings stay bounded");
+    assert.deepEqual(await readdir(scratch), []);
+  });
+}
