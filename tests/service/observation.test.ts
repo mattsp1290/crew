@@ -6,6 +6,7 @@ import test from "node:test";
 import { Pool } from "pg";
 import { MemberStore } from "../../src/service/store.ts";
 import { ApprovalStore } from "../../src/service/approvals.ts";
+import type { PublicSnapshot } from "../../src/service/observation.ts";
 import { service, startWorker, until } from "./observer-host.ts";
 import { fileURLToPath } from "node:url";
 import { Worker } from "@temporalio/worker";
@@ -40,7 +41,11 @@ for (const engine of ["claude", "pi"]) {
     await host.post(path + "/inputs", { requestId, text: "record " + requestId });
     const proposal = await until(async () => first.events.find((e) => e.type === "TOOL_CALL_START"));
     assert.equal(proposal.toolCallId, pending.approvalId);
-    await until(async () => second.agent.messages.some((m) => m.role === "assistant" && m.toolCalls?.length) || undefined);
+    await until(async () => [first, second].every((reader) =>
+      reader.agent.state.phase === "waiting" &&
+      reader.agent.state.pendingApprovals?.some((approval: PublicSnapshot["state"]["pendingApprovals"][number]) =>
+        approval.requestId === requestId && approval.approvalId === pending.approvalId)
+    ) || undefined);
     assert.deepEqual(first.agent.messages, second.agent.messages);
     const initialFrames = [first.events, second.events];
     await host.restart();
