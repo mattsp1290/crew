@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { applyChild, endChildStep, insertToolResult, type ChildChange, type ObservedChild } from "./child-observation.ts";
 import { EventType as E, type Event, type Message } from "@ag-ui/core";
 import type { Pool, PoolClient } from "pg";
-import { standingChoice, toolChoices } from "./deferral.ts";
+import { publicToolArguments, standingChoice, toolChoices } from "./deferral.ts";
 import type { ActiveGrant } from "./grants.ts";
 import type { Approval, ToolOutcome } from "./approvals.ts";
 import { MemberStoreError, type Conversation } from "./domain.ts";
@@ -15,7 +15,7 @@ const retainedGrantedCalls = 16;
 const retainedExpiredCalls = 16;
 
 type PublicApproval = Omit<Approval, "argumentDigest" | "ownerId" | "nativeCallId" | "grantId"> & {
-  expiresAt?: string; choices: typeof toolChoices.record_work_item; standingChoices?: typeof standingChoice.options;
+  argumentsComplete?: true; expiresAt?: string; choices: typeof toolChoices.record_work_item; standingChoices?: typeof standingChoice.options;
 };
 type PublicQuestion = Omit<PublicApproval, "choices"> & { choices: typeof toolChoices.choose_next_step };
 export type Phase = "idle" | "running" | "waiting" | "complete" | "cancelled" | "failed";
@@ -54,7 +54,7 @@ type Change = ChildChange
   | { kind: "toolValue"; invocationId: string; publicId: string; requestId: string }
   | { kind: "toolPreview"; invocationId: string; publicId: string }
   // expiresAt marks a Codex live call; deadline is the expiry of a card the workflow waits on.
-  | { kind: "call"; approval: Approval; expiresAt?: string; deadline?: string; standing?: true; grant?: ActiveGrant }
+  | { kind: "call"; approval: Approval; argumentsComplete?: true; expiresAt?: string; deadline?: string; standing?: true; grant?: ActiveGrant }
   | ({ kind: "liveClosed" } & ClosedCall)
   | ({ kind: "expired" } & ExpiredCall)
   | { kind: "liveDelivered"; requestId: string; approvalId: string }
@@ -223,14 +223,14 @@ function apply(snapshot: StoredSnapshot, change: Change): Event[] {
         toolName, summary } = change.approval;
       commitPreamble(invocationId === requestId ? undefined : invocationId);
       const expiresAt = change.expiresAt ?? change.deadline;
-      const card = { ...(expiresAt && {expiresAt}), memberId, conversationId, requestId, invocationId, approvalId, version, policyVersion, toolName, summary };
+      const card = { ...(change.argumentsComplete === true && {argumentsComplete: true as const}), ...(expiresAt && {expiresAt}), memberId, conversationId, requestId, invocationId, approvalId, version, policyVersion, toolName, summary };
       if (change.grant) state.grantedCalls = [...state.grantedCalls ?? [], { requestId, approvalId, ...change.grant }].slice(-retainedGrantedCalls);
       else if (toolName === "choose_next_step") (state.pendingQuestions ??= []).push({ ...card, choices: toolChoices.choose_next_step });
       else state.pendingApprovals.push({ ...card, choices: toolChoices.record_work_item,
         ...(change.standing && { standingChoices: standingChoice.options }) });
       if (!change.grant) state.phase = "waiting";
       const attribution = invocationId === requestId ? {} : { subagentRunId: invocationId };
-      const args = toolName === "choose_next_step" ? "{}" : JSON.stringify({ operation_id: requestId });
+      const args = JSON.stringify(publicToolArguments(toolName, requestId));
       const messageId = approvalId + "/assistant";
       const preamble = snapshot.openTools[invocationId]?.preamble;
       if (preamble) messages.push({id:preamble.id,role:"assistant",content:preamble.prefix,...attribution});
