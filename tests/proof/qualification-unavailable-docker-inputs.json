@@ -2,7 +2,7 @@
   "authoredTools": {
     "README.md": "b5e2a79f0c746b2560ed6269798fd4bc25900f7854786a39b558df1024823d7f",
     "lifecycle-steps.yml": "343ba31baab46d28a24ea364e529c2abd787def513bba2c3f845a720d6d88d49",
-    "observer.mts": "553eb8a951a1b9aaf58154039122fcff53a7d435d190e51281116c8b98429b82",
+    "observer.mts": "5d9bfca6e57ce79bb881d3abb18ffb6ce4a3b836cdde14dc760577352ffc973e",
     "prepare.py": "ed0cee7d3a1e2d20c3475a9ce9149d729d52bfdaf11006ebff91c298c04fb1d6"
   },
   "branch": "probe/native-ci-lifecycle",
@@ -3057,11 +3057,16 @@
       "sha256": "878ae3ee399613198c97397edaf7e3b08cd723bd364d07e2b8d191b4d3661748"
     }
   },
-  "patchSHA256": "ca4af176c1af6d3b7c6adc1c07505dbbdc9eb4ce255aaba3753e5e00d97b6201",
+  "patchSHA256": "4b2ace5fa8f5a2448e01eae8269238e9a1873e223e70dd86803894b55c7f7788",
   "preparedSHA256": {
     ".github/workflows/integration-api.yml": "9f4bb94e8c71557f921301922e6268206614c28e5c20264c9c3d4342badda7ae",
     "tests/proof/member-services.test.mts": "eb5b9419234d1fed46c7d467fa3a673bc2ca5a08eec902811ae20a4d90042b2c",
-    "tests/proof/qualification-unavailable-docker.mts": "553eb8a951a1b9aaf58154039122fcff53a7d435d190e51281116c8b98429b82"
+    "tests/proof/qualification-unavailable-docker.mts": "5d9bfca6e57ce79bb881d3abb18ffb6ce4a3b836cdde14dc760577352ffc973e"
+  },
+  "previousAttempt": {
+    "failedObservation": "directory observation overwrote immutable directory authority in pre receipt; production cleanup and retry steps were correct",
+    "head": "54d096e6239fb813b54b6af10d17756ae21c9bb2",
+    "run": 43760608261
   },
   "probeBase": "0e8bf1968d32f1577edf16eb1775b5ae4c364281",
   "probeExtras": {

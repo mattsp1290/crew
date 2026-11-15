@@ -80,7 +80,7 @@ async function work() {
   if (stage === "pre") assert.equal(directory, "present");
   if (stage === "final") assert.equal(directory, "absent");
   atomicReceipt(join(output, stage + ".json"), { ...reference, passed: true, stage, observedUTC: new Date().toISOString(), ready,
-    sourceManifestSHA256: hash(manifestText), byID, byName, inspection, directory });
+    sourceManifestSHA256: hash(manifestText), byID, byName, inspection, directoryResource: directory });
   if (stage === "final") atomicReceipt(join(output, "step-conclusions.json"), {
     workflowSHA: process.env.GITHUB_SHA, contracts: process.env.QUALIFICATION_CONTRACTS,
     pre: process.env.QUALIFICATION_PRE, invalidRecovery: process.env.QUALIFICATION_INVALID_RECOVERY,
