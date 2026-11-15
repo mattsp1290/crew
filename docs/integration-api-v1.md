@@ -568,8 +568,9 @@ the owner's token only, and the audit trail keeps only its host. An unknown form
 fails `400 invalid_input`, and a replay with another format `409 conflict`. Delivery
 is at least once and unordered, with ten attempts over about three hours, and an
 endpoint that gives up ten deliveries in a row is disabled. Crew sends only to
-public addresses over HTTPS, unless the operator allows insecure targets for local
-testing, follows no redirect and sends no credential. `webhook.*` audit rows belong
+public addresses over HTTPS, unless the operator enables the explicit
+[HTTP and private-address override](webhooks.md#network-safety). It follows no
+redirect and sends no credential. `webhook.*` audit rows belong
 to no member, so their `memberId` is `null` and a `memberId` filter never matches
 them. An expired card, a handoff and a budget refusal add no kind: a handoff's
 reserved request and an expired card's request are sent as `request.finished`, and a
