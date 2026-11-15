@@ -369,6 +369,11 @@ with `outcome: {"type":"cancelled"}`, which the official client reports to
 `onRunFinishedEvent` as `outcome: "cancelled"`. `failed` sends `RUN_ERROR` with code
 `MEMBER_FAILED`.
 
+If the gateway cannot read the observation stream, it sends `RUN_ERROR` with code
+`OBSERVATION_FAILED` and closes that stream. This is an observation failure, not
+proof that the conversation or its active request failed. Reconnect for a fresh
+snapshot and reconcile the original request through its status route.
+
 ## Standing grants
 
 A work-item card may carry `standingChoices: ["allow_conversation", "allow_always"]`

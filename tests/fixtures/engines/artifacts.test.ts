@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { PROTOCOL_VERSION } from "@ag-ui/core";
 import manifest from "../../../vendor/ag-ui/manifest.json" with { type: "json" };
 
 const root = new URL("../../../", import.meta.url);
+
+test("the installed AG-UI core uses the qualified wire protocol", () => {
+  assert.equal(PROTOCOL_VERSION, "1.0");
+});
 
 for (const pkg of manifest) {
   test(`${pkg.name} matches its qualified archive`, async () => {
