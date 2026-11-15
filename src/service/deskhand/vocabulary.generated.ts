@@ -26,6 +26,7 @@ export const maxImageBytes: 3750000 = 3750000;
 export const maxWidth: 2576 = 2576;
 export const maxHeight: 2576 = 2576;
 export const maxPixels: 3588000 = 3588000;
+export const maxDragPoints: 32 = 32;
 export const leaseOperations: readonly ["acquire","renew","release"] = ["acquire","renew","release"];
 export const leaseOutcomes: readonly ["acquired","renewed","released","not_held","refused"] = ["acquired","renewed","released","not_held","refused"];
 export const leaseRefusals: readonly ["gated","paused","disarmed","lease_not_held","lease_held_by_other","lease_expired"] = ["gated","paused","disarmed","lease_not_held","lease_held_by_other","lease_expired"];

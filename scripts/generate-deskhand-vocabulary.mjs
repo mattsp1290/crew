@@ -38,6 +38,7 @@ leaf('jpegMime', 'tools/screenshot.output.json', '/$defs/screenshot_result/then/
 leaf('pngMime', 'tools/screenshot.output.json', '/$defs/screenshot_result/else/properties/mime_type/const');
 for (const [name, path] of Object.entries({ maxImageBytes: 'image_bytes/maximum', maxWidth: 'output_pixel_size/properties/width/maximum', maxHeight: 'output_pixel_size/properties/height/maximum' })) leaf(name, 'tools/screenshot.output.json', `/$defs/screenshot_result/properties/${path}`);
 leaf('maxPixels', 'tools/status.output.json', '/$defs/limits/properties/max_pixels/const');
+leaf('maxDragPoints', 'tools/pointer.input.json', '/$defs/pointer_drag/properties/path/maxItems');
 for (const [name, field] of Object.entries({ leaseOperations: 'op', leaseOutcomes: 'outcome', leaseRefusals: 'code' })) leaf(name, 'tools/lease.output.json', `/$defs/lease_result/properties/${field}/enum`);
 for (const [name, path] of Object.entries({ acquireOutcomes: '2/then/properties/outcome/enum', acquireRefusals: '2/then/properties/code/enum', renewOutcomes: '3/then/properties/outcome/enum', releaseOperation: '4/if/properties/op/const', releaseOutcomes: '4/then/properties/outcome/enum', releaseRefusals: '4/then/properties/code/enum' })) leaf(name, 'tools/lease.output.json', `/$defs/lease_result/allOf/${path}`);
 leaf('leaseInputOperations', 'tools/lease.input.json', '/properties/op/enum');

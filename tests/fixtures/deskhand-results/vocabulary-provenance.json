@@ -162,6 +162,12 @@
     "sha256": "6b350f6196798fd17cf2c8eff5223b938476fc9c8d8e01e42245759af95b2b77"
   },
   {
+    "name": "maxDragPoints",
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_drag/properties/path/maxItems",
+    "sha256": "8f403c4afffbf55c690a2712ce11894569d02c468461945313ded80041fea05f"
+  },
+  {
     "name": "leaseOperations",
     "file": "tools/lease.output.json",
     "pointer": "/$defs/lease_result/properties/op/enum",

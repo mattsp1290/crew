@@ -321,15 +321,23 @@ function desktopStatus(wire: Record<string, unknown>, context: BoundaryContext, 
   requireFact(wire.mac === context.expectedMac, 'correlation', 'relationship');
   requireFact((wire.lease === null) === (holder === 'no-holder'), 'correlation', 'relationship');
   const limits = object(wire.limits);
+  const activeStates = array(wire.active_states).map((state) => literal(state, vocabulary.blockingStates));
+  const conditions = array(wire.conditions).map((condition) => literal(condition, vocabulary.conditions));
+  const armedUntil = nullableString(wire.armed_until);
+  const lease: DesktopStatus['lease'] = wire.lease === null ? { kind: 'unscoped' } : { kind: 'caller', lease: callerLease(wire.lease) };
+  requireFact(activeStates.every((state, index) => index === 0 ||
+    vocabulary.blockingStates.indexOf(activeStates[index - 1]) < vocabulary.blockingStates.indexOf(state)), 'schema', 'relationship');
+  requireFact(!activeStates.includes('paused') || activeStates.includes('disarmed'), 'schema', 'relationship');
+  requireFact(activeStates.includes('disarmed') === (armedUntil === null), 'schema', 'relationship');
+  requireFact(!activeStates.some((state) => state === 'gated' || state === 'paused' || state === 'disarmed') ||
+    lease.kind === 'unscoped' || lease.lease.kind === 'not-held-by-caller', 'schema', 'relationship');
+  requireFact(!conditions.includes('login_window') || activeStates.includes('not_console'), 'schema', 'relationship');
   return {
     contractVersion: literal(wire.contract_version, [vocabulary.contractVersion]),
     mcpProtocolVersion: literal(wire.mcp_protocol_version, [vocabulary.protocolVersion]),
     serverVersion: string(wire.server_version), mac: string(wire.mac), time: string(wire.time), startedAt: string(wire.started_at),
     state: literal(wire.state, vocabulary.states),
-    activeStates: array(wire.active_states).map((state) => literal(state, vocabulary.blockingStates)),
-    conditions: array(wire.conditions).map((condition) => literal(condition, vocabulary.conditions)),
-    armedUntil: nullableString(wire.armed_until),
-    lease: wire.lease === null ? { kind: 'unscoped' } : { kind: 'caller', lease: callerLease(wire.lease) },
+    activeStates, conditions, armedUntil, lease,
     displayGeneration: number(wire.display_config_generation),
     limits: {
       maxLongEdge: number(limits.max_long_edge), minLongEdge: number(limits.min_long_edge), maxPixels: number(limits.max_pixels),
@@ -342,18 +350,27 @@ function desktopStatus(wire: Record<string, unknown>, context: BoundaryContext, 
   };
 }
 function displayCatalog(wire: Record<string, unknown>): DisplayCatalog {
-  return { generation: number(wire.display_config_generation), displays: array(wire.displays).map((value) => {
+  const displays = array(wire.displays).map((value) => {
     const display = object(value);
     return { id: displayId(display.display_id), uuid: string(display.uuid), name: string(display.name),
       isMain: boolean(display.is_main), isBuiltin: boolean(display.is_builtin), asleep: boolean(display.asleep),
       bounds: rectangle(display.bounds), pixels: pixels(display.pixel_size), pointPixelScale: number(display.point_pixel_scale) };
-  }) };
+  });
+  requireFact(new Set(displays.map((display) => display.id)).size === displays.length, 'schema', 'relationship');
+  return { generation: number(wire.display_config_generation), displays };
 }
 function screenshotObservation(wire: Record<string, unknown>, expectedDisplay: Presence<DisplayId>): ScreenshotObservation {
   const id = displayId(wire.display_id);
   requireFact(expectedDisplay.kind === 'absent' || expectedDisplay.value === id, 'correlation', 'relationship');
   const outputPixels = pixels(wire.output_pixel_size);
+  const sourcePixels = pixels(wire.source_pixel_size);
+  const downscale = number(wire.downscale);
+  const pointer = wire.pointer_position === null ? null : framePoint(wire.pointer_position);
   requireFact(outputPixels.width * outputPixels.height <= vocabulary.maxPixels, 'image-metadata', 'relationship');
+  requireFact(outputPixels.width <= sourcePixels.width && outputPixels.height <= sourcePixels.height, 'image-metadata', 'relationship');
+  requireFact(downscale !== 1 || (outputPixels.width === sourcePixels.width && outputPixels.height === sourcePixels.height), 'image-metadata', 'relationship');
+  requireFact(pointer === null || (pointer.x >= 0 && pointer.x < outputPixels.width &&
+    pointer.y >= 0 && pointer.y < outputPixels.height), 'image-metadata', 'relationship');
   const format = literal(wire.format, vocabulary.formats);
   const bytes = number(wire.image_bytes);
   let encoding: ReportedEncoding;
@@ -364,10 +381,10 @@ function screenshotObservation(wire: Record<string, unknown>, expectedDisplay: P
   }
   return { kind: 'metadata-only', metadata: {
     frameId: frameId(wire.frame_id), sha256: sha256(wire.sha256), displayId: id, displayGeneration: number(wire.display_config_generation),
-    capture: rectangle(wire.capture_rect), sourcePixels: pixels(wire.source_pixel_size), outputPixels,
-    pointPixelScale: number(wire.point_pixel_scale), downscale: number(wire.downscale), encoding,
+    capture: rectangle(wire.capture_rect), sourcePixels, outputPixels,
+    pointPixelScale: number(wire.point_pixel_scale), downscale, encoding,
     capturedAt: string(wire.captured_at), maxAgeMs: number(wire.max_age_ms),
-    pointer: wire.pointer_position === null ? null : framePoint(wire.pointer_position), frontmost: app(wire.frontmost_app),
+    pointer, frontmost: app(wire.frontmost_app),
   } };
 }
 function leaseOutcome(wire: Record<string, unknown>, expectedOperation: LeaseOperation): LeaseOutcome {
@@ -478,6 +495,7 @@ function errorVariants<M>(wire: Record<string, unknown>, measured: Presence<M>):
     case 'image_too_large': {
       const details = diagnostics(wire.details);
       requireFact(details.imageBytes !== undefined && details.maxImageBytes !== undefined);
+      requireFact(details.imageBytes > vocabulary.maxImageBytes && details.maxImageBytes === vocabulary.maxImageBytes, 'image-metadata', 'relationship');
       return { ...facts, code, details: { ...details, imageBytes: details.imageBytes, maxImageBytes: details.maxImageBytes } };
     }
     case 'user_active': {
@@ -675,7 +693,12 @@ export function createResultBoundary(configuration: BoundaryContext): ResultBoun
       if (result.kind === 'error') {
         const code = errorSemantics(result.wire, 'pointer', expected);
         const measured = optional(result.wire.measured, (value) => pointerErrorMeasurement(value, expected.action, code));
-        return { kind: 'tool-error', error: toolError('pointer', result.wire, measured) };
+        const error = toolError('pointer', result.wire, measured);
+        const pointIndex = error.code === 'out_of_frame' ||
+          error.code === 'stale_frame' && error.details.reason === 'pixels_changed' || error.code === 'denied_app'
+          ? error.details.pointIndex : undefined;
+        if (pointIndex !== undefined) requireFact(expected.action === 'target' ? pointIndex === 0 : pointIndex < vocabulary.maxDragPoints, 'schema', 'relationship');
+        return { kind: 'tool-error', error };
       }
       return { kind: 'ok', value: { ...completionFacts(result.wire, expected), measured: pointerMeasurement(result.wire.measured, expected.action) } };
     }),
@@ -685,7 +708,9 @@ export function createResultBoundary(configuration: BoundaryContext): ResultBoun
       if (result.kind === 'rpc-error') return result;
       if (result.kind === 'error') {
         errorSemantics(result.wire, 'keyboard', expected);
-        return { kind: 'tool-error', error: toolError('keyboard', result.wire, optional(result.wire.measured, keyboardErrorMeasurement)) };
+        const error = toolError('keyboard', result.wire, optional(result.wire.measured, keyboardErrorMeasurement));
+        requireFact(error.code !== 'denied_app' || error.details.pointIndex === undefined, 'schema', 'relationship');
+        return { kind: 'tool-error', error };
       }
       return { kind: 'ok', value: { ...completionFacts(result.wire, expected), measured: keyboardMeasurement(result.wire.measured) } };
     }),
