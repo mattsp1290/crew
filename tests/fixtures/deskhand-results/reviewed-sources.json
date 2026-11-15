@@ -1,0 +1,93 @@
+{
+  "purpose": "Semantic review required for every source change, including conditionals without new properties.",
+  "sources": [
+    {
+      "file": "docs/schemas/allowance.json",
+      "sha256": "a9021855e7f8489d26a3ad272cbdea7fce05e29f8ff8cad668d8e22fc53ebd8b"
+    },
+    {
+      "file": "docs/schemas/defs.json",
+      "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+    },
+    {
+      "file": "docs/schemas/tools/displays.input.json",
+      "sha256": "c729f2ef7c0f311cd6074e06314b6ad0e9d1e80b6f9d85e3ebe167a050459360"
+    },
+    {
+      "file": "docs/schemas/tools/displays.output.json",
+      "sha256": "ff46b9d718108b6b6c9bdaa3e4e711eefe4ff1cfde0533bbe52aa2ad24440d28"
+    },
+    {
+      "file": "docs/schemas/tools/keyboard.input.json",
+      "sha256": "188c732978ec77f049822524bfb945051f4028acbcb8078a0e903652439c641a"
+    },
+    {
+      "file": "docs/schemas/tools/keyboard.output.json",
+      "sha256": "944b794d9c8d703686f521f5bd472bdd8a772e73eb5fca9ea7c93e17600ff529"
+    },
+    {
+      "file": "docs/schemas/tools/lease.input.json",
+      "sha256": "66054aea0503411a808d295c20b4196aceb0cd452b0243b4999a91af1db34490"
+    },
+    {
+      "file": "docs/schemas/tools/lease.output.json",
+      "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+    },
+    {
+      "file": "docs/schemas/tools/pointer.input.json",
+      "sha256": "8f403c4afffbf55c690a2712ce11894569d02c468461945313ded80041fea05f"
+    },
+    {
+      "file": "docs/schemas/tools/pointer.output.json",
+      "sha256": "d097baf3e18d18369726e61bc1ea02c4ad6dfe72617b4f3a37f9c6fa5c24abb8"
+    },
+    {
+      "file": "docs/schemas/tools/screenshot.input.json",
+      "sha256": "84c6c2799c4ccd5c284a15201d03807195d811ed2ff7f2a9809971e4a11544f6"
+    },
+    {
+      "file": "docs/schemas/tools/screenshot.output.json",
+      "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+    },
+    {
+      "file": "docs/schemas/tools/status.input.json",
+      "sha256": "fa43d36cac8f5f0c42e43017d2bfe500ae5c2468ab6515f26fb729c436c0e9d2"
+    },
+    {
+      "file": "docs/schemas/tools/status.output.json",
+      "sha256": "6b350f6196798fd17cf2c8eff5223b938476fc9c8d8e01e42245759af95b2b77"
+    },
+    {
+      "file": "docs/schemas/wire/jsonrpc-error.json",
+      "sha256": "09973d0df6012ec3fa0005d53d51b095044c93a421831b2ca6b7d7b8850fa66b"
+    },
+    {
+      "file": "docs/schemas/wire/jsonrpc-notification.json",
+      "sha256": "3dca051c12caeadd700d91567b31016df1368d19201d7e4f1a507cf944186044"
+    },
+    {
+      "file": "docs/schemas/wire/jsonrpc-request.json",
+      "sha256": "aade3f36399902e78b595c23791eec4a1990aa31c713f172c67f6973b598572b"
+    },
+    {
+      "file": "docs/schemas/wire/jsonrpc-response.json",
+      "sha256": "d6cb7ce44b3116a2832a89a3e83a9db464f141654b574673e6f9c93bf918cba0"
+    },
+    {
+      "file": "docs/schemas/wire/server-discover-result.json",
+      "sha256": "1a3e5063ad208697d8e1c283b23117eb0b90cfa27266ac59d411a5f606621cd4"
+    },
+    {
+      "file": "docs/schemas/wire/tools-call-result.json",
+      "sha256": "1bce03f5e2e7021469ca2c2c3d798814920b317a50ea7bec361cbfb742a4a9bd"
+    },
+    {
+      "file": "docs/schemas/wire/tools-list-result.json",
+      "sha256": "329e29c6a9c8c087bdc75a3de02d4e9c31ee2e646d48c7fe8a29c7f519c9768e"
+    },
+    {
+      "file": "docs/contract.md",
+      "sha256": "8f4f3c1c325a780fb4b5c019331bd3a7e5ad56c24cff7ea6829e24c9d91f0c91"
+    }
+  ]
+}
