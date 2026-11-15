@@ -398,6 +398,81 @@ for (const { name, details } of [
   });
 }
 
+for (const { name, valid, invalid } of [
+  { name: 'width', valid: { width: 2576, height: 1 }, invalid: { width: 2577, height: 1 } },
+  { name: 'height', valid: { width: 1, height: 2576 }, invalid: { width: 1, height: 2577 } },
+  { name: 'area', valid: { width: 2000, height: 1794 }, invalid: { width: 2000, height: 1795 } },
+]) {
+  test(`out_of_frame diagnostic rejects excessive ${name} with matched text (§6.3:745, §7:1069-1082, §8.2:1140-1144)`, () => {
+    const original = fixture('pointer.output.error-out-of-frame.json');
+    const input = expectedInput(original);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action: 'target' } satisfies ExpectedReply & ExpectedPointer);
+    const seed = { ...original, details: { ...object(original.details), output_pixel_size: valid } };
+    const control = boundary.pointer(wrap('pointer', seed), expected);
+    assert.equal(control.kind, 'tool-error');
+    assert(control.kind === 'tool-error');
+    assert.deepEqual(wireError(control.error), seed);
+    const received = { ...seed, details: { ...seed.details, output_pixel_size: invalid } };
+    const result = boundary.pointer(wrap('pointer', received), expected);
+    assert.equal(result.kind, 'rejected');
+    assert(result.kind === 'rejected');
+    assert.equal(result.failure.stage, 'relationship');
+  });
+}
+
+for (const action of ['target', 'drag'] satisfies ReadonlyArray<ExpectedPointer['action']>) {
+  test(`${action} indexed denied_app needs its measured global point (§6.7:888, §6.9:998-1002)`, () => {
+    const original = fixture('pointer.output.error-denied-app.json');
+    const input = expectedInput(original);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action } satisfies ExpectedReply & ExpectedPointer);
+    const control = boundary.pointer(wrap('pointer', original), expected);
+    assert.equal(control.kind, 'tool-error');
+    assert(control.kind === 'tool-error');
+    assert.deepEqual(wireError(control.error), original);
+    const received = { ...original, measured: { ...object(original.measured), global_point: null } };
+    const result = boundary.pointer(wrap('pointer', received), expected);
+    assert.equal(result.kind, 'rejected');
+    assert(result.kind === 'rejected');
+    assert.equal(result.failure.stage, 'relationship');
+  });
+
+  test(`${action} point denial retains an unknown app and nonnull point (§6.9:937-948, §6.9:998-1002)`, () => {
+    const original = fixture('pointer.output.error-denied-app.json');
+    const wire = { ...original, measured: { ...object(original.measured), target_app: { bundle_id: null, team_id: null, name: '' } },
+      details: { ...object(original.details), denied_by: 'policy' } };
+    const input = expectedInput(original);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action } satisfies ExpectedReply & ExpectedPointer);
+    const result = boundary.pointer(wrap('pointer', wire), expected);
+    assert.equal(result.kind, 'tool-error');
+    assert(result.kind === 'tool-error');
+    assert.deepEqual(wireError(result.error), wire);
+  });
+}
+
+test('drag frontmost denial can omit its point index and global point (§6.9:998-1002)', () => {
+  const original = fixture('pointer.output.error-denied-app.json');
+  const wire = { ...original, measured: { ...object(original.measured), target_app: null, global_point: null }, details: { denied_by: 'permitted_apps' } };
+  const input = expectedInput(original);
+  const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action: 'drag' } satisfies ExpectedReply & ExpectedPointer);
+  const result = boundary.pointer(wrap('pointer', wire), expected);
+  assert.equal(result.kind, 'tool-error');
+  assert(result.kind === 'tool-error');
+  assert.deepEqual(wireError(result.error), wire);
+});
+
+for (const tool of ['pointer', 'keyboard']) {
+  test(`${tool} retains optional diagnostic dimensions outside out_of_frame (schemas/defs.json tool_error.details)`, () => {
+    const original = fixture(tool === 'pointer' ? 'pointer.output.error-denied-app.json' : 'keyboard.output.error-denied-shortcut.json');
+    const wire = { ...original, details: { ...object(original.details), output_pixel_size: { width: 2577, height: 2577 } } };
+    const input = expectedInput(original);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action: 'target' } satisfies ExpectedReply & ExpectedPointer);
+    const result = tool === 'pointer' ? boundary.pointer(wrap(tool, wire), expected) : boundary.keyboard(wrap(tool, wire), expected);
+    assert.equal(result.kind, 'tool-error');
+    assert(result.kind === 'tool-error');
+    assert.deepEqual(wireError(result.error), wire);
+  });
+}
+
 for (const code of ['out-of-frame', 'stale-frame', 'denied-app']) {
   for (const action of ['target', 'drag'] satisfies ReadonlyArray<ExpectedPointer['action']>) {
     test(`${action} ${code} names an applicable point index (§6.9:998-1002, §8.2:1140, §8.4:1213-1216, §16 DRAG_MAX_POINTS)`, () => {
