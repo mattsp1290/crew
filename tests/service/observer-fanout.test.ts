@@ -15,6 +15,7 @@ import { createGateway } from "../../src/service/gateway.ts";
 import { publishObservation, readEvents, readEventsLimit } from "../../src/service/observation.ts";
 import { ObserverHubs, observerFanout, ObserverSettingsError, type FanoutBounds } from "../../src/service/observer-hub.ts";
 import { MemberStore } from "../../src/service/store.ts";
+import "./observer-sockets.test.ts";
 
 // The gateway's observer fan-out against PostgreSQL alone: changes are published straight into the public event
 // ledger, as the store does inside its transactions, so no Temporal server or worker is needed. Each comparison
@@ -215,7 +216,6 @@ test("ledger deadlines leave the shared connection's session policy unchanged", 
   const f = await fixture(t), cid = await f.conversation();
   const uri = new URL(process.env.BIRBCREW_TEST_DATABASE_URL!);
   uri.searchParams.set("statement_timeout", "0");
-  uri.searchParams.set("query_timeout", "0");
   const single = new Pool({ connectionString: uri.href, max: 1 });
   t.after(() => single.end());
   await single.query("SET statement_timeout = '12345ms'");
