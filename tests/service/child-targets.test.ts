@@ -47,8 +47,8 @@ function configuration() {
 }
 const proposal = (role: "analyst" | "recorder" = "analyst") => ({ nativeCallId: "call_" + randomUUID(), task: "remember private task",
   profile: { role, version: 1, ...fixedRoles[role], tools: [...fixedRoles[role].tools], model: pi.model.id } });
-async function parentTurn(profile: string) {
-  const request = { ownerId: "owner-" + randomUUID(), requestId: randomUUID(), engine: "pi" as const, profile };
+async function parentTurn(profile: string, ownerId = "owner-" + randomUUID()) {
+  const request = { ownerId, requestId: randomUUID(), engine: "pi" as const, profile };
   const member = await store.spawn(request);
   const conversationId = randomUUID();
   await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
@@ -190,6 +190,49 @@ test("SQL rejects forged and malformed child roles, targets, consent and immutab
   assert.equal(inserted.rows[0].child_target_consent.mode, "named", "SQL stamps consent from joined authority");
   await assert.rejects(other.delegate([{ ...proposal(), profile: { ...proposal().profile, target: c.route } }]));
   await assert.rejects(other.delegate([{ ...proposal(), profile: { ...proposal().profile, instructions: "forged" } }]));
+});
+
+test("SQL preserves the child's original identity and authority binding through lifecycle updates", async () => {
+  const c = configuration(); await c.register();
+  const p = await parentTurn(c.parent), [key] = await p.delegate();
+  const original = await row(key.childId);
+  const empty = configuration();
+  empty.config.set(empty.parent, { ...empty.config.get(empty.parent)!, childTargets: { pi: {} } });
+  await empty.register();
+  for (const ownerId of [p.member.ownerId, "owner-" + randomUUID()]) {
+    const other = await parentTurn(empty.parent, ownerId);
+    assert.deepEqual(other.member.subagents, { mode: "named", targets: [] });
+    await pool.query("INSERT INTO birbcrew_ts.delegations(conversation_id,request_id,parent_checkpoint) VALUES($1,$2,$3)",
+      [other.turnRequest.conversationId, other.turnRequest.requestId, checkpoint]);
+    for (const assignment of ["conversation_id=$2,request_id=$3", "conversation_id=$2,request_id=$3,role_profile=role_profile"]) {
+      await assert.rejects(pool.query(`UPDATE birbcrew_ts.pi_children SET ${assignment} WHERE child_id=$1`,
+        [key.childId, other.turnRequest.conversationId, other.turnRequest.requestId]), { code: "23514" });
+      assert.deepEqual(await row(key.childId), original);
+    }
+    const mismatched = { ...key, ownerId, memberId: other.member.memberId,
+      conversationId: other.turnRequest.conversationId, requestId: other.turnRequest.requestId };
+    await assert.rejects(children.begin(mismatched, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 }), { code: "not_found" });
+    assert.deepEqual(await row(key.childId), original);
+  }
+  for (const [column, value] of [
+    ["child_id", randomUUID()], ["conversation_id", randomUUID()], ["request_id", randomUUID()],
+    ["role_profile", { ...original.role_profile, model: "different-model" }],
+  ]) {
+    await assert.rejects(pool.query(`UPDATE birbcrew_ts.pi_children SET ${column}=$2 WHERE child_id=$1`, [key.childId, value]), { code: "23514" });
+    assert.deepEqual(await row(key.childId), original);
+  }
+  assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1", [key.childId])).rowCount, 0);
+  await pool.query(`UPDATE birbcrew_ts.pi_children SET child_id=child_id,conversation_id=conversation_id,
+    request_id=request_id,role_profile=role_profile WHERE child_id=$1`, [key.childId]);
+  assert.deepEqual(await row(key.childId), original);
+  const started = await children.begin(key, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 });
+  if (started.kind !== "start") throw Error("Expected original child to start");
+  await pool.query("UPDATE birbcrew_ts.pi_children SET native_checkpoint=$2 WHERE child_id=$1", [key.childId, checkpoint]);
+  const running = await row(key.childId);
+  assert.equal(running.phase, "running");
+  assert.equal(running.generation, started.generation);
+  assert.deepEqual(running.native_checkpoint, checkpoint);
+  for (const column of ["child_id", "conversation_id", "request_id", "role_profile"]) assert.deepEqual(running[column], original[column]);
 });
 
 test("fixed SQL role definitions match the exported package and the runner has no target authority", async () => {

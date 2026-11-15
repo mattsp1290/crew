@@ -113,7 +113,10 @@ CREATE FUNCTION birbcrew_ts.guard_child_role_profile() RETURNS trigger LANGUAGE 
 DECLARE m birbcrew_ts.members; p birbcrew_ts.profiles; d jsonb; role text; instructions text; tools jsonb; expected jsonb;
 BEGIN
  IF TG_OP='UPDATE' THEN
-  IF NEW.role_profile IS DISTINCT FROM OLD.role_profile THEN RAISE EXCEPTION 'Child role profile is immutable' USING ERRCODE='23514'; END IF;
+  IF (NEW.child_id,NEW.conversation_id,NEW.request_id,NEW.role_profile)
+   IS DISTINCT FROM (OLD.child_id,OLD.conversation_id,OLD.request_id,OLD.role_profile) THEN
+   RAISE EXCEPTION 'Child binding and role profile are immutable' USING ERRCODE='23514';
+  END IF;
   RETURN NEW;
  END IF;
  SELECT members.* INTO STRICT m FROM birbcrew_ts.members members JOIN birbcrew_ts.conversations c USING(owner_id,member_id)
@@ -148,5 +151,5 @@ BEGIN
  IF NEW.role_profile IS DISTINCT FROM expected THEN RAISE EXCEPTION 'Child fixed role or target differs' USING ERRCODE='23514'; END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER child_role_authority BEFORE INSERT OR UPDATE OF role_profile ON birbcrew_ts.pi_children
+CREATE TRIGGER child_role_authority BEFORE INSERT OR UPDATE OF child_id,conversation_id,request_id,role_profile ON birbcrew_ts.pi_children
  FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.guard_child_role_profile();
