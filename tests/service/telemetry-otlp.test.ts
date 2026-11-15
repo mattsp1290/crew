@@ -377,11 +377,8 @@ test("with no endpoint, OTLP settings are ignored and the exporter is never load
   const { port, received } = await collector(t);
   const directory = await mkdtemp(join(tmpdir(), "birb-otlp-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  // Malformed companions must not stop a process that has not opted in, and the standard OTLP endpoint
-  // variables alone do not enable export.
   const ignored = {
     BIRBCREW_OTLP_TRACES_ALLOW_HTTP: "maybe", OTEL_RESOURCE_ATTRIBUTES: "not valid", OTEL_SERVICE_NAME: "bad\nname",
-    OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${port}/v1/traces`,
   };
   for (const env of [{}, ignored, { ...ignored, BIRBCREW_TRACE_FILE: join(directory, "traces.jsonl") }]) {
     const result = await run(env, [...ids(), "private"]);

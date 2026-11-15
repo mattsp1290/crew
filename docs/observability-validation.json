@@ -1,0 +1,157 @@
+{
+  "verifiedAt": "2026-11-15T18:38:37.999263+00:00",
+  "baseRevision": "2714393",
+  "switchboard": {
+    "revision": "dadfe09fb2f0090b46168309309ca01bb89b9a0e",
+    "artifactIntegrity": "sha512-6pYuGY4C8nTi19FdQk+yfluTVxXuvVWRm85nMuSTon4jmqnAXtxcfXQK91Z7KfFKmIeYKPbRY3/KNtx6g/GC7A==",
+    "existingCoreDependency": "58c7922d8fade3617cc86fedcf41677f897025ef"
+  },
+  "checks": {
+    "node": "24.22.3",
+    "build": "passed",
+    "tests": {
+      "telemetry": 24,
+      "unit": 21,
+      "observerFanout": 22,
+      "usageAndCost": 31
+    },
+    "independentCliObservers": [
+      "pi",
+      "claude",
+      "codex"
+    ],
+    "offlineReplay": {
+      "replayed": {
+        "codex": 1,
+        "claude": 1,
+        "pi": 1,
+        "piChild": 1
+      },
+      "replayProviderCalls": 0,
+      "replayToolCalls": 0,
+      "replayEffects": 0,
+      "correlatedSpans": 47,
+      "agentSpans": 16,
+      "redaction": "VERIFIED"
+    },
+    "fullFixture": "Not rerun after rebasing onto current upstream. Targeted native, usage, fanout, CLI and offline replay qualification passed."
+  },
+  "backends": {
+    "status": "passed",
+    "fixture": "synthetic host invocation boundaries",
+    "service": "crew-observability-db4d6714-e1c9-40f7-b99a-f5bead48d3ee",
+    "stage": "complete",
+    "startedAt": "2026-11-15T18:34:12.152Z",
+    "node": "v24.22.3",
+    "lotelVersion": "lotel dev",
+    "sourceSha256": {
+      "src/service/telemetry.ts": "d877e88ddeebf5d274236ea078d73beaa599ece0a72df93f2b20063e3722480a",
+      "src/service/telemetry-datadog.ts": "6b9b436fddb75696923b0c1b68d0e0ce1d0971ab5ee7e2f8c2c8b602496b7142",
+      "src/service/supervisor-runner.ts": "1ed52ae7f65e67abe006709cdd2f929f914a06ab7687c57221ab75697eaa4ed3",
+      "package-lock.json": "4664b1415e54321ed933380dc777319348ea7540ddafeb0ae23303f1c231b8c0",
+      "scripts/verify-observability.mjs": "e1344ca2d459f5a7c93347664752a9dd94a881f808afd6a627d6f803416efe67"
+    },
+    "lotelRevision": "6c9c7b387abd316df4adc09324cf4ee653e489e4",
+    "endedAt": "2026-11-15T18:34:13.611Z",
+    "lotel": {
+      "status": "passed",
+      "spans": 18,
+      "agents": 6,
+      "usage": [
+        {
+          "provider": "anthropic",
+          "operation": "invoke_agent",
+          "calls": 2,
+          "errors": 1,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "reasoning_output_tokens": 0,
+          "calls_missing_usage": 2,
+          "total_tokens": 0,
+          "duration_ms": {
+            "avg": 10.39935,
+            "p50": 10.148349,
+            "p95": 10.650351,
+            "max": 10.650351
+          }
+        },
+        {
+          "provider": "openai",
+          "operation": "invoke_agent",
+          "calls": 4,
+          "errors": 2,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "reasoning_output_tokens": 0,
+          "calls_missing_usage": 4,
+          "total_tokens": 0,
+          "duration_ms": {
+            "avg": 10.149841,
+            "p50": 10.107197,
+            "p95": 10.29219,
+            "max": 10.29219
+          }
+        }
+      ]
+    },
+    "datadog": {
+      "status": "passed",
+      "agents": 6,
+      "indexedApmParents": 6,
+      "unindexedApmAgents": 0,
+      "associations": [
+        {
+          "traceId": "408d27b2cff196957a17e98e20e53661",
+          "spanId": "3ecdca9429582fe7",
+          "llmTraceId": "f2cf9f70c4a35399b92d5fe3c2d0dab5",
+          "apmIndexed": true,
+          "outcome": "success"
+        },
+        {
+          "traceId": "cfd2a2819d8738f963cd143242b7d9af",
+          "spanId": "d5661e4035ad050c",
+          "llmTraceId": "e712fddd991c52139681d17f0ea2a420",
+          "apmIndexed": true,
+          "outcome": "error"
+        },
+        {
+          "traceId": "ca90f3a76fb0476e6bb56c19c910d9c2",
+          "spanId": "535d080690b7c85f",
+          "llmTraceId": "eb8c3b02b1ca5121a817b73539e72746",
+          "apmIndexed": true,
+          "outcome": "success"
+        },
+        {
+          "traceId": "70867f176963326d07890fdd3420ddde",
+          "spanId": "0c1d85fa7016df02",
+          "llmTraceId": "740768353aca5982b58df9715e1979ae",
+          "apmIndexed": true,
+          "outcome": "error"
+        },
+        {
+          "traceId": "412c6739edf93a8669bae411b004ad83",
+          "spanId": "2db5589204f36df8",
+          "llmTraceId": "55d3e743052e5bd5a3647fef66c3a019",
+          "apmIndexed": true,
+          "outcome": "success"
+        },
+        {
+          "traceId": "e8ce693fefb10aaea14fbc664fcfdb07",
+          "spanId": "09829d3e45164e78",
+          "llmTraceId": "cda324a37ee65141b1bf5a73a22dcbe3",
+          "apmIndexed": true,
+          "outcome": "error"
+        }
+      ]
+    }
+  },
+  "cleanup": {
+    "ownedLotelCollector": "stopped after qualification",
+    "sharedDatadogAgent": "preserved",
+    "disposableDatabasesAndWorkers": "removed"
+  }
+}

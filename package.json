@@ -23,7 +23,7 @@
     "test:live": "node tests/proof/live-members.ts",
     "test:proxy": "node --test tests/proxy-relay.test.ts tests/service/proxy-credential.test.ts tests/service/proxy-members.test.ts tests/service/proxy-scope.test.ts",
     "test:trusted": "node --test tests/service/trusted-*.test.ts",
-    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts",
+    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts tests/service/telemetry-agent.test.ts",
     "test:proxy:restart": "node tests/proof/proxy-restart.mts",
     "recovery": "node src/service/recovery-cli.ts",
     "test:recovery": "node --test tests/service/recovery.test.ts",
@@ -56,7 +56,8 @@
     "check:openapi": "node scripts/generate-openapi.mjs --check",
     "test:deskhand": "node scripts/generate-deskhand-vocabulary.mjs --check && node scripts/check-deskhand-boundary-imports.mjs && node --test tests/service/deskhand-contract.test.ts tests/service/deskhand-results/corpus.test.ts tests/service/deskhand-results/metadata.test.ts tests/service/deskhand-results/effects.test.ts tests/service/deskhand-results/tooling.test.ts",
     "test:client": "node --test tests/client/*.test.mts",
-    "verify:client": "node scripts/verify-client-package.mjs"
+    "verify:client": "node scripts/verify-client-package.mjs",
+    "verify:observability": "node scripts/verify-observability.mjs"
   },
   "dependencies": {
     "@ag-ui/claude-agent-sdk": "file:vendor/ag-ui/claude-agent-sdk-0.0.8.tgz",
@@ -68,6 +69,7 @@
     "@anthropic-ai/sdk": "0.113.0",
     "@birbcrew/client": "file:packages/client",
     "@birbcrew/pi-subagents": "file:packages/pi-subagents/birbcrew-pi-subagents-0.1.0.tgz",
+    "@birbcrew/switchboard-observability": "file:vendor/switchboard/birbcrew-switchboard-observability-0.0.0-dadfe09.tgz",
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",

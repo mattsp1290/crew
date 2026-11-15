@@ -3,7 +3,7 @@ import { nativeCallIds } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
 import { runLiveTool } from "./codex-live.ts";
 import { conversationContext } from "./memories.ts";
-import { flushTelemetry, traced, turnFlushBudgetMs } from "./telemetry.ts";
+import { flushTelemetry, observedAgent, traced, turnFlushBudgetMs } from "./telemetry.ts";
 import { withNativeAdmission } from "./native-admission.ts";
 import type { Launch } from "./supervisor.ts";
 import { pathToFileURL } from "node:url";
@@ -66,10 +66,12 @@ process.once("message", async (command: AdmittedTurn) => {
           checkpoint: command.checkpoint, continuation: command.continuation, signal,
         };
         const scope = {...command.launch, engine:member.engine, workflowRunId:command.launch.execution.workflowRunId};
+        const provider = member.engine === "codex" ? "openai" : member.engine === "claude" ? "anthropic" : profile?.pi?.model.provider ?? "";
+        const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => driver(value, member));
         const invoke = () => traced("model.invoke",scope, async () => {
           const result = items && tool
-            ? await runLiveTool(pool, temporal, command.launch, member, tool, input, value => driver(value, member), items.disclose)
-            : await driver(input, member);
+            ? await runLiveTool(pool, temporal, command.launch, member, tool, input, invokeDriver, items.disclose)
+            : await invokeDriver(input);
           await items?.finish();
           return result;
         }, result => usageAttributes(result.usage));
