@@ -264,10 +264,11 @@ The limits that follow from this:
   artifact of a [recovery generation](coordinated-recovery.md), can read every
   secret and sign requests that receivers accept. Protect backups as the
   recovery guide already asks.
-- What such a forged request can do is bounded by the body: it names IDs and a
-  status, and a receiver that fetches details with its own token learns nothing
-  from it that Crew would not return to that token anyway. A receiver that acts on
-  the body alone, without fetching, trusts a database reader.
+- Anyone with the signing key can sign arbitrary bodies. Crew's payload schema
+  does not constrain a forged request. Its consequences depend on what the
+  receiver validates and does. Fetching authoritative state from Crew with a
+  separately held bearer token can reduce those consequences; a valid signature
+  alone does not prove that Crew sent the request after its key leaked.
 - There is no rotation in place. Create a new endpoint, move the receiver to its
   secret, then delete the old one. Deleting an endpoint erases its secret and URL
   from the row; copies remain in earlier backups and in PostgreSQL's dead tuples
@@ -470,9 +471,14 @@ again before every attempt, whatever the endpoint's format:
   stored.
 
 `BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS=1` on the gateway allows plain `http` and
-loopback and private addresses, for local testing only. It is off unless set to
-exactly `1`. It never allows link-local, the listed metadata addresses or the other
-special addresses. `capabilities.webhooks.schemes` reports only `https`, the
+loopback and private addresses. It is off unless set to exactly `1`, including in
+deployed installations; there is no production-mode restriction. This setting
+permits public HTTP receivers as well as private HTTPS receivers, and is not
+limited to Tailscale or NetBird peers. A private network used to reach Crew does
+not protect an outbound public HTTP connection. Enable it only when the operator
+accepts both HTTP and private-address destinations. It never allows link-local,
+the listed metadata addresses or the other special addresses.
+`capabilities.webhooks.schemes` reports only `https`, the
 default, and `insecureTargets` says the setting exists and is off by default; neither
 reports whether this gateway has it on. Names are resolved through DNS only, so
 `localhost` and other hosts-file names may not resolve: test with an IP literal
@@ -621,7 +627,8 @@ endpoints before you run an earlier release.
   Adding a kind means adding it to `webhookKinds` and to the two CHECKs in a
   migration.
 - Inbound webhooks that start a request (row 24 of the comparison).
-- Delivery to anything but an HTTPS endpoint. Crew sends no email or SMS and runs
+- Delivery through protocols other than HTTPS, or HTTP under the explicit
+  [insecure-target setting](#network-safety). Crew sends no email or SMS and runs
   no push service or chat app of its own; a `slack` or `ntfy` endpoint posts to a
   URL the owner supplies, and that service does the rest.
 - A message template an owner writes, another layout (Microsoft Teams cards,

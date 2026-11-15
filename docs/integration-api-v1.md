@@ -30,7 +30,8 @@ restore), `usage` (the ledger states, what each engine reports, the cost rules a
 operator's price table setting, the lanes, the budget period and refusal codes),
 `webhooks` (the webhook route, kinds, formats and the default one, signature and the
 formats it covers, retry and restore semantics, and `insecureTargets`, which says an
-operator setting for testing exists, not whether it is on), `instructionPacks` (the pack
+operator setting for HTTP and private-address targets exists, not whether it is on),
+`instructionPacks` (the pack
 route, the spawn field, limits, order, deletion and restore), health dependencies and
 listing limits. Additive
 response fields are compatible; consumers must reject an unsupported major version.
@@ -550,7 +551,8 @@ member-lane requests, routine firings and handoffs. See [usage metering](usage-m
 
 ## Outbound webhooks
 
-An owner can register up to 10 enabled HTTPS endpoints. Crew posts to an endpoint
+An owner can register up to 10 enabled endpoints, which require HTTPS by default.
+Crew posts to an endpoint
 when an event it selected happens: a card or question became pending
 (`approval.pending`), a request finished (`request.finished`), a routine firing
 settled (`routine.firing_settled`), or Crew disabled a routine after ten failures
@@ -568,8 +570,9 @@ the owner's token only, and the audit trail keeps only its host. An unknown form
 fails `400 invalid_input`, and a replay with another format `409 conflict`. Delivery
 is at least once and unordered, with ten attempts over about three hours, and an
 endpoint that gives up ten deliveries in a row is disabled. Crew sends only to
-public addresses over HTTPS, unless the operator allows insecure targets for local
-testing, follows no redirect and sends no credential. `webhook.*` audit rows belong
+public addresses over HTTPS, unless the operator enables the explicit
+[HTTP and private-address override](webhooks.md#network-safety). It follows no
+redirect and sends no credential. `webhook.*` audit rows belong
 to no member, so their `memberId` is `null` and a `memberId` filter never matches
 them. An expired card, a handoff and a budget refusal add no kind: a handoff's
 reserved request and an expired card's request are sent as `request.finished`, and a

@@ -73,8 +73,11 @@ Gateways also send [outbound webhooks](webhooks.md): once an owner registers an
 endpoint, every gateway replica connects out to it. Give gateways egress to DNS (the
 servers in the container's `/etc/resolv.conf`, queried directly; the hosts file is
 not read) and to the HTTPS hosts and ports owners register, which may be any public
-address and port. Crew refuses private, loopback and metadata addresses itself, but
-an egress policy (a Kubernetes `NetworkPolicy` or a firewall) is the place to narrow
+address and port. Crew refuses private and loopback addresses by default, and
+always refuses the listed metadata addresses. The explicit
+[insecure-target setting](webhooks.md#network-safety)
+also permits HTTP and private or loopback destinations. An egress policy
+(a Kubernetes `NetworkPolicy` or a firewall) is the place to narrow
 it further, for example to an allow-list of receivers. Webhook requests ignore
 `HTTP_PROXY`, `HTTPS_PROXY` and `NODE_USE_ENV_PROXY`, so an installation whose only
 way out is a proxy cannot deliver them. Add a private certificate authority with
@@ -113,7 +116,7 @@ In Kubernetes pass the command as `args:`; setting `command:` replaces `tini`.
 | `HOME` | both | `/tmp` | Writable home for SDK caches. |
 | `BIRBCREW_WORKER_HEARTBEAT_FILE` | worker | unset | Absolute path the worker touches every 5 seconds from the start of its Temporal workers until shutdown begins. See [Health](#health). |
 | `BIRBCREW_USAGE_PRICES_PATH` | worker, and a backend that runs `runTrustedRequest` | unset | Absolute path to the operator's JSON price table, USD per million tokens per model. Read once at worker start; a malformed file stops the worker. Unset, no cost is estimated. See [estimated cost](usage-metering.md#estimated-cost). |
-| `BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS` | gateway | unset | `1` lets webhooks use plain `http` and loopback or private addresses, for local testing only. Any other value leaves it off. See [outbound webhooks](webhooks.md#network-safety). |
+| `BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS` | gateway | unset | `1` lets webhooks use plain `http` and loopback or private addresses, including in deployed installations. This also permits public HTTP receivers and is not restricted to mesh peers. Any other value leaves it off. See [outbound webhooks](webhooks.md#network-safety). |
 | `BIRBCREW_OBSERVER_FANOUT` | gateway | `true` | `true` gives the observers of a conversation one shared PostgreSQL reader per gateway process; `false` restores one poll per observer every 75 ms. The stream is the same either way. Any other value stops the gateway at startup. See [the gateway guide](member-gateway.md). |
 | `BIRBCREW_LIVE_PROFILES` | worker | unset, required | JSON naming the live account of each engine this worker serves. See [Provider accounts](#provider-accounts). |
 | `OPENCODE_GO_API_KEY` | worker | unset | Required when `BIRBCREW_LIVE_PROFILES` has a `pi` entry. |

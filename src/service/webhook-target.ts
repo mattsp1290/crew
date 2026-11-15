@@ -17,8 +17,8 @@ export const targetLimits = {
 
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type TargetPolicy = {
-  /** BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS=1: plain http, loopback and private addresses, for local
-   * testing only. Link-local, metadata and other special addresses stay refused. */
+  /** BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS=1 permits plain http and loopback or private
+   * addresses in any deployment. Link-local, metadata and other special addresses stay refused. */
   allowInsecure: boolean;
   /** Tests replace DNS; production asks the configured DNS servers. `signal` aborts at the timeout. */
   lookup?: (hostname: string, signal: AbortSignal) => Promise<ResolvedAddress[]>;
