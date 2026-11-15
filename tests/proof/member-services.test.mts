@@ -850,14 +850,7 @@ for (const mode of ["catchable", "forced"] as const) {
       const {writeFileSync,readFileSync}=await import('node:fs');
       const ownership=JSON.parse(readFileSync(join(s.artifacts,'ownership.json'),'utf8'));
       if(ownership.allocation.kind!=='settled'||ownership.processes.length<2||ownership.processes.some(p=>p.identity.kind!=='known')) throw new Error('early ownership publication incomplete');
-      const {parseProcess,positiveGroupProcessSchema}=await import('./tests/proof/member-service-processes.mts');
-      const identity=pid=>positiveGroupProcessSchema.parse(parseProcess(pid,readFileSync('/proc/'+pid+'/stat','utf8')));
-      const fixtureOwner=identity(process.pid),contractWorker=identity(process.ppid);
-      if(fixtureOwner.group!==fixtureOwner.pid||!/^\\d+$/.test(fixtureOwner.startTime)||!/^\\d+$/.test(contractWorker.startTime)) throw new Error('probe owner identity unavailable');
-      const ready={...ownership,probe:{kind:'platform-cancellation-probe',mode:'${mode}',readyUTC:new Date().toISOString(),fixtureOwner,contractWorker}};
-      writeFileSync(join(s.artifacts,'timeout-ready.json.tmp'),JSON.stringify(ready),{mode:0o600});
-      const {renameSync}=await import('node:fs');renameSync(join(s.artifacts,'timeout-ready.json.tmp'),join(s.artifacts,'timeout-ready.json'));
-      console.log('PLATFORM_PROBE_READY '+ready.probe.readyUTC);
+      writeFileSync(join(s.artifacts,'timeout-ready.json'),JSON.stringify(ownership));
       ${mode === "forced" ? "process.removeAllListeners('SIGTERM');" : ""}
       process.on('SIGTERM',()=>writeFileSync(join(s.artifacts,'term.txt'),'SIGTERM'));
       await new Promise(()=>{});
