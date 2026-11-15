@@ -12,7 +12,7 @@ import { bundleWorkflowCode } from "@temporalio/worker";
 import { Pool } from "pg";
 import type { MemberClient } from "../../src/service/client.ts";
 import { createGateway } from "../../src/service/gateway.ts";
-import { publishObservation, readEventsLimit } from "../../src/service/observation.ts";
+import { publishObservation, readEvents, readEventsLimit } from "../../src/service/observation.ts";
 import { ObserverHubs, observerFanout, ObserverSettingsError, type FanoutBounds } from "../../src/service/observer-hub.ts";
 import { MemberStore } from "../../src/service/store.ts";
 
@@ -35,6 +35,20 @@ async function until<T>(check: () => T | undefined | Promise<T | undefined>, lab
 
 async function fixture(t: TestContext) {
   const pool = new Pool({ connectionString: process.env.BIRBCREW_TEST_DATABASE_URL, max: 8 });
+  let beforeLedgerRead: (() => Promise<never> | undefined) | undefined;
+  const instrumented = new WeakSet();
+  pool.on("acquire", (client) => {
+    if (instrumented.has(client)) return;
+    instrumented.add(client);
+    const query = client.query.bind(client);
+    client.query = ((...args: Parameters<typeof query>) => {
+      const config: unknown = args[0];
+      const sql = typeof config === "string" ? config :
+        typeof config === "object" && config !== null && "text" in config ? config.text : undefined;
+      const read = typeof sql === "string" && sql.includes("FROM birbcrew_ts.public_events e JOIN");
+      return (read ? beforeLedgerRead?.() : undefined) ?? query(...args);
+    }) as typeof client.query;
+  });
   // Hooks run in the order they are added, and every gateway stops before any pool ends: a query still queued for a
   // client when its pool ends never settles, so a gateway's background pass waiting on one would hang its stop.
   const gateways: (() => Promise<void>)[] = [];
@@ -114,11 +128,7 @@ async function fixture(t: TestContext) {
 
   /** Runs `before` ahead of each read of the public event ledger through this pool; a promise it returns replaces the read. */
   function onLedgerRead(before: () => Promise<never> | undefined) {
-    const query = pool.query.bind(pool);
-    pool.query = ((...args: Parameters<typeof query>) => {
-      const read = typeof args[0] === "string" && args[0].includes("FROM birbcrew_ts.public_events e JOIN");
-      return (read ? before() : undefined) ?? query(...args);
-    }) as typeof pool.query;
+    beforeLedgerRead = before;
   }
   return { pool, store, owner, stranger, ownerId, strangerId, gateway, conversation, publish, ledger, onLedgerRead };
 }
@@ -172,10 +182,10 @@ test("a lock-blocked ledger read releases its hub and observers resume at the sa
   try {
     await lock.query("BEGIN");
     await lock.query("LOCK TABLE birbcrew_ts.public_events IN ACCESS EXCLUSIVE MODE");
-    await until(async () => {
-      const { rows } = await f.pool.query(`SELECT pid FROM pg_stat_activity
+    const blockedPid = await until(async () => {
+      const { rows } = await f.pool.query<{ pid: number }>(`SELECT pid FROM pg_stat_activity
         WHERE wait_event_type='Lock' AND query LIKE 'SELECT e.cursor,e.event FROM birbcrew_ts.public_events%'`);
-      return rows.length === 1 || undefined;
+      return rows.length === 1 ? rows[0].pid : undefined;
     }, "one PostgreSQL hub read blocked on the ledger lock");
     const reconnect = observe(hub.socketPath, f.owner, cid, runId);
     observers.push(reconnect);
@@ -183,6 +193,10 @@ test("a lock-blocked ledger read releases its hub and observers resume at the sa
     await until(() => reconnect.has("STATE_SNAPSHOT") && hub.stats()?.observers === 3 || undefined, "reconnect joins blocked hub");
     await until(() => hub.stats()?.fallbacks === 3 || undefined, "blocked read times out and frees every observer", 6_000);
     assert.equal(hub.stats()?.hubs, 0);
+    await until(async () => {
+      const { rows } = await f.pool.query("SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock'", [blockedPid]);
+      return rows.length === 0 || undefined;
+    }, "PostgreSQL cancels the original read while the lock is still held");
   } finally {
     await lock.query("ROLLBACK");
     lock.release();
@@ -195,6 +209,38 @@ test("a lock-blocked ledger read releases its hub and observers resume at the sa
   }
   assert.equal(observers[0].raw, observers[1].raw);
   assert.equal(observers[0].raw, observers[2].raw);
+});
+
+test("ledger deadlines leave the shared connection's session policy unchanged", async (t) => {
+  const f = await fixture(t), cid = await f.conversation();
+  const uri = new URL(process.env.BIRBCREW_TEST_DATABASE_URL!);
+  uri.searchParams.set("statement_timeout", "0");
+  uri.searchParams.set("query_timeout", "0");
+  const single = new Pool({ connectionString: uri.href, max: 1 });
+  t.after(() => single.end());
+  await single.query("SET statement_timeout = '12345ms'");
+  const { rows: [before] } = await single.query("SHOW statement_timeout");
+  assert.deepEqual(await readEvents(single, f.ownerId, cid, 0), await f.ledger(cid));
+  const { rows: [after] } = await single.query("SHOW statement_timeout");
+  assert.deepEqual(after, before);
+});
+
+test("a ledger timeout does not cancel a store write waiting on the same relation", { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t), cid = await f.conversation();
+  const lock = await f.pool.connect();
+  await lock.query("BEGIN");
+  await lock.query("LOCK TABLE birbcrew_ts.public_events IN ACCESS EXCLUSIVE MODE");
+  let written = false;
+  const publication = f.publish(cid, input(randomUUID())).then(() => { written = true; });
+  try {
+    await assert.rejects(readEvents(f.pool, f.ownerId, cid, 0), { code: "57014" });
+    assert.equal(written, false, "the write is still pending after the read's server deadline");
+  } finally {
+    await lock.query("ROLLBACK");
+    lock.release();
+  }
+  await publication;
+  assert.equal(written, true);
 });
 
 /** The bootstrap's state snapshot carries the snapshot cursor as its SSE id; every later id'd frame must be exactly
