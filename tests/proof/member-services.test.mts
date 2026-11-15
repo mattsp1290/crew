@@ -851,6 +851,7 @@ for (const mode of ["catchable", "forced"] as const) {
       const ownership=JSON.parse(readFileSync(join(s.artifacts,'ownership.json'),'utf8'));
       if(ownership.allocation.kind!=='settled'||ownership.processes.length<2||ownership.processes.some(p=>p.identity.kind!=='known')) throw new Error('early ownership publication incomplete');
       writeFileSync(join(s.artifacts,'timeout-ready.json'),JSON.stringify(ownership));
+      writeFileSync(join(s.artifacts,'qualification-ready.json'),JSON.stringify({readyUTC:new Date().toISOString(),mode:'${mode}'}));
       ${mode === "forced" ? "process.removeAllListeners('SIGTERM');" : ""}
       process.on('SIGTERM',()=>writeFileSync(join(s.artifacts,'term.txt'),'SIGTERM'));
       await new Promise(()=>{});
