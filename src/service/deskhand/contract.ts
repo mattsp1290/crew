@@ -75,7 +75,7 @@ export interface Display {
   readonly name: string;
   readonly isMain: boolean;
   readonly isBuiltin: boolean;
-  readonly asleep: boolean;
+  readonly asleep: false;
   readonly bounds: GlobalRect;
   readonly pixels: PixelSize;
   readonly pointPixelScale: number;
@@ -350,10 +350,12 @@ function desktopStatus(wire: Record<string, unknown>, context: BoundaryContext, 
   };
 }
 function displayCatalog(wire: Record<string, unknown>): DisplayCatalog {
-  const displays = array(wire.displays).map((value) => {
+  const displays = array(wire.displays).map((value): Display => {
     const display = object(value);
+    const asleep = boolean(display.asleep);
+    requireFact(asleep === false, 'schema', 'relationship');
     return { id: displayId(display.display_id), uuid: string(display.uuid), name: string(display.name),
-      isMain: boolean(display.is_main), isBuiltin: boolean(display.is_builtin), asleep: boolean(display.asleep),
+      isMain: boolean(display.is_main), isBuiltin: boolean(display.is_builtin), asleep,
       bounds: rectangle(display.bounds), pixels: pixels(display.pixel_size), pointPixelScale: number(display.point_pixel_scale) };
   });
   requireFact(new Set(displays.map((display) => display.id)).size === displays.length, 'schema', 'relationship');
