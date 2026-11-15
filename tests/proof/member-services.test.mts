@@ -38,6 +38,10 @@ test("local capture preserves exit 23 and marker, including a failed destination
   assert.match(failed.output, /ENOENT/);
   const passed = await node([diagnostics, "--command", join(dir, "missing", "passed.log"), process.execPath, "-e", "process.exitCode=0"]);
   assert.equal(passed.code, 1, passed.output);
+  const ordinaryDeadlineCode = join(dir, "ordinary-124.log");
+  const ordinary = await node([diagnostics, "--command", ordinaryDeadlineCode, process.execPath, "-e", "process.exitCode=124"]);
+  assert.equal(ordinary.code, 124, ordinary.output);
+  assert.equal(JSON.parse(await readFile(ordinaryDeadlineCode + ".result.json", "utf8")).deadlineExceeded, false);
 });
 
 test("local capture drains oversized output and retains a finite log", async t => {
@@ -130,6 +134,40 @@ test("local catchable cancellation lets descendants finish after their leader ex
   const report = JSON.parse(await readFile(log + ".result.json", "utf8"));
   assert.equal(report.interrupted, "SIGTERM");
   assert.equal(await liveGroup(report.pid), false);
+});
+
+test("local repeated cancellation keeps the first signal and does not extend cleanup", { timeout: 12_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "crew-cancel-bound-"));
+  const ready = join(dir, "ready"), log = join(dir, "command.log");
+  const source = `const fs=require('node:fs');process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000)`;
+  const wrapper = spawn(process.execPath, [diagnostics, "--command", log, process.execPath, "-e", source],
+    { detached: true, stdio: "ignore" });
+  assert.ok(wrapper.pid);
+  const wrapperPid = wrapper.pid;
+  let payloadPid: number | undefined;
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    wrapper.once("error", reject); wrapper.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  t.after(async () => {
+    await Promise.all([stopGroup(wrapperPid), ...(payloadPid ? [stopGroup(payloadPid)] : [])]);
+    await rm(dir, { recursive: true, force: true });
+  });
+  payloadPid = await until(async () => {
+    try { return Number(await readFile(ready, "utf8")); }
+    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
+  }, "signal-ignoring payload readiness", 3_000);
+  t.diagnostic(`Owned process group ${wrapperPid}`);
+  t.diagnostic(`Owned process group ${payloadPid}`);
+  const started = Date.now();
+  process.kill(wrapperPid, "SIGINT");
+  const second = setTimeout(() => process.kill(wrapperPid, "SIGTERM"), 1_000);
+  try { assert.deepEqual(await exited, { code: 130, signal: null }); }
+  finally { clearTimeout(second); }
+  assert.ok(Date.now() - started < 7_000, "Later signal extended the cancellation window");
+  const report = JSON.parse(await readFile(log + ".result.json", "utf8"));
+  assert.equal(report.interrupted, "SIGINT");
+  assert.equal(report.deadlineExceeded, false);
+  assert.equal(await liveGroup(payloadPid), false);
 });
 
 test("local workflow entry PID relays cancellation and finishes before runner escalation", { timeout: 14_000 }, async t => {
@@ -256,7 +294,9 @@ async function fixtureRun(directory: string, body: string) {
   return node(["--input-type=module", "-e", source], { ...process.env, BIRBCREW_PROOF_ARTIFACTS: directory }, 100_000);
 }
 async function fixtureReceipt(directory: string) {
-  const [entry] = await readdir(directory);
+  const entries = await readdir(directory);
+  assert.equal(entries.length, 1, "Expected one fixture lifetime and cleanup receipt");
+  const [entry] = entries;
   assert.ok(entry);
   const artifacts = join(directory, entry);
   const ownership = JSON.parse(await readFile(join(artifacts, "ownership.json"), "utf8"));
@@ -275,6 +315,7 @@ test("remote raw services disposal before schema creation needs no proof capture
       const s=await services();
       const first=s.close(), second=s.close();
       if(first!==second) throw new Error('raw disposal promise changed');
+      await s.child(process.execPath,['-e','process.exit(0)']).then(()=>{throw new Error('allocated after close')},e=>{if(!e.message.includes('Fixture is closing')) throw e});
       await first;
       console.log('raw-before-schema-disposed');
     } catch(error) { console.error(error);process.exitCode=exitStatus(error); }`;
@@ -284,6 +325,8 @@ test("remote raw services disposal before schema creation needs no proof capture
   const receipt = await fixtureReceipt(dir);
   assert.deepEqual(receipt.cleanup.failures, []);
   assert.equal("outcome" in receipt.cleanup, false, "Raw disposal must not claim a proof outcome");
+  assert.equal(receipt.cleanup.resources.container, "absent");
+  assert.equal(receipt.cleanup.resources.directory, "absent");
   await assert.rejects(stat(receipt.ownership.directory), { code: "ENOENT" });
 });
 
@@ -302,32 +345,34 @@ test("remote fixture preserves assertion across capture and directory cleanup fa
   assert.ok(receipt.cleanup.failures.length >= 2, JSON.stringify(receipt.cleanup));
 });
 
-test("remote passing body fails when required capture fails and close stays stable", { timeout: 120_000 }, async t => {
+test("remote passing body fails when managed finish cannot capture required SQL", { timeout: 120_000 }, async t => {
   const dir = await contractDirectory(t);
   const result = await fixtureRun(dir, `
-    const first=s.close(), second=s.close();
-    if (first !== second) throw new Error('close promise changed');
-    const results=await Promise.allSettled([first,second]);
-    if (results.some(r=>r.status!=='rejected')) throw new Error('capture failure did not fail close');
-    await s.child(process.execPath,['-e','process.exit(0)']).then(()=>{throw new Error('allocated after close')},e=>{if(!e.message.includes('Fixture is closing')) throw e});
-    await first;
+    if ('close' in s) throw new Error('Managed callback exposes disposal');
+    console.log('managed-body-passed');
   `);
   assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /managed-body-passed/);
   const receipt = await fixtureReceipt(dir);
+  assert.equal(receipt.cleanup.outcome.kind, 'passed');
   assert.match(JSON.stringify(receipt.cleanup.failures), /Lifecycle SQL capture failed/);
   await assert.rejects(stat(receipt.ownership.directory), { code: "ENOENT" });
 });
 
-test("remote concurrent close and SIGTERM share teardown and return 143", { timeout: 120_000 }, async t => {
+test("remote concurrent managed finish and SIGTERM share teardown and return 143", { timeout: 120_000 }, async t => {
   const dir = await contractDirectory(t);
   const result = await fixtureRun(dir, `
     await s.child(process.execPath,['-e','setInterval(()=>{},1000)']);
-    const first=s.close(); void first.catch(()=>{});
-    process.kill(process.pid,'SIGTERM'); process.kill(process.pid,'SIGTERM');
-    await new Promise(()=>{});
+    const started=Date.now();
+    setTimeout(()=>{process.kill(process.pid,'SIGTERM');process.kill(process.pid,'SIGTERM')},50);
+    process.on('exit',()=>console.log('managed-finish-ms='+(Date.now()-started)));
   `);
   assert.equal(result.code, 143, result.output);
+  const elapsed = /managed-finish-ms=(\d+)/.exec(result.output);
+  assert.ok(elapsed, result.output);
+  assert.ok(Number(elapsed[1]) < 6_000, result.output);
   const receipt = await fixtureReceipt(dir);
+  assert.equal(receipt.cleanup.outcome.status, 143);
   assert.match(await readFile(join(receipt.artifacts, "first-failure.txt"), "utf8"), /SIGTERM/);
   await assert.rejects(stat(receipt.ownership.directory), { code: "ENOENT" });
 });

@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { open, writeFile } from "node:fs/promises";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { captureDiagnostics, CommandFailure, describe, exitStatus, stopGroup, type CommandResult } from "./member-service-diagnostics.mts";
+import { before, boundedCommand, captureDiagnostics, CommandFailure, describe, exitStatus, now, receipt, stopGroup, type CommandResult } from "./member-service-diagnostics.mts";
 
 export type Engine = "pi" | "claude" | "codex";
 export const run = promisify(execFile);
@@ -24,9 +24,32 @@ export async function until<T>(check: () => Promise<T | undefined>, label: strin
   throw new Error("Timed out waiting for " + label);
 }
 type Outcome = { kind: "passed" } | { kind: "failed"; error: unknown };
-type OwnedProcess = { pid: number; result: Promise<CommandResult>; stop: () => Promise<void>; log: string };
+type OwnedProcess = { pid: number; result: Promise<CommandResult>; stop: (deadline?: number) => Promise<void>; log: string };
 
-export async function services(selected?: Engine, label = basename(process.argv[1] ?? "service", ".mts")) {
+const active = new Map<object, (error: CommandFailure) => Promise<void>>();
+let interruption: CommandFailure | undefined;
+function interrupt(signal: "SIGINT" | "SIGTERM") {
+  if (interruption) return;
+  interruption = new CommandFailure("Fixture cancellation", { kind: "signalled", signal });
+  const error = interruption;
+  void Promise.allSettled([...active.values()].map(close => close(error))).then(results => {
+    const failed = results.find(result => result.status === "rejected");
+    process.exit(exitStatus(failed?.status === "rejected" ? failed.reason : error));
+  });
+}
+const onInt = () => interrupt("SIGINT"), onTerm = () => interrupt("SIGTERM");
+function activate(owner: object, cancel: (error: CommandFailure) => Promise<void>) {
+  assert.ok(!interruption, "Fixture creation after cancellation");
+  if (!active.size) { process.on("SIGINT", onInt); process.on("SIGTERM", onTerm); }
+  active.set(owner, cancel);
+}
+function deactivate(owner: object) {
+  active.delete(owner);
+  if (!active.size && !interruption) { process.off("SIGINT", onInt); process.off("SIGTERM", onTerm); }
+}
+
+function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "service", ".mts")) {
+  assert.ok(!interruption, "Fixture creation after cancellation");
   assert.match(label, /^[a-zA-Z0-9-]+$/);
   const root = process.env.BIRBCREW_PROOF_ARTIFACTS ?? join(tmpdir(), "crew-service-proofs");
   assert.ok(isAbsolute(root), "BIRBCREW_PROOF_ARTIFACTS must be absolute");
@@ -45,8 +68,11 @@ export async function services(selected?: Engine, label = basename(process.argv[
   const db = "birb-proof-" + randomUUID(), password = randomBytes(24).toString("hex");
   const controller = new AbortController();
   const processes: OwnedProcess[] = [];
-  let state: { kind: "open" } | { kind: "closing"; done: Promise<void> } = { kind: "open" };
-  let first: Outcome = { kind: "passed" };
+  let state: { kind: "open" } | { kind: "closing"; done: Promise<void>; deadline: number } = { kind: "open" };
+  let first: Outcome | undefined;
+  let proof: Promise<void> | undefined;
+  let allocation: Promise<unknown> | undefined;
+  let allocated = false;
   let gatewayNumber = 0;
   const failures: unknown[] = [];
   function ensureOpen() { assert.equal(state.kind, "open", "Fixture is closing"); }
@@ -65,15 +91,10 @@ export async function services(selected?: Engine, label = basename(process.argv[
       if (!proc.pid) { await result; throw new Error("Child has no process identity"); }
       const pid = proc.pid;
       let stopped: Promise<void> | undefined;
-      function stop() {
+      function stop(deadline = state.kind === "closing" ? state.deadline - 2_800 : now() + 3_000) {
         return stopped ??= (async () => {
-          await stopGroup(pid);
-          let timer: NodeJS.Timeout | undefined;
-          try {
-            await Promise.race([result, new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error(`Owned process ${pid} did not exit`)), 2_000);
-            })]);
-          } finally { clearTimeout(timer); }
+          await stopGroup(pid, deadline);
+          await before(result, deadline, `Owned process ${pid} exit`);
         })();
       }
       owned = { pid, result, stop, log };
@@ -121,46 +142,73 @@ export async function services(selected?: Engine, label = basename(process.argv[
     ]);
     return { url, stop: proc.stop };
   }
-  function close(outcome: Outcome = { kind: "passed" }): Promise<void> {
-    if (first.kind === "passed" && outcome.kind === "failed") {
+  function finish(outcome: Outcome): Promise<void> {
+    if (!first || (first.kind === "passed" && outcome.kind === "failed")) {
       first = outcome;
-      const message = describe(outcome.error);
-      console.error(`${label} first failure: ${message}`);
-      try { writeFileSync(join(artifacts, "first-failure.txt"), message, { mode: 0o600 }); }
-      catch (error) { failures.push(error); console.error("First failure persistence also failed", describe(error)); }
+      if (outcome.kind === "failed") console.error(`${label} first failure: ${describe(outcome.error)}`);
     }
+    return close();
+  }
+  async function persistFailure(deadline: number) {
+    if (first?.kind === "failed") await receipt(join(artifacts, "first-failure.txt"), describe(first.error), deadline);
+  }
+  function close(): Promise<void> {
     if (state.kind === "closing") return state.done;
+    const deadline = now() + 5_900;
     const done = Promise.resolve().then(async () => {
+      type Absence = "absent" | "unknown";
+      const resources: { container: Absence; directory: Absence; processes: { pid: number; status: Absence }[] } = {
+        container: "unknown", directory: "unknown", processes: processes.map(({ pid }) => ({ pid, status: "unknown" })),
+      };
       const attempt = async (operation: () => Promise<unknown>) => {
         try { await operation(); } catch (error) { failures.push(error); console.error(`${label} secondary failure: ${describe(error)}`); }
       };
+      const pendingProof = proof, pendingAllocation = allocation;
       controller.abort();
-      await attempt(() => writeFile(join(artifacts, "ownership.json"), JSON.stringify({ label, directory, container: db,
-        processes: processes.map(({ pid, log }) => ({ pid, log })) }, null, 2)));
-      await attempt(() => captureDiagnostics(directory, artifacts, db));
-      await Promise.all(processes.map(proc => attempt(proc.stop)));
-      await Promise.all([
-        attempt(async () => {
-          await run("docker", ["rm", "-f", db], { timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 128 * 1024 });
-          const { stdout } = await run("docker", ["ps", "-aq", "--filter", "name=^/" + db + "$"], { timeout: 2_000, killSignal: "SIGKILL", maxBuffer: 1024 });
-          assert.equal(stdout.trim(), "", "Owned PostgreSQL container remained after removal");
-        }),
-        attempt(() => run("rm", ["-rf", "--", directory], { timeout: 2_000, killSignal: "SIGKILL", maxBuffer: 1024 })),
-      ]);
-      await attempt(() => writeFile(join(artifacts, "cleanup.json"), JSON.stringify({ failures: failures.map(describe),
-        outcome: first.kind === "failed" ? { kind: "failed", error: describe(first.error), status: exitStatus(first.error) } : first }, null, 2)));
-      process.off("SIGINT", onInt); process.off("SIGTERM", onTerm);
-      if (first.kind === "failed") throw first.error;
+      try {
+        await Promise.all([
+          attempt(() => receipt(join(artifacts, "ownership.json"), { label, directory, container: db,
+            processes: processes.map(({ pid, log }) => ({ pid, log })) }, deadline - 4_900)),
+          attempt(() => persistFailure(deadline - 4_900)),
+        ]);
+        await Promise.all([
+          ...(first ? [attempt(() => captureDiagnostics(directory, artifacts, db, deadline - 2_800))] : []),
+          ...processes.map((proc, index) => attempt(async () => {
+            await proc.stop(deadline - 2_800);
+            resources.processes[index].status = "absent";
+          })),
+          ...(pendingProof ? [attempt(() => before(pendingProof.catch(() => {}), deadline - 2_800, "Proof callback disposal"))] : []),
+          ...(pendingAllocation ? [attempt(() => before(pendingAllocation, deadline - 2_800, "Docker allocation settlement"))] : []),
+        ]);
+        await Promise.all([
+          attempt(async () => {
+            await boundedCommand("docker", ["rm", "-f", db], deadline - 1_200);
+            const { output } = await boundedCommand("docker", ["ps", "-aq", "--filter", "name=^/" + db + "$"], deadline - 700);
+            assert.equal(output.trim(), "", "Owned PostgreSQL container remained after removal");
+            assert.ok(!allocation || allocated, "Docker allocation was interrupted; daemon allocation completion unknown");
+            resources.container = "absent";
+          }),
+          attempt(async () => {
+            await boundedCommand("rm", ["-rf", "--", directory], deadline - 800);
+            await boundedCommand(process.execPath, ["--input-type=module", "-e",
+              "import {lstatSync} from 'node:fs';try{lstatSync(process.argv[1]);process.exitCode=1}catch(e){if(e.code!=='ENOENT')throw e}", directory], deadline - 700);
+            resources.directory = "absent";
+          }),
+        ]);
+        for (let written: Outcome | undefined, again = true; again;) {
+          written = first;
+          await attempt(() => persistFailure(deadline - 350));
+          await attempt(() => receipt(join(artifacts, "cleanup.json"), { failures: failures.map(describe), resources,
+            ...(first ? { outcome: first.kind === "failed" ? { kind: "failed", error: describe(first.error), status: exitStatus(first.error) } : first } : {}) }, deadline));
+          again = written !== first && now() < deadline;
+        }
+      } finally { deactivate(owner); }
+      if (first?.kind === "failed") throw first.error;
       if (failures.length) throw new AggregateError(failures, "Fixture capture or cleanup failed");
     });
-    state = { kind: "closing", done };
+    state = { kind: "closing", done, deadline };
     return done;
   }
-  function interrupt(signal: "SIGINT" | "SIGTERM") {
-    const error = new CommandFailure(label, { kind: "signalled", signal });
-    void close({ kind: "failed", error }).then(() => process.exit(exitStatus(error)), failure => process.exit(exitStatus(failure)));
-  }
-  const onInt = () => interrupt("SIGINT"), onTerm = () => interrupt("SIGTERM");
   async function databaseReady() {
     await until(async () => {
       ensureOpen();
@@ -192,14 +240,17 @@ export async function services(selected?: Engine, label = basename(process.argv[
     }, "Temporal");
     return stop;
   }
-  process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
-  try {
+  async function openFixture() {
     const cliVersion = await run(temporal, ["--version"], { timeout: 5_000, killSignal: "SIGKILL" });
     assert.match(cliVersion.stdout, /^temporal version 1\.10\.0\b/);
     ensureOpen();
-    await run("docker", ["run", "--rm", "--name", db, "-d", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=birbcrew_ts",
+    await receipt(join(artifacts, "ownership.json"), { label, directory, container: db, processes: [] }, now() + 1_000);
+    ensureOpen();
+    allocation = boundedCommand("docker", ["run", "--rm", "--name", db, "-d", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=birbcrew_ts",
       "-p", "127.0.0.1::5432", "postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"],
-      { env: { ...process.env, POSTGRES_PASSWORD: password }, signal: controller.signal, timeout: 30_000, killSignal: "SIGKILL" });
+      now() + 30_000, { env: { ...process.env, POSTGRES_PASSWORD: password }, signal: controller.signal });
+    await allocation;
+    allocated = true;
     await databaseReady();
     ensureOpen();
     const probe = createServer().listen(0, "127.0.0.1");
@@ -211,12 +262,32 @@ export async function services(selected?: Engine, label = basename(process.argv[
     ensureOpen();
     return { env, signal: controller.signal, sql, worker, child, execute, gateway, directory, artifacts, startTemporal, close,
       restartDatabase: async () => { ensureOpen(); await run("docker", ["restart", db], { timeout: 30_000, killSignal: "SIGKILL", signal: controller.signal }); await databaseReady(); } };
-  } catch (error) { await close({ kind: "failed", error }); throw error; }
+  }
+  const owner = { open: openFixture, close, finish, observe: (pending: Promise<void>) => { proof = pending; } };
+  return owner;
 }
-export type Services = Awaited<ReturnType<typeof services>>;
+export async function services(selected?: Engine, label?: string) {
+  const owner = createFixture(selected, label);
+  activate(owner, async error => {
+    try { await owner.close(); } finally { throw error; }
+  });
+  try { return await owner.open(); }
+  catch (error) {
+    try { await owner.close(); } catch (cleanup) { console.error("Fixture startup cleanup also failed", describe(cleanup)); }
+    throw error;
+  }
+}
+export type ServiceHandle = Awaited<ReturnType<typeof services>>;
+export type Services = Omit<ServiceHandle, "close">;
 export async function withServices(options: { label: string; engine?: Engine }, proof: (s: Services) => Promise<void>) {
-  const s = await services(options.engine, options.label);
-  try { await proof(s); }
-  catch (error) { await s.close({ kind: "failed", error }); throw error; }
-  await s.close();
+  const owner = createFixture(options.engine, options.label);
+  activate(owner, error => owner.finish({ kind: "failed", error }));
+  let outcome: Outcome = { kind: "passed" };
+  try {
+    const { close: _close, ...context } = await owner.open();
+    const pending = Promise.resolve().then(() => proof(context));
+    owner.observe(pending);
+    await pending;
+  } catch (error) { outcome = { kind: "failed", error }; }
+  await owner.finish(outcome);
 }

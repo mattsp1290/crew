@@ -37,7 +37,10 @@ export async function verifyObserverProcesses(s: Services, engines: Engine[]) {
       void exit.catch(() => {});
       const close = new Promise<void>(resolve => exit.child.once("close", () => resolve()));
       clients.push({ close, abort: () => { exit.child.kill("SIGKILL"); } });
-      await until(async () => (await optionalFile(output)).includes('"type":"STATE_SNAPSHOT"') || undefined, "independent observer snapshot");
+      await until(async () => {
+        signal.throwIfAborted();
+        return (await optionalFile(output)).includes('"type":"STATE_SNAPSHOT"') || undefined;
+      }, "independent observer snapshot");
       return { output, exit };
     }
     for (const engine of engines) {
