@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { closeSync, openSync, writeSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,13 +27,20 @@ export async function until<T>(tryValue: () => Promise<T | undefined>): Promise<
 }
 
 export function startWorker(t: TestContext, profile: string, engine: string, protectedTool: boolean | "ordinary" = false) {
-  const child = spawn(process.execPath, ["src/service/cli.ts", "worker", "tests/proof/fixture-profiles.mts"], {
-    env: {
-      ...process.env, BIRBCREW_PROOF_RECOVERY_PROFILE: profile, BIRBCREW_PROOF_ENGINE: engine,
-      ...(protectedTool === true && { BIRBCREW_PROOF_PROTECTED: "1" }),
-      ...(protectedTool === "ordinary" && { BIRBCREW_PROOF_NEXT_STEP: "1" })
-    }, stdio: "ignore",
-  });
+  const logs = process.env.BIRBCREW_PROOF_LOG_DIR;
+  const log = logs ? openSync(join(logs, `recovery-${createHash("sha256").update(t.name).digest("hex").slice(0, 12)}-${randomUUID()}.log`), "ax", 0o600) : undefined;
+  const child = (() => {
+    try {
+      if (log !== undefined) writeSync(log, JSON.stringify({ test: t.name, profile, engine }) + "\n");
+      return spawn(process.execPath, ["src/service/cli.ts", "worker", "tests/proof/fixture-profiles.mts"], {
+        env: {
+          ...process.env, BIRBCREW_PROOF_RECOVERY_PROFILE: profile, BIRBCREW_PROOF_ENGINE: engine,
+          ...(protectedTool === true && { BIRBCREW_PROOF_PROTECTED: "1" }),
+          ...(protectedTool === "ordinary" && { BIRBCREW_PROOF_NEXT_STEP: "1" })
+        }, stdio: log === undefined ? "ignore" : ["ignore", log, log],
+      });
+    } finally { if (log !== undefined) closeSync(log); }
+  })();
   const exited = once(child, "exit");
   const stop = async () => { child.kill("SIGKILL"); await exited; };
   t.after(stop);

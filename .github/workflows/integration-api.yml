@@ -4,6 +4,12 @@ on:
     paths:
       - 'src/service/**'
       - 'packages/client/**'
+      - 'packages/pi-subagents/**'
+      - 'clients/**'
+      - 'native/**'
+      - 'vendor/**'
+      - 'scripts/build-native'
+      - 'tsconfig.json'
       - 'scripts/generate-openapi.mjs'
       - 'scripts/verify-client-package.mjs'
       - 'tests/**'
@@ -90,6 +96,8 @@ jobs:
   actual-service:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      BIRBCREW_PROOF_ARTIFACTS: ${{ runner.temp }}/crew-service-proofs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -97,6 +105,7 @@ jobs:
           node-version: '24.22.3'
           cache: npm
       - run: npm ci
+      - run: npm ci --prefix clients --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - name: Install pinned Temporal CLI
         run: |
@@ -106,9 +115,71 @@ jobs:
           curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
           (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
-      - run: npm run test:api:service
+      - name: Proof lifecycle failure contracts
+        run: node --test tests/proof/member-services.test.mts
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - run: npm run test:temporal:tls
+      - name: test:api:service
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/api.stdout.log" npm run test:api:service
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: test:temporal:tls
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
+        env:
+          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: test:observers:service
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/observers.stdout.log" npm run test:observers:service
+        env:
+          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: test:routines:service
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/routines.stdout.log" npm run test:routines:service
+        env:
+          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: test:memories:service
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/memories.stdout.log" npm run test:memories:service
+        env:
+          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: test:instructions:service
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/instructions.stdout.log" npm run test:instructions:service
+        env:
+          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: test:handoffs:service
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/handoffs.stdout.log" npm run test:handoffs:service
+        env:
+          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: Retain actual-service failure diagnostics
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: actual-service-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/crew-service-proofs
+          if-no-files-found: warn
+          retention-days: 7
