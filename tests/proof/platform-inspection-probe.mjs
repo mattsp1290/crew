@@ -11,7 +11,8 @@ assert(root && isAbsolute(root), 'Missing absolute artifact root');
 const deadline = performance.now() + 28_000;
 const result = { independent: true, readOnlyResources: true, startedUTC: new Date().toISOString(), qualified: false, failures: [], observations: [] };
 const procSchema = z.object({ pid: z.number().int().positive(), parent: z.number().int().nonnegative(),
-  group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/), state: z.string().length(1) });
+  group: z.number().int().nonnegative(), startTime: z.string().regex(/^\d+$/), state: z.string().length(1) });
+const positiveGroupProcSchema = procSchema.extend({ group: z.number().int().positive() });
 const ownershipSchema = z.object({ label: z.literal('contract'), directory: z.string(),
   container: z.string().regex(/^birb-proof-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
   allocation: z.object({ kind: z.literal('settled'), container: z.string().regex(/^[0-9a-f]{64}$/) }),
@@ -19,10 +20,10 @@ const ownershipSchema = z.object({ label: z.literal('contract'), directory: z.st
     identity: z.object({ kind: z.literal('known'), group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/) }) })).min(2),
 });
 const readySchema = ownershipSchema.extend({ probe: z.object({ kind: z.literal('platform-cancellation-probe'),
-  mode: z.literal('catchable'), readyUTC: z.iso.datetime(), fixtureOwner: procSchema, contractWorker: procSchema }) });
+  mode: z.literal('catchable'), readyUTC: z.iso.datetime(), fixtureOwner: positiveGroupProcSchema, contractWorker: positiveGroupProcSchema }) });
 const recoverySchema = z.object({ qualified: z.boolean(), ownerStopped: z.boolean(), workerStopped: z.boolean(),
   contractsConclusion: z.string(), startedUTC: z.iso.datetime(), ownerStoppedUTC: z.iso.datetime(),
-  observedOwnedProcesses: z.array(procSchema).min(3) });
+  observedOwnedProcesses: z.array(positiveGroupProcSchema).min(3) });
 function persist() {
   result.finishedUTC = new Date().toISOString();
   writeFileSync(join(root, 'platform-post-observations.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
@@ -59,6 +60,7 @@ function docker(args) {
   catch (error) { throw new Error(`Docker read-only inspection unavailable, status ${error.status ?? 'unknown'}, code ${error.code ?? 'unknown'}`); }
 }
 function inspectPid(expected) {
+  expected = positiveGroupProcSchema.parse(expected);
   const actual = identity(expected.pid);
   if (!live(actual)) return { expected, status: 'absent', actual: actual ?? null };
   assert.equal(actual.startTime, expected.startTime, 'PID was reused; original process absence is unqualified');

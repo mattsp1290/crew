@@ -37,7 +37,8 @@ function regular(path) {
   finally { closeSync(fd); }
 }
 const procSchema = z.object({ pid: z.number().int().positive(), parent: z.number().int().nonnegative(),
-  group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/), state: z.string().length(1) });
+  group: z.number().int().nonnegative(), startTime: z.string().regex(/^\d+$/), state: z.string().length(1) });
+const positiveGroupProcSchema = procSchema.extend({ group: z.number().int().positive() });
 const ownershipSchema = z.object({ label: z.literal('contract'), directory: z.string(),
   container: z.string().regex(/^birb-proof-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
   allocation: z.object({ kind: z.literal('settled'), container: z.string().regex(/^[0-9a-f]{64}$/) }),
@@ -45,7 +46,7 @@ const ownershipSchema = z.object({ label: z.literal('contract'), directory: z.st
     identity: z.object({ kind: z.literal('known'), group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/) }) })).min(2),
 });
 const readySchema = ownershipSchema.extend({ probe: z.object({ kind: z.literal('platform-cancellation-probe'),
-  mode: z.literal('catchable'), readyUTC: z.iso.datetime(), fixtureOwner: procSchema, contractWorker: procSchema }) });
+  mode: z.literal('catchable'), readyUTC: z.iso.datetime(), fixtureOwner: positiveGroupProcSchema, contractWorker: positiveGroupProcSchema }) });
 function identity(pid) {
   try {
     const text = readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -84,6 +85,10 @@ function receiptAvailability(artifacts) {
 let evidence, artifacts;
 const owned = new Map();
 function census() {
+  for (const [storedKey, proc] of owned) {
+    positiveGroupProcSchema.parse(proc);
+    assert.equal(storedKey, key(proc), 'Owned process map key mismatch');
+  }
   const current = table();
   const anchors = current.filter(proc => owned.has(key(proc)));
   for (const proc of anchors) same(proc, owned.get(key(proc)));
@@ -98,7 +103,7 @@ function census() {
   }
   for (const proc of current) if (related.has(proc.pid)) {
     assert(groups.has(proc.group), 'Descendant has no verified owned group');
-    owned.set(key(proc), proc);
+    owned.set(key(proc), positiveGroupProcSchema.parse(proc));
   }
   return current;
 }
@@ -127,6 +132,7 @@ function containerObservation() {
   return { status: 'present', id: byId, name: evidence.container, label: evidence.container };
 }
 async function stopPid(expected, grace, observe = false) {
+  expected = positiveGroupProcSchema.parse(expected);
   let current = identity(expected.pid);
   if (!live(current)) return;
   same(current, expected);
@@ -179,9 +185,9 @@ try {
     evidence = ready;
     report.evidence = { artifacts, ready };
     report.originalReceiptsBefore = receiptAvailability(artifacts);
-    owned.set(key(ready.probe.fixtureOwner), ready.probe.fixtureOwner);
+    owned.set(key(ready.probe.fixtureOwner), positiveGroupProcSchema.parse(ready.probe.fixtureOwner));
     for (const proc of ready.processes) {
-      const known = { pid: proc.pid, ...proc.identity, parent: 0, state: 'R' };
+      const known = positiveGroupProcSchema.parse({ pid: proc.pid, ...proc.identity, parent: 0, state: 'R' });
       owned.set(key(known), known);
     }
     census();
@@ -218,6 +224,7 @@ try {
         const current = census();
         const groups = [...new Set([...owned.values()].map(proc => proc.group))];
         for (const group of groups) {
+          z.number().int().positive().parse(group);
           const members = current.filter(proc => proc.group === group);
           if (!members.length) continue;
           const anchor = members.find(proc => owned.has(key(proc)));
