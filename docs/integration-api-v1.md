@@ -30,7 +30,8 @@ restore), `usage` (the ledger states, what each engine reports, the cost rules a
 operator's price table setting, the lanes, the budget period and refusal codes),
 `webhooks` (the webhook route, kinds, formats and the default one, signature and the
 formats it covers, retry and restore semantics, and `insecureTargets`, which says an
-operator setting for testing exists, not whether it is on), `instructionPacks` (the pack
+operator setting for HTTP and private-address targets exists, not whether it is on),
+`instructionPacks` (the pack
 route, the spawn field, limits, order, deletion and restore), health dependencies and
 listing limits. Additive
 response fields are compatible; consumers must reject an unsupported major version.
@@ -550,7 +551,8 @@ member-lane requests, routine firings and handoffs. See [usage metering](usage-m
 
 ## Outbound webhooks
 
-An owner can register up to 10 enabled HTTPS endpoints. Crew posts to an endpoint
+An owner can register up to 10 enabled endpoints, which require HTTPS by default.
+Crew posts to an endpoint
 when an event it selected happens: a card or question became pending
 (`approval.pending`), a request finished (`request.finished`), a routine firing
 settled (`routine.firing_settled`), or Crew disabled a routine after ten failures
