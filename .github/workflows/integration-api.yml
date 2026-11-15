@@ -7,9 +7,11 @@ jobs:
   actual-service:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      BIRBCREW_PROOF_ARTIFACTS: ${{ runner.temp }}/crew-service-proofs
     steps:
+      - name: Prepare proof diagnostic directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/crew-service-proofs"
+          echo "BIRBCREW_PROOF_ARTIFACTS=$RUNNER_TEMP/crew-service-proofs" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
