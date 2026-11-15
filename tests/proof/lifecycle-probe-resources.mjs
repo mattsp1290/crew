@@ -34,7 +34,7 @@ try {
     assert(cleanup.resources.processes.every(proc => proc.status === 'absent'));
     let directoryAbsent = false;
     try { lstatSync(owner.directory); } catch (error) { if (error.code !== 'ENOENT') throw error; directoryAbsent = true; }
-    checks.push({ container: owner.container, containerAbsent: container === '', liveGroups, directory: owner.directory, directoryAbsent });
+    checks.push({ container: owner.container, containerAbsent: container === '', checkedGroups: [...owner.processes.map(proc => proc.pid), collector.pid], liveGroups, directory: owner.directory, directoryAbsent });
     assert.equal(container, ''); assert.deepEqual(liveGroups, []); assert.equal(directoryAbsent, true);
   }
   const commands = readdirSync(root).filter(name => name.endsWith('.stdout.log.result.json'));

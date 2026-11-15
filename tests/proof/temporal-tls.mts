@@ -24,7 +24,6 @@ await withServices({ label: "temporal-tls" }, async s => {
 
   const file = (name: string) => join(s.directory, name);
   const openssl = (...args: string[]) => run("openssl", args, { cwd: s.directory });
-  if (process.version === "v24.22.3") throw new Error("CI_PRIMARY_TLS_PRE_SCHEMA_CANARY_1c3f230");
   await openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=crew-proof-ca",
     "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
     "-keyout", "ca.key", "-out", "ca.pem");
@@ -111,6 +110,7 @@ await withServices({ label: "temporal-tls" }, async s => {
       try { return await s.sql("SELECT count(*) FROM birbcrew_ts.profiles WHERE name='fixture.approval.v1'") === "3" || undefined; }
       catch { return undefined; }
     }, "worker registration");
+    if (process.version === "v24.22.3") throw new Error("CI_PRIMARY_TLS_BODY_CANARY_c83f093");
     const api = async (path: string, body?: unknown, expected?: number) => {
       const response = await fetch(endpoint + path, { method: body === undefined ? "GET" : "POST",
         headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
@@ -188,6 +188,7 @@ await withServices({ label: "temporal-tls" }, async s => {
     await gatewayExit;
     await stopWorker();
     terminator.close();
+    if (process.version === "v24.22.3") throw new Error("CI_SECONDARY_TLS_CLEANUP_CANARY_c83f093");
     await stopTemporal();
   }
 });
