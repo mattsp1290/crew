@@ -118,9 +118,22 @@ jobs:
           (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
       - name: Proof lifecycle failure contracts
-        run: node --test tests/proof/member-service-processes.test.mts tests/proof/member-services.test.mts
+        id: lifecycle_contracts
+        run: node --test tests/proof/member-services.test.mts
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: Recover lifecycle contract fixtures
+        if: ${{ always() }}
+        timeout-minutes: 1
+        run: node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+        env:
+          CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
+      - name: Inspect lifecycle contract fixtures
+        if: ${{ always() }}
+        timeout-minutes: 1
+        run: node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+        env:
+          CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
       - name: test:api:service
         shell: bash
         run: |
