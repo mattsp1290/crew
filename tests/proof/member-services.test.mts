@@ -132,6 +132,22 @@ async function node(args: string[], env = process.env, timeout = 20_000) {
   return { ...result, output, timedOut, cleanupFailures, processes: [...owned.values()], cleanupDeadline };
 }
 
+test("local raw process parser accepts the retained Colima host kthreadd row", () => {
+  const stat = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 6 0 0 20 0 1 0 0 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
+  assert.deepEqual(parseProcess(2, stat), { pid: 2, parent: 0, group: 0, startTime: "0", state: "S" });
+});
+
+test("local raw process parser rejects malformed observed fields", () => {
+  const fields = ["S", "0", "23", ...Array<string>(16).fill("0"), "0"];
+  const row = (parts: string[]) => "23 (payload with spaces) " + parts.join(" ");
+  assert.deepEqual(parseProcess(23, row(fields)), { pid: 23, parent: 0, group: 23, startTime: "0", state: "S" });
+  for (const [index, value] of [[1, "invalid"], [2, "-1"], [2, "1.5"], [19, "missing"]] satisfies [number, string][]) {
+    const invalid = fields.with(index, value);
+    assert.throws(() => parseProcess(23, row(invalid)));
+  }
+  assert.throws(() => parseProcess(23, row(fields.slice(0, 19))));
+});
+
 test("local capture preserves exit 23 and marker, including a failed destination", async t => {
   const dir = await mkdtemp(join(tmpdir(), "crew-capture-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
