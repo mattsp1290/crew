@@ -6,7 +6,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { z } from "zod";
 
 export type CommandResult = { kind: "exited"; code: number } | { kind: "signalled"; signal: NodeJS.Signals };
 export class CommandFailure extends Error {
@@ -216,7 +215,11 @@ export async function collectArtifacts(root: string) {
         assert.ok(bytesRead <= 16 * 1024, "Working-state metadata exceeded its bound");
         content = bytes.subarray(0, bytesRead).toString("utf8");
       } finally { await file.close(); }
-      const metadata = z.object({ directory: z.string(), workingState: z.enum(["local", "hosted-vm"]) }).parse(JSON.parse(content));
+      const metadata: unknown = JSON.parse(content);
+      assert.ok(typeof metadata === "object" && metadata !== null, "Working-state metadata must be an object");
+      assert.ok("directory" in metadata && typeof metadata.directory === "string", "Working-state directory must be a string");
+      assert.ok("workingState" in metadata && (metadata.workingState === "local" || metadata.workingState === "hosted-vm"),
+        "Working-state policy must be local or hosted-vm");
       assert.ok(isAbsolute(metadata.directory), "Working directory must be absolute");
       await collectFiles(metadata.directory, join(destination, "snapshot"));
     } catch (error) { failures.push(describe(error)); }

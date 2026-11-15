@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -12,8 +12,8 @@ import {
 import { disposeContainer } from "./member-service-container.mts";
 import { workingState } from "./member-services.mts";
 
-async function ownedDirectory(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "birb-isolated-ci-test-"));
+async function ownedDirectory(t: TestContext, parent = tmpdir()) {
+  const directory = await mkdtemp(join(parent, "birb-isolated-ci-test-"));
   const marker = randomUUID();
   await writeFile(join(directory, ".test-owner"), marker, { mode: 0o600 });
   console.log("Owned temporary directory " + directory);
@@ -90,6 +90,40 @@ test("bounded commands separate protocol stdout from diagnostic stderr", async (
   assert.ok(result.diagnostics.includes("protocol-value\n"));
   assert.ok(result.diagnostics.includes("diagnostic-only\n"));
   assert.equal(result.received, 31);
+});
+
+test("diagnostic CLI captures setup and collects before dependencies are installed", async t => {
+  const directory = await ownedDirectory(t, "/tmp"), diagnostic = join(directory, "diagnostics.mts");
+  await copyFile(new URL("./member-service-diagnostics.mts", import.meta.url), diagnostic);
+  assert.deepEqual((await readdir(directory)).sort(), [".test-owner", "diagnostics.mts"]);
+  const root = join(directory, "artifacts");
+  await mkdir(root);
+  for (const code of [37, 0]) {
+    const log = join(root, `setup-${code}.log`);
+    const command = boundedCommand(process.execPath, [diagnostic, "--command", log, process.execPath, "-e",
+      `process.stdout.write("setup-output\\n"); process.stderr.write("setup-error\\n"); process.exitCode = ${code}`], now() + 5_000);
+    if (code) await assert.rejects(command, error => {
+      ownedProcess(z.object({ pid: z.number().int().positive() }).parse(error).pid);
+      assert.equal(exitStatus(error), code);
+      return true;
+    });
+    else ownedProcess((await command).pid);
+    const output = await readFile(log, "utf8");
+    assert.ok(output.includes("setup-output\n"));
+    assert.ok(output.includes("setup-error\n"));
+    const report = z.object({
+      pid: z.number().int().positive(), outcome: z.object({ kind: z.literal("exited"), code: z.number() }),
+      failures: z.array(z.string()), truncated: z.boolean(),
+    }).parse(JSON.parse(await readFile(log + ".result.json", "utf8")));
+    ownedProcess(report.pid);
+    assert.equal(report.outcome.code, code);
+    assert.deepEqual(report.failures, []);
+    assert.equal(report.truncated, false);
+    if (code) assert.match(await readFile(log + ".first-failure.txt", "utf8"), /"code":37/);
+  }
+  const collected = await boundedCommand(process.execPath, [diagnostic, "--collect", root], now() + 5_000);
+  ownedProcess(collected.pid);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "collector.json"), "utf8")), { failures: [] });
 });
 
 test("bounded protocol output reports truncation without exposing a partial protocol value", async () => {

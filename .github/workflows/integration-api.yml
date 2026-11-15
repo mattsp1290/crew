@@ -137,14 +137,17 @@ jobs:
         timeout-minutes: 6
         run: |
           mkdir -p "$BIRBCREW_PROOF_ARTIFACTS" .proof/bin
-          npm ci
-          npm ci --prefix clients --ignore-scripts --no-audit --no-fund
-          npm run build
-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+          printf 'fixture setup started\n' > "$BIRBCREW_PROOF_ARTIFACTS/setup-phase.txt"
+          node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
+            npm ci
+            npm ci --prefix clients --ignore-scripts --no-audit --no-fund
+            npm run build
+            archive=temporal_cli_1.10.0_linux_amd64.tar.gz
+            curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
+            curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
+            (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
+            tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+          '
       - name: Run actual native suite
         timeout-minutes: 21
         env:
