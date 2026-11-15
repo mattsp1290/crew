@@ -1,0 +1,331 @@
+--- a/.github/workflows/integration-api.yml
++++ b/.github/workflows/integration-api.yml
+@@ -1,4 +1,5 @@
+ name: Versioned integration API qualification
++run-name: Unavailable Docker lifecycle qualification
+ on:
+   pull_request:
+     paths:
+@@ -20,79 +21,6 @@
+ permissions:
+   contents: read
+ jobs:
+-  portable-client:
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 10
+-    steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
+-        with:
+-          node-version: '22.23.3'
+-          cache: npm
+-      - run: npm ci
+-      - run: echo "CREW_NODE22=$(command -v node)" >> "$GITHUB_ENV"
+-      - uses: actions/setup-node@v4
+-        with:
+-          node-version: '24.22.3'
+-      - run: echo "CREW_NODE24=$(command -v node)" >> "$GITHUB_ENV"
+-      - run: '"$CREW_NODE22" scripts/verify-client-package.mjs'
+-  consumer-contract:
+-    runs-on: ubuntu-24.04
+-    timeout-minutes: 15
+-    services:
+-      postgres:
+-        image: postgres:17
+-        env:
+-          POSTGRES_USER: birbcrew
+-          POSTGRES_PASSWORD: fixture-only
+-          POSTGRES_DB: integration_test
+-        ports:
+-          - 5432:5432
+-        options: >-
+-          --health-cmd pg_isready
+-          --health-interval 5s
+-          --health-timeout 5s
+-          --health-retries 10
+-    env:
+-      BIRBCREW_TEST_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/integration_test
+-    steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
+-        with:
+-          node-version: '24.22.3'
+-          cache: npm
+-      - run: npm ci
+-      - run: npm run build
+-      - run: npm run test:client
+-      - run: npm run check:openapi
+-      - run: npm run test:api
+-      - run: npm run test:observers
+-      - run: npm run test:audit
+-      - run: npm run test:routines
+-      - run: npm run test:memories
+-      - run: npm run test:instructions
+-      - run: npm run test:packs
+-      - run: npm run test:grants
+-      - run: npm run test:handoffs
+-      - run: npm run test:expiry
+-      - run: npm run test:usage
+-      - run: npm run test:usage:capture
+-      - run: npm run test:webhooks
+-      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts
+-      - run: node --test tests/service/approvals.test.ts tests/service/codex-calls.test.ts tests/service/codex-registration.test.ts
+-      - name: Turn failure diagnostics
+-        run: node --test tests/service/native-diagnostics.test.ts
+-      - name: Install pinned Temporal CLI
+-        run: |
+-          mkdir -p .proof/bin
+-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
+-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
+-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
+-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
+-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+-      - run: npm run test:child-targets
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+   actual-service:
+     runs-on: ubuntu-24.04
+     timeout-minutes: 30
+@@ -119,82 +47,75 @@
+           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+       - name: Proof lifecycle failure contracts
+         id: lifecycle_contracts
+-        run: node --test tests/proof/member-services.test.mts
++        run: node --test --test-name-pattern='^remote real fixture forced timeout recovers' tests/proof/member-services.test.mts
+         env:
+           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
++      - name: Observe settled Docker fixture before invalid endpoint
++        id: docker_pre
++        if: ${{ always() }}
++        timeout-minutes: 1
++        run: node tests/proof/qualification-unavailable-docker.mts pre "$BIRBCREW_PROOF_ARTIFACTS"
++      - name: Recover lifecycle contract fixtures through unavailable endpoint
++        id: invalid_recovery
++        if: ${{ always() }}
++        timeout-minutes: 1
++        run: |
++          test ! -e "$RUNNER_TEMP/crew-no-daemon.sock"
++          env -u DOCKER_CONTEXT DOCKER_HOST="unix://$RUNNER_TEMP/crew-no-daemon.sock" node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
++        env:
++          CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
++      - name: Inspect lifecycle contract fixtures through unavailable endpoint
++        id: invalid_inspection
++        if: ${{ always() }}
++        timeout-minutes: 1
++        run: |
++          test ! -e "$RUNNER_TEMP/crew-no-daemon.sock"
++          env -u DOCKER_CONTEXT DOCKER_HOST="unix://$RUNNER_TEMP/crew-no-daemon.sock" node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
++        env:
++          CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
++      - name: Observe same Docker fixture after invalid endpoint
++        id: docker_after_invalid
++        if: ${{ always() }}
++        timeout-minutes: 1
++        run: node tests/proof/qualification-unavailable-docker.mts after-invalid "$BIRBCREW_PROOF_ARTIFACTS"
+       - name: Recover lifecycle contract fixtures
++        id: normal_recovery
+         if: ${{ always() }}
+         timeout-minutes: 1
+         run: node tests/proof/member-service-recovery.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+         env:
+           CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
+       - name: Inspect lifecycle contract fixtures
++        id: normal_inspection
+         if: ${{ always() }}
+         timeout-minutes: 1
+         run: node tests/proof/member-service-inspection.mts --contracts "$BIRBCREW_PROOF_ARTIFACTS"
+         env:
+           CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
+-      - name: test:api:service
+-        shell: bash
++      - name: Observe exact Docker fixture absence after production cleanup
++        id: docker_final
++        if: ${{ always() }}
++        timeout-minutes: 1
++        run: node tests/proof/qualification-unavailable-docker.mts final "$BIRBCREW_PROOF_ARTIFACTS"
++        env:
++          QUALIFICATION_CONTRACTS: ${{ steps.lifecycle_contracts.conclusion }}
++          QUALIFICATION_PRE: ${{ steps.docker_pre.conclusion }}
++          QUALIFICATION_INVALID_RECOVERY: ${{ steps.invalid_recovery.conclusion }}
++          QUALIFICATION_INVALID_INSPECTION: ${{ steps.invalid_inspection.conclusion }}
++          QUALIFICATION_AFTER_INVALID: ${{ steps.docker_after_invalid.conclusion }}
++          QUALIFICATION_NORMAL_RECOVERY: ${{ steps.normal_recovery.conclusion }}
++          QUALIFICATION_NORMAL_INSPECTION: ${{ steps.normal_inspection.conclusion }}
++      - name: Retain unavailable Docker qualification sources
++        if: ${{ always() }}
++        timeout-minutes: 1
+         run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/api.stdout.log" npm run test:api:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:temporal:tls
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:observers:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/observers.stdout.log" npm run test:observers:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:routines:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/routines.stdout.log" npm run test:routines:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:memories:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/memories.stdout.log" npm run test:memories:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:instructions:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/instructions.stdout.log" npm run test:instructions:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+-      - name: test:handoffs:service
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
+-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/handoffs.stdout.log" npm run test:handoffs:service
+-        env:
+-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
++          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS/qualification-unavailable-docker"
++          cp tests/proof/qualification-unavailable-docker-inputs.json tests/proof/qualification-unavailable-docker.patch tests/proof/qualification-unavailable-docker.mts "$BIRBCREW_PROOF_ARTIFACTS/qualification-unavailable-docker/"
+       - name: Retain actual-service failure diagnostics
+-        if: ${{ failure() || cancelled() }}
++        if: ${{ always() }}
+         uses: actions/upload-artifact@v4
+         with:
+-          name: actual-service-${{ github.run_id }}-${{ github.run_attempt }}
++          name: final-unavailable-docker-${{ github.run_id }}-${{ github.run_attempt }}
+           path: ${{ runner.temp }}/crew-service-proofs
+-          if-no-files-found: warn
++          if-no-files-found: error
+           retention-days: 7
+--- a/tests/proof/member-services.test.mts
++++ b/tests/proof/member-services.test.mts
+@@ -852,6 +852,7 @@
+       const ownership=JSON.parse(readFileSync(join(s.artifacts,'ownership.json'),'utf8'));
+       if(ownership.allocation.kind!=='settled'||ownership.processes.length<2||ownership.processes.some(p=>p.identity.kind!=='known')) throw new Error('early ownership publication incomplete');
+       writeFileSync(join(s.artifacts,'timeout-ready.json'),JSON.stringify(ownership));
++      writeFileSync(join(s.artifacts,'qualification-ready.json'),JSON.stringify({readyUTC:new Date().toISOString(),mode:'${mode}'}));
+       ${mode === "forced" ? "process.removeAllListeners('SIGTERM');" : ""}
+       process.on('SIGTERM',()=>writeFileSync(join(s.artifacts,'term.txt'),'SIGTERM'));
+       await new Promise(()=>{});
+--- a/tests/proof/qualification-unavailable-docker.mts
++++ b/tests/proof/qualification-unavailable-docker.mts
+@@ -0,0 +1,95 @@
++import assert from "node:assert/strict";
++import { createHash } from "node:crypto";
++import { lstat, mkdir, readFile } from "node:fs/promises";
++import { isAbsolute, join, resolve } from "node:path";
++import { z } from "zod";
++import { before, boundedCommand, describe, now } from "./member-service-diagnostics.mts";
++import { atomicReceipt, missingProcess, ownershipSchema, readContractFixture, readContractRoots, regularFile } from "./member-service-recovery.mts";
++
++const stage = z.enum(["pre", "after-invalid", "final"]).parse(process.argv[2]);
++const root = process.argv[3];
++assert.ok(root && isAbsolute(root), "Absolute artifact root required");
++const output = join(root, "qualification-unavailable-docker"), deadline = now() + 20_000;
++const watchdog = setTimeout(() => { console.error("Docker qualification observer exceeded 21 seconds"); process.exit(1); }, 21_000);
++const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
++const sha = z.string().regex(/^[a-f0-9]{64}$/);
++const referenceSchema = z.object({ directory: z.string(), artifacts: z.string(), worker: z.unknown(), owner: z.unknown(),
++  ownerSHA256: sha, ownershipSHA256: sha, readySHA256: sha, container: z.string(), allocatedID: sha });
++async function work() {
++  await mkdir(output, { recursive: true });
++  const manifestText = await regularFile("tests/proof/qualification-unavailable-docker-inputs.json");
++  const manifest = z.object({ preparedSHA256: z.record(z.string(), sha), protectedSHA256: z.record(z.string(), sha), patchSHA256: sha }).parse(JSON.parse(manifestText));
++  for (const [path, expected] of Object.entries({ ...manifest.protectedSHA256, ...manifest.preparedSHA256 })) {
++    assert.ok(!isAbsolute(path) && !path.split("/").includes(".."));
++    const metadata = await lstat(resolve(path));
++    assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.size <= 1_048_576);
++    assert.equal(hash(await readFile(resolve(path))), expected, path + " changed from prepared source");
++  }
++  const patch = await regularFile("tests/proof/qualification-unavailable-docker.patch");
++  assert.equal(hash(patch), manifest.patchSHA256);
++  if (stage === "pre") {
++    atomicReceipt(join(output, "source-inputs.json"), JSON.parse(manifestText));
++    atomicReceipt(join(output, "source-verification.json"), { passed: true, manifestSHA256: hash(manifestText) });
++  }
++  const discovered = await readContractRoots(root, deadline - 1_000);
++  assert.deepEqual(discovered.failures, []);
++  assert.equal(discovered.roots.length, 1, "Expected the existing forced timeout contract only");
++  const contract = discovered.roots[0];
++  assert.ok(contract && contract.run.launch.kind === "requested");
++  const fixture = await readContractFixture(contract.directory, contract.run.worker, deadline - 1_000);
++  const ownerText = await regularFile(join(fixture.artifacts, "owner.json"));
++  const ownershipText = await regularFile(join(fixture.artifacts, "ownership.json"));
++  const evidence = ownershipSchema.parse(JSON.parse(ownershipText));
++  const readyText = await regularFile(join(fixture.artifacts, "timeout-ready.json"));
++  assert.deepEqual(ownershipSchema.parse(JSON.parse(readyText)), evidence, "Settled ownership changed after readiness");
++  const ready = z.object({ readyUTC: z.string().datetime(), mode: z.literal("forced") }).strict()
++    .parse(JSON.parse(await regularFile(join(fixture.artifacts, "qualification-ready.json"))));
++  assert.equal(evidence.pendingProcessAcquisitions, 0);
++  assert.ok(evidence.allocation.kind === "settled", "Acknowledged Docker allocation required");
++  assert.ok(evidence.processes.every(proc => proc.identity.kind === "known"));
++  const allocatedID = evidence.allocation.container;
++  const reference = { directory: contract.directory, artifacts: fixture.artifacts, worker: contract.run.worker, owner: fixture.owner,
++    ownerSHA256: hash(ownerText), ownershipSHA256: hash(ownershipText), readySHA256: hash(readyText), container: evidence.container, allocatedID };
++  if (stage !== "pre") {
++    const previous = referenceSchema.parse(JSON.parse(await regularFile(join(output, "pre.json"))));
++    assert.deepEqual(reference, previous, "Original fixture authority changed");
++  }
++  const query = async (args: string[]) => {
++    const result = await boundedCommand("docker", args, Math.min(deadline - 500, now() + 2_000));
++    assert.ok(result.stdout.kind === "complete", "Docker query output must be complete");
++    return { result, text: result.stdout.text.trim() };
++  };
++  const byID = await query(["ps", "--no-trunc", "-aq", "--filter", "id=" + allocatedID]);
++  const byName = await query(["ps", "--no-trunc", "-aq", "--filter", "name=^/" + evidence.container + "$"]);
++  const expected = stage === "final" ? "" : allocatedID;
++  assert.equal(byID.text, expected, "Exact allocated Docker ID observation mismatch");
++  assert.equal(byName.text, expected, "Exact Docker name observation mismatch");
++  let inspection: Awaited<ReturnType<typeof query>> | undefined;
++  if (stage !== "final") {
++    inspection = await query(["inspect", "--format", '{{.Id}} {{.Name}} {{index .Config.Labels "birb-proof-owner"}}', allocatedID]);
++    assert.equal(inspection.text, allocatedID + " /" + evidence.container + " " + evidence.container);
++  }
++  let metadata: Awaited<ReturnType<typeof lstat>> | undefined;
++  try { metadata = await lstat(evidence.directory); }
++  catch (error) { if (!missingProcess(error)) throw error; }
++  const directory = metadata ? "present" : "absent";
++  if (metadata) {
++    assert.ok(metadata.isDirectory() && !metadata.isSymbolicLink());
++    assert.equal(await regularFile(join(evidence.directory, ".fixture-owner")), evidence.container);
++  }
++  if (stage === "pre") assert.equal(directory, "present");
++  if (stage === "final") assert.equal(directory, "absent");
++  atomicReceipt(join(output, stage + ".json"), { ...reference, passed: true, stage, observedUTC: new Date().toISOString(), ready,
++    sourceManifestSHA256: hash(manifestText), byID, byName, inspection, directory });
++  if (stage === "final") atomicReceipt(join(output, "step-conclusions.json"), {
++    workflowSHA: process.env.GITHUB_SHA, contracts: process.env.QUALIFICATION_CONTRACTS,
++    pre: process.env.QUALIFICATION_PRE, invalidRecovery: process.env.QUALIFICATION_INVALID_RECOVERY,
++    invalidInspection: process.env.QUALIFICATION_INVALID_INSPECTION, afterInvalid: process.env.QUALIFICATION_AFTER_INVALID,
++    normalRecovery: process.env.QUALIFICATION_NORMAL_RECOVERY, normalInspection: process.env.QUALIFICATION_NORMAL_INSPECTION });
++}
++try { await before(work(), deadline, "Unavailable Docker observations"); }
++catch (error) {
++  await mkdir(output, { recursive: true });
++  atomicReceipt(join(output, stage + "-error.json"), { passed: false, stage, error: describe(error) });
++  throw error;
++} finally { clearTimeout(watchdog); }
