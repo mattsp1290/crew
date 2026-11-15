@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { isDeepStrictEqual } from 'node:util';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { fullFormats } from 'ajv-formats/dist/formats.js';
+import { sameJsonValue } from '../json-values.ts';
 import * as vocabulary from './vocabulary.generated.ts';
 import { parseJsonRejectingDuplicateKeys } from './strict-json.ts';
 
@@ -308,6 +308,7 @@ function operationRecord(value: unknown): OperationRecord {
   const wire = object(value);
   const status = literal(wire.status, vocabulary.operationStatuses);
   const count = number(wire.events_posted);
+  requireFact((status !== 'accepted' && status !== 'failed_before_execution') || count === 0, 'schema', 'relationship');
   switch (status) {
     case 'accepted': case 'executing': return { kind: 'pending', status, events: { kind: 'exact', value: count } };
     case 'completed': case 'aborted': case 'failed': case 'failed_before_execution':
@@ -536,6 +537,7 @@ function admittedRecord(code: ErrorCode, wire: Record<string, unknown>, tool: To
       return;
     case 'stale_frame':
       requireFact(tool === 'pointer' && object(wire.details).reason === 'pixels_changed' && record.events_posted === 0, 'schema', 'relationship');
+      requireFact(object(wire.details).point_index === 0, 'schema', 'relationship');
       requireFact(record.status === 'aborted', 'schema', 'relationship');
       return;
     case 'gated': case 'paused': case 'disarmed': case 'not_console': case 'locked': case 'display_asleep':
@@ -555,6 +557,19 @@ function errorSemantics(wire: Record<string, unknown>, tool: ToolName, expected?
   const input = tool === 'pointer' || tool === 'keyboard';
   requireFact(input || ['operation_id', 'operation', 'replayed', 'current_state', 'measured'].every((key) => !Object.hasOwn(wire, key)), 'schema', 'relationship');
   const admitted = Object.hasOwn(wire, 'replayed');
+  if (!admitted && Object.hasOwn(wire, 'operation')) {
+    switch (code) {
+      case 'cleanup_pending': case 'lease_held_by_other': case 'lease_expired': case 'lease_not_held':
+      case 'rate_limited': case 'operation_capacity': case 'stale_frame': case 'out_of_frame':
+      case 'user_active': case 'denied_shortcut': case 'denied_app': case 'log_unavailable':
+        throw new BoundaryFailure('schema', 'relationship');
+    }
+  }
+  if (code === 'stale_frame') {
+    const reason = object(wire.details).reason;
+    requireFact(reason !== 'pixels_changed' || tool === 'pointer', 'schema', 'relationship');
+    requireFact(reason !== 'frontmost_changed' || tool === 'keyboard', 'schema', 'relationship');
+  }
   const needsMeasurement = input && code !== 'interrupted' && (admitted || code === 'denied_app' || code === 'log_unavailable');
   requireFact(Object.hasOwn(wire, 'measured') === needsMeasurement, 'schema', 'relationship');
   requireFact(!admitted || (Object.hasOwn(wire, 'operation') && Object.hasOwn(wire, 'operation_id')), 'schema', 'relationship');
@@ -591,7 +606,7 @@ function envelope(raw: unknown, expected: ExpectedReply, tool: ToolName): Envelo
   let text: unknown;
   try { text = parseJsonRejectingDuplicateKeys(string(textBlock.text)); }
   catch { throw new BoundaryFailure('content', 'relationship'); }
-  requireFact(isDeepStrictEqual(text, wire), 'content', 'relationship');
+  requireFact(sameJsonValue(text, wire), 'content', 'relationship');
   const isError = boolean(result.isError);
   if (tool === 'screenshot' && !isError) {
     requireFact(content.length === 2 && object(content[0]).mimeType === wire.mime_type, 'content', 'relationship');

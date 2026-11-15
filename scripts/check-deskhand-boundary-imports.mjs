@@ -45,7 +45,7 @@ for (const file of files) {
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) edge(node.argument.literal);
     if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && node.moduleReference.expression) edge(node.moduleReference.expression);
     if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-      ts.isIdentifier(node.expression) && node.expression.text === 'require') && node.arguments.length === 1) edge(node.arguments[0]);
+      ts.isIdentifier(node.expression) && node.expression.text === 'require') && node.arguments.length >= 1) edge(node.arguments[0]);
     ts.forEachChild(node, visit);
   }
   visit(source);

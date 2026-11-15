@@ -5,6 +5,7 @@ on:
       - 'vendor/deskhand/**'
       - 'scripts/*deskhand*.mjs'
       - 'src/service/deskhand/**'
+      - 'src/service/json-values.ts'
       - 'tests/fixtures/deskhand-results/**'
       - 'tests/service/deskhand-results*'
       - 'tests/service/deskhand-contract.test.ts'

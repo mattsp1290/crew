@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { sameJsonValue } from '../src/service/json-values.ts';
 import { commit, tag, contractSha256, root, digest, files } from './vendor-deskhand-contract.mjs';
 
 const require = createRequire(import.meta.url);
@@ -146,7 +147,7 @@ function checkResult(method, result, tool, label) {
     assert.equal(tool, undefined, 'Illustrative result must have no selected tool');
     return;
   }
-  assert.deepEqual(JSON.parse(result.content.at(-1).text), result.structuredContent, `${label} text equality`);
+  assert(sameJsonValue(JSON.parse(result.content.at(-1).text), result.structuredContent), `${label} text equality`);
   const images = result.content.filter((block) => block.type === 'image');
   if (tool === 'screenshot' && !result.isError) {
     assert.equal(images.length, 1, label);
@@ -266,6 +267,15 @@ for (const path of schemas.keys()) {
   assert(negatives.has(path), `No invalid corpus instance ${path}`);
 }
 const allowance = json(join(schemaRoot, 'examples/allowance.lunus-macbook-pro.json'));
+const pointer = json(join(schemaRoot, 'examples/pointer.output.completed.json'));
+for (const [structuredX, textX, label] of [[-0, 0, 'structured negative zero'], [0, -0, 'text negative zero'], [0, 1, 'unequal number']]) {
+  const structuredContent = { ...pointer, measured: { ...pointer.measured, global_point: { ...pointer.measured.global_point, x: structuredX } } };
+  const textContent = { ...structuredContent, measured: { ...structuredContent.measured, global_point: { ...structuredContent.measured.global_point, x: textX } } };
+  const text = JSON.stringify(textContent).replace('"x":0', Object.is(textX, -0) ? '"x":-0' : '"x":0');
+  const result = { resultType: 'complete', isError: false, structuredContent, content: [{ type: 'text', text }] };
+  if (label === 'unequal number') assert.throws(() => checkResult('tools/call', result, 'pointer', label), /text equality/);
+  else checkResult('tools/call', result, 'pointer', label);
+}
 for (const [date, valid] of [['2025-02-29', false], ['2024-02-29', true], ['2100-02-29', false], ['2000-02-29', true]]) {
   check('allowance.json', { ...allowance, not_before: `${date}T12:00:00Z`, expires_at: `${date}T12:01:00Z` }, valid, `real date ${date}`);
 }

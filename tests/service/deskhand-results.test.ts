@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
+import { sameJsonValue } from '../../src/service/json-values.ts';
 import {
   createResultBoundary, endpointIdentity, holderId, operationId, frameId, displayId,
   type AppIdentity, type CallerLease, type DesktopStatus, type DisplayCatalog, type ScreenshotObservation,
@@ -283,6 +284,14 @@ test('JSON content equality rejects unequal numbers, types, own members and arra
   ]) {
     const receivedReply = { ...extendedRaw, result: { ...extendedRaw.result, content: [{ type: 'text', text: JSON.stringify({ ...extended, future_field }) }] } };
     assert.equal(observe({ tool: 'pointer', expectationSeed: seed, receivedReply }).result.kind, 'rejected');
+  }
+});
+
+test('JSON equality rejects non-JSON leaves directly and in containers', () => {
+  for (const value of [undefined, NaN, Infinity, -Infinity, 1n, Symbol('value'), () => undefined]) {
+    assert.equal(sameJsonValue(value, value), false);
+    assert.equal(sameJsonValue({ value }, { value }), false);
+    assert.equal(sameJsonValue([value], [value]), false);
   }
 });
 
@@ -592,7 +601,7 @@ declare const boundary: ResultBoundary;
 test('actual known-path and dropped-optional source mutations fail preservation', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'deskhand-mutations-'));
   try {
-    for (const path of ['src/service/deskhand', 'vendor/deskhand', 'tests/service/deskhand-results.test.ts', 'package.json', 'tsconfig.json']) {
+    for (const path of ['src/service/deskhand', 'src/service/json-values.ts', 'vendor/deskhand', 'tests/service/deskhand-results.test.ts', 'package.json', 'tsconfig.json']) {
       const target = join(temporary, path);
       mkdirSync(dirname(target), { recursive: true });
       cpSync(join(root, path), target, { recursive: true });
