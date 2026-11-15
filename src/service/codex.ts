@@ -173,7 +173,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       developer_instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
       ...(input.mcp && endpoint && { mcp_servers: { birbcrew: { url: endpoint.href,
         bearer_token_env_var: "BIRBCREW_MCP_AUTH", enabled_tools: [input.mcp.tool], required: true,
-        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve" } } }),
+        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve",
+        omit_tools_from: ["code_mode", "deferred"] } } }),
     },
   });
   const options = { workingDirectory: scratch, model: profile.model, skipGitRepoCheck: true, sandboxMode: "read-only", approvalPolicy: "never", webSearchMode: "disabled" } as const;
