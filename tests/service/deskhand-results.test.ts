@@ -245,6 +245,174 @@ test('local holder, endpoint, frame, operation, display, Mac and lookup correlat
   assert.equal(boundary.lease(wrap('lease', lease), { requestId: 17, operation: 'release' }).kind, 'rejected');
 });
 
+for (const direction of ['structured-negative', 'text-negative']) {
+  test(`equivalent signed-zero JSON retains the structured coordinate ${direction}`, () => {
+    const seed = fixture('pointer.output.completed.json');
+    const measured = object(seed.measured);
+    seed.measured = { ...measured, global_point: { ...object(measured.global_point), x: 0 } };
+    const expected = Object.freeze({ requestId: 17, ...expectedInput(seed), action: 'target' } satisfies ExpectedReply & ExpectedPointer);
+    const raw = wrap('pointer', seed);
+    const serialized = JSON.stringify(raw);
+    const received = object(JSON.parse(direction === 'structured-negative' ? serialized.replace('"x":0', '"x":-0') : serialized));
+    if (direction === 'text-negative') {
+      const result = object(received.result);
+      received.result = { ...result, content: [{ type: 'text', text: JSON.stringify(seed).replace('"x":0', '"x":-0') }] };
+    }
+    const result = boundary.pointer(received, expected);
+    assert.equal(result.kind, 'ok');
+    assert(result.kind === 'ok');
+    assert(Object.is(result.value.measured.globalPoint.x, direction === 'structured-negative' ? -0 : 0));
+  });
+}
+
+test('JSON content equality rejects unequal numbers, types, own members and array order', () => {
+  const seed = fixture('pointer.output.completed.json');
+  const raw = wrap('pointer', seed);
+  const measured = object(seed.measured);
+  const changedNumber = { ...seed, measured: { ...measured, global_point: { ...object(measured.global_point), x: 999 } } };
+  assert.equal(observe({ tool: 'pointer', expectationSeed: seed, receivedReply: { ...raw, result: { ...raw.result, content: [{ type: 'text', text: JSON.stringify(changedNumber) }] } } }).result.kind, 'rejected');
+  const extended = { ...seed, future_field: { value: 1, order: [1, 2], nullable: null } };
+  const extendedRaw = wrap('pointer', extended);
+  assert.equal(observe({ tool: 'pointer', expectationSeed: seed, receivedReply: extendedRaw }).result.kind, 'ok');
+  for (const future_field of [
+    { value: '1', order: [1, 2], nullable: null },
+    { order: [1, 2], nullable: null },
+    { value: 1, order: [1, 2], nullable: null, added: true },
+    { value: 1, order: [2, 1], nullable: null },
+    { value: 1, order: [1, 2], nullable: {} },
+  ]) {
+    const receivedReply = { ...extendedRaw, result: { ...extendedRaw.result, content: [{ type: 'text', text: JSON.stringify({ ...extended, future_field }) }] } };
+    assert.equal(observe({ tool: 'pointer', expectationSeed: seed, receivedReply }).result.kind, 'rejected');
+  }
+});
+
+for (const status of ['accepted', 'failed_before_execution']) {
+  for (const tool of ['status', 'pointer', 'keyboard']) {
+    test(`zero-input operation status ${status} requires zero events in ${tool}`, () => {
+      const original = fixture(tool === 'status' ? 'status.output.operation-found.json' : 'keyboard.output.error-operation-id-conflict.json');
+      const seed = Object.freeze({ ...original, operation: { status, events_posted: 0 } });
+      const unchanged = observe({ tool, expectationSeed: seed });
+      assert.equal(unchanged.result.kind, tool === 'status' ? 'ok' : 'tool-error');
+      assert.deepEqual(unchanged.reconstructed, seed);
+      const received = { ...seed, operation: { status, events_posted: 7 } };
+      assert.equal(observe({ tool, expectationSeed: seed, receivedReply: wrap(tool, received) }).result.kind, 'rejected');
+    });
+  }
+}
+
+test('executing counts and restart lower bounds retain zero and positive evidence', () => {
+  for (const events_posted of [0, 7]) {
+    for (const status of ['executing', 'aborted_by_restart']) {
+      const seed = fixture('status.output.operation-found.json');
+      const received = { ...seed, operation: { status, events_posted } };
+      const lookup = boundary.lookup(wrap('status', received), { requestId: 17, operationId: operationId(fallback.operation_id) });
+      assert.equal(lookup.kind, 'ok');
+      assert(lookup.kind === 'ok' && lookup.value.record.kind !== 'not-recorded-now');
+      assert.deepEqual(lookup.value.record.events, { kind: status === 'executing' ? 'exact' : 'lower-bound', value: events_posted });
+      for (const tool of ['pointer', 'keyboard']) {
+        const error = fixture(status === 'executing' ? 'keyboard.output.error-operation-in-progress.json' : 'keyboard.output.error-interrupted.json');
+        const observed = observe({ tool, expectationSeed: error, receivedReply: wrap(tool, { ...error, operation: { status, events_posted } }) }).result;
+        assert.equal(observed.kind, 'tool-error');
+        assert(observed.kind === 'tool-error' && observed.error.operation.kind === 'present');
+        assert.deepEqual(observed.error.operation.value.events, { kind: status === 'executing' ? 'exact' : 'lower-bound', value: events_posted });
+      }
+    }
+  }
+});
+
+for (const { tool, code, seedName } of [
+  { tool: 'pointer', code: 'cleanup_pending', seedName: null },
+  { tool: 'pointer', code: 'lease_held_by_other', seedName: 'pointer.output.error-lease-held-by-other.json' },
+  { tool: 'pointer', code: 'lease_expired', seedName: null },
+  { tool: 'pointer', code: 'lease_not_held', seedName: null },
+  { tool: 'keyboard', code: 'rate_limited', seedName: 'keyboard.output.error-rate-limited.json' },
+  { tool: 'pointer', code: 'operation_capacity', seedName: null },
+  { tool: 'pointer', code: 'stale_frame', seedName: 'pointer.output.error-stale-frame.json' },
+  { tool: 'pointer', code: 'out_of_frame', seedName: 'pointer.output.error-out-of-frame.json' },
+  { tool: 'pointer', code: 'user_active', seedName: null },
+  { tool: 'keyboard', code: 'denied_shortcut', seedName: 'keyboard.output.error-denied-shortcut.json' },
+  { tool: 'pointer', code: 'denied_app', seedName: 'pointer.output.error-denied-app.json' },
+  { tool: 'keyboard', code: 'log_unavailable', seedName: 'keyboard.output.error-log-unavailable.json' },
+] satisfies ReadonlyArray<{ tool: 'pointer' | 'keyboard'; code: string; seedName: string | null }>) {
+  test(`late nonadmitted refusal ${code} cannot carry an existing operation record`, () => {
+    const seed = Object.freeze(seedName === null ? {
+      code, message: 'Refusal before admission', state: 'ok', operation_id: fallback.operation_id,
+      ...(code === 'user_active' ? { details: { idle_ms: 1 } } : {}),
+    } : fixture(seedName));
+    const unchanged = observe({ tool, expectationSeed: seed });
+    assert.equal(unchanged.result.kind, 'tool-error');
+    assert.deepEqual(unchanged.reconstructed, seed);
+    const received = { ...seed, operation_id: seed.operation_id ?? fallback.operation_id, operation: { status: 'completed', events_posted: 2 } };
+    assert.equal(observe({ tool, expectationSeed: seed, receivedReply: wrap(tool, received) }).result.kind, 'rejected');
+  });
+}
+
+test('early refusals retain prior records while admitted and replayed aborts retain their own records', () => {
+  const state = fixture('pointer.output.error-paused-aborted.json');
+  delete state.replayed;
+  delete state.measured;
+  const invalid = fixture('status.output.error-invalid-argument.json');
+  const internal: Record<string, unknown> = { code: 'internal_error', message: 'Internal failure before admission', state: 'ok' };
+  for (const seed of [state, invalid, fixture('keyboard.output.error-busy.json'), fixture('keyboard.output.error-operation-in-progress.json'), fixture('keyboard.output.error-operation-id-conflict.json'), internal]) {
+    const wire = { ...seed, operation_id: seed.operation_id ?? fallback.operation_id, operation: seed.operation ?? { status: 'completed', events_posted: 2 } };
+    assert.deepEqual(observe({ tool: 'pointer', expectationSeed: wire }).reconstructed, wire);
+  }
+  const lease = fixture('pointer.output.error-paused-aborted.json');
+  lease.code = 'lease_expired';
+  lease.state = 'ok';
+  for (const seed of [fixture('pointer.output.error-denied-app-drag-aborted.json'), fixture('pointer.output.error-user-active-aborted.json'), lease]) {
+    for (const replayed of [false, true]) {
+      const wire = { ...seed, replayed, ...(replayed ? { current_state: 'ok' } : {}) };
+      const observed = observe({ tool: 'pointer', expectationSeed: wire });
+      assert.equal(observed.result.kind, 'tool-error');
+      assert.deepEqual(observed.reconstructed, wire);
+    }
+  }
+});
+
+for (const tool of ['pointer', 'keyboard']) {
+  test(`stale-frame reason belongs to the selected ${tool} tool before admission`, () => {
+    const original = fixture('pointer.output.error-stale-frame.json');
+    const seed = Object.freeze({ ...original, details: { reason: tool === 'pointer' ? 'pixels_changed' : 'frontmost_changed', point_index: 0 } });
+    assert.equal(observe({ tool, expectationSeed: seed }).result.kind, 'tool-error');
+    const received = { ...seed, details: { ...seed.details, reason: tool === 'pointer' ? 'frontmost_changed' : 'pixels_changed' } };
+    assert.equal(observe({ tool, expectationSeed: seed, receivedReply: wrap(tool, received) }).result.kind, 'rejected');
+  });
+}
+
+test('admitted stale-frame abort identifies the first point only', () => {
+  const seed = Object.freeze(fixture('pointer.output.error-stale-frame-before-first-event.json'));
+  assert.deepEqual(observe({ tool: 'pointer', expectationSeed: seed }).reconstructed, seed);
+  const received = { ...seed, details: { ...object(seed.details), point_index: 1 } };
+  assert.equal(observe({ tool: 'pointer', expectationSeed: seed, receivedReply: wrap('pointer', received) }).result.kind, 'rejected');
+});
+
+test('preadmission drag final-point indices and unrelated diagnostic reasons remain valid', () => {
+  const original = fixture('pointer.output.error-stale-frame.json');
+  const drag = { ...original, details: { ...object(original.details), point_index: 3 } };
+  const expected = Object.freeze({ requestId: 17, ...expectedInput(original), action: 'drag' } satisfies ExpectedReply & ExpectedPointer);
+  const result = boundary.pointer(wrap('pointer', drag), expected);
+  assert.equal(result.kind, 'tool-error');
+  assert(result.kind === 'tool-error');
+  assert.deepEqual(wireError(result.error), drag);
+  const unrelated = fixture('pointer.output.error-out-of-frame.json');
+  unrelated.details = { ...object(unrelated.details), reason: 'frontmost_changed' };
+  assert.deepEqual(observe({ tool: 'pointer', expectationSeed: unrelated }).reconstructed, unrelated);
+});
+
+for (const tool of ['pointer', 'keyboard']) {
+  test(`${tool} tool errors correlate the received operation ID against the unchanged expectation`, () => {
+    const seed = Object.freeze(fixture('keyboard.output.error-operation-in-progress.json'));
+    const expected = Object.freeze({ requestId: 17, ...expectedInput(seed) });
+    const read = (wire: Record<string, unknown>) => tool === 'pointer'
+      ? boundary.pointer(wrap(tool, wire), { ...expected, action: 'target' })
+      : boundary.keyboard(wrap(tool, wire), expected);
+    assert.equal(read(seed).kind, 'tool-error');
+    const result = read({ ...seed, operation_id: 'other-operation' });
+    assert.deepEqual(result, { kind: 'rejected', failure: { kind: 'contract', reason: 'correlation', stage: 'relationship' } });
+  });
+}
+
 test('measurement presence and action semantics are stronger than canonical schema', () => {
   const keyboard = fixture('keyboard.output.completed.json');
   const pointer = fixture('pointer.output.completed.json');
@@ -356,6 +524,29 @@ test('the real import fence resolves every supported literal edge and preserves 
     assert.equal(run().status, 0);
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
+
+for (const { name, source, reason } of [
+  { name: 'private owner', source: "import('./deskhand/contract.ts', {});", reason: 'private-edge' },
+  { name: 'exact private test', source: "import('../../tests/service/deskhand-results.test.ts', {});", reason: 'private-test-edge' },
+  { name: 'computed configuration', source: "const configPath = './deskhand/contract.ts'; import(configPath, {});", reason: null },
+]) {
+  test(`the real import fence inspects two-argument dynamic imports of ${name}`, () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'deskhand-import-options-'));
+    const write = (path: string, contents: string) => { const target = join(temporary, path); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, contents); };
+    try {
+      write('tsconfig.json', JSON.stringify({ compilerOptions: { module: 'NodeNext', moduleResolution: 'NodeNext' } }));
+      write('src/service/deskhand/contract.ts', 'export const hidden = 1;');
+      write('tests/service/deskhand-results.test.ts', '');
+      write('src/service/consumer.ts', source);
+      const result = spawnSync(process.execPath, [join(root, 'scripts/check-deskhand-boundary-imports.mjs'), '--root', temporary], { encoding: 'utf8' });
+      assert.equal(result.status, reason === null ? 0 : 1, result.stdout + result.stderr);
+      if (reason !== null) {
+        const reported = object(JSON.parse(result.stderr));
+        assert.deepEqual(reported.violations, [{ file: 'src/service/consumer.ts', reason }]);
+      }
+    } finally { rmSync(temporary, { recursive: true, force: true }); }
+  });
+}
 
 test('separately compiled negative callers reject each forbidden type use', () => {
   const filename = join(root, 'tests/service/deskhand-results.types.ts');
