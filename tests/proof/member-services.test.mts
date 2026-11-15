@@ -13,7 +13,7 @@ import { test, type TestContext } from "node:test";
 import { z } from "zod";
 import { before, boundedCommand, collectFiles, CommandFailure, describe, liveGroup, now, stopGroup } from "./member-service-diagnostics.mts";
 import { parseProcess, positiveGroupProcessSchema, processKey, type PositiveGroupProcess } from "./member-service-processes.mts";
-import { atomicReceipt, contractRunSchema, missingProcess, observeOwned, ownershipSchema, processIdentity, recoverFixture, regularFile, stopOwned } from "./member-service-recovery.mts";
+import { atomicReceipt, contractRunSchema, missingProcess, observeOwned, ownershipSchema, processIdentity, readContractFixture, recoverFixture, regularFile, stopOwned } from "./member-service-recovery.mts";
 import { run, until } from "./member-services.mts";
 
 const diagnostics = resolve("tests/proof/member-service-diagnostics.mts");
@@ -858,9 +858,8 @@ for (const mode of ["catchable", "forced"] as const) {
     assert.equal(result.timedOut, true, result.output);
     assert.ok(Date.now() - started < 119_000, "Fixture timeout consumed the parent deadline");
     recovered(result);
-    const [entry] = (await readdir(dir)).filter(name => /^contract-/.test(name));
-    assert.ok(entry);
-    const artifacts = join(dir, entry);
+    const contract = contractRunSchema.parse(JSON.parse(await regularFile(join(dir, "contract-run.json"))));
+    const { artifacts } = await readContractFixture(dir, contract.worker, now() + 2_000);
     const ownership = ownershipSchema.parse(JSON.parse(await regularFile(join(artifacts, "timeout-ready.json"))));
     assert.equal(await readFile(join(artifacts, "term.txt"), "utf8"), "SIGTERM");
     assert.equal((await run("docker", ["ps", "-aq", "--filter", "name=^/" + ownership.container + "$"],
