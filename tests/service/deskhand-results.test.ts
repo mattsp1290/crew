@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import { fullFormats } from 'ajv-formats/dist/formats.js';
 import { sameJsonValue } from '../../src/service/json-values.ts';
 import {
   createResultBoundary, endpointIdentity, holderId, operationId, frameId, displayId,
@@ -105,6 +107,33 @@ function wireLeaseOutcome(outcome: LeaseOutcome) {
     outcome: outcome.kind === 'held' ? outcome.outcome : outcome.kind === 'not-held' ? 'not_held' : outcome.kind,
     ...(outcome.kind === 'refused' ? { code: outcome.refusal.code, ...(outcome.refusal.code === 'lease_held_by_other' ? { expires_in_ms: outcome.refusal.otherExpiresInMs } : {}) } : {}) } };
 }
+const echoSchemas = new Ajv2020({ strict: true, strictTypes: false, strictTuples: false, strictRequired: false,
+  coerceTypes: false, useDefaults: false, removeAdditional: false });
+for (const [name, format] of Object.entries(fullFormats)) echoSchemas.addFormat(name, format);
+for (const directory of ['', 'tools/', 'wire/']) {
+  const schemaDirectory = join(examples, '..', directory);
+  for (const entry of readdirSync(schemaDirectory, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.json')) {
+      const schema: unknown = JSON.parse(readFileSync(join(schemaDirectory, entry.name), 'utf8'));
+      assert(schema !== null && typeof schema === 'object' && !Array.isArray(schema));
+      echoSchemas.addSchema(schema);
+    }
+  }
+}
+function canonicalEchoReply(tool: string, wire: Record<string, unknown>) {
+  const raw = wrap(tool, wire);
+  for (const [path, value] of [
+    ['wire/jsonrpc-response.json', raw], ['wire/tools-call-result.json', raw.result], [`tools/${tool}.output.json`, wire],
+  ] satisfies ReadonlyArray<readonly [string, unknown]>) {
+    const validate = echoSchemas.getSchema(`https://deskhand.invalid/schemas/${path}`);
+    assert(validate);
+    assert.equal(validate(value), true, `${tool} canonical acceptance ${path}`);
+  }
+  const text = object(raw.result.content.at(-1)).text;
+  assert(typeof text === 'string');
+  assert.deepEqual(JSON.parse(text), wire);
+  return raw;
+}
 function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap(tool, wire), requestId = 17, owner = boundary, expectedAction }: {
   tool: string;
   expectationSeed: Record<string, unknown>;
@@ -147,6 +176,118 @@ function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap(tool, 
     }
     default: throw new Error('unknown-test-tool');
   }
+}
+
+for (const action of ['target', 'drag'] satisfies ReadonlyArray<ExpectedPointer['action']>) {
+  for (const admission of ['preadmission', 'first-admission', 'replay']) {
+    const original = fixture('pointer.output.error-denied-app.json');
+    const input = expectedInput(original);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action } satisfies ExpectedReply & ExpectedPointer);
+    const seed: Readonly<Record<string, unknown>> = Object.freeze({ ...original, ...(admission === 'preadmission' ? {} : {
+      operation: { status: 'aborted', events_posted: 0 }, replayed: admission === 'replay',
+      ...(admission === 'replay' ? { current_state: 'locked' } : {}),
+    }) });
+    test(`${action} ${admission} indexed denial requires its measured target (defs.json:259, §6.7:888, §6.9:998-1002)`, () => {
+      const control = boundary.pointer(canonicalEchoReply('pointer', seed), expected);
+      assert.equal(control.kind, 'tool-error');
+      assert(control.kind === 'tool-error');
+      assert.deepEqual(wireError(control.error), seed);
+      const measured = object(seed.measured);
+      assert.notEqual(measured.global_point, null);
+      assert.equal(object(seed.details).point_index, 0);
+      const received = { ...seed, measured: { ...measured, target_app: null } };
+      const result = boundary.pointer(canonicalEchoReply('pointer', received), expected);
+      assert.deepEqual(result, { kind: 'rejected', failure: { kind: 'contract', reason: 'schema', stage: 'relationship' } });
+    });
+    for (const { name, target, details, globalPoint } of [
+      { name: 'identified target', target: object(original.measured).target_app, details: original.details, globalPoint: object(original.measured).global_point },
+      { name: 'unknown app object', target: { bundle_id: null, team_id: null, name: '' }, details: { denied_by: 'policy', point_index: 0 }, globalPoint: object(original.measured).global_point },
+      { name: 'known process without bundle', target: { bundle_id: null, team_id: 'KNOWNTEAM1', name: 'Known process' }, details: { denied_by: 'policy', point_index: 0 }, globalPoint: object(original.measured).global_point },
+      { name: 'frontmost denial without point', target: null, details: { denied_by: 'permitted_apps' }, globalPoint: null },
+    ]) {
+      test(`${action} ${admission} denial retains ${name} (§6.9:937-948, §6.9:998-1002)`, () => {
+        const received = { ...seed, details, measured: { ...object(seed.measured), target_app: target, global_point: globalPoint } };
+        const result = boundary.pointer(canonicalEchoReply('pointer', received), expected);
+        assert.equal(result.kind, 'tool-error');
+        assert(result.kind === 'tool-error');
+        assert.deepEqual(wireError(result.error), received);
+      });
+    }
+  }
+}
+
+for (const tool of ['pointer', 'keyboard']) {
+  const denied = fixture(tool === 'pointer' ? 'pointer.output.error-denied-app.json' : 'keyboard.output.error-denied-app-focus.json');
+  const common = [
+    { code: 'busy', fields: {} },
+    { code: 'cleanup_pending', fields: {} },
+    { code: 'lease_held_by_other', fields: { details: { expires_in_ms: 100 } } },
+    { code: 'lease_expired', fields: {} },
+    { code: 'lease_not_held', fields: {} },
+    { code: 'rate_limited', fields: { retry_after_ms: 100 } },
+    { code: 'operation_capacity', fields: {} },
+    { code: 'stale_frame', fields: { details: { reason: 'too_old' } } },
+    { code: 'user_active', fields: { details: { idle_ms: 0 } } },
+    { code: 'denied_app', fields: { measured: denied.measured, details: denied.details } },
+    { code: 'log_unavailable', fields: { measured: fixture(`${tool}.output.completed.json`).measured } },
+  ];
+  const applicable = tool === 'pointer'
+    ? [...common, { code: 'out_of_frame', fields: { details: { point_index: 0, output_pixel_size: { width: 100, height: 100 } } } }]
+    : [...common, { code: 'denied_shortcut', fields: { details: { shortcut: 'command+space' } } }];
+  for (const { code, fields } of applicable) {
+    const seed = Object.freeze({ code, message: 'Refused before admission', state: 'ok', operation_id: fallback.operation_id, ...fields });
+    const input = expectedInput(seed);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action: 'target' } satisfies ExpectedReply & ExpectedPointer);
+    for (const echo of ['valid', 'missing', 'mismatched']) {
+      test(`${tool} ${code} ${echo} parsed operation ID (§9.2:1256, §9.5:1407-1426)`, () => {
+        const received: Record<string, unknown> = { ...seed };
+        assert(!Object.hasOwn(received, 'operation') && !Object.hasOwn(received, 'replayed'));
+        if (echo === 'missing') delete received.operation_id;
+        if (echo === 'mismatched') received.operation_id = 'other-operation';
+        const raw = canonicalEchoReply(tool, received);
+        const result = tool === 'pointer' ? boundary.pointer(raw, expected) : boundary.keyboard(raw, expected);
+        if (echo === 'valid') {
+          assert.equal(result.kind, 'tool-error');
+          assert(result.kind === 'tool-error');
+          assert.deepEqual(wireError(result.error), received);
+          assert.deepEqual(result.error.reportedOperationId, { kind: 'present', value: expected.operationId });
+        } else {
+          assert.deepEqual(result, { kind: 'rejected', failure: { kind: 'contract', reason: echo === 'missing' ? 'schema' : 'correlation', stage: 'relationship' } });
+        }
+      });
+    }
+  }
+  for (const code of ['gated', 'paused', 'disarmed', 'not_console', 'locked', 'display_asleep', 'permission_missing', 'permission_stale', 'secure_input', 'invalid_argument', 'internal_error']) {
+    const seed = Object.freeze({ code, message: 'Refused before complete argument parsing',
+      state: code === 'invalid_argument' || code === 'internal_error' ? 'ok' : code,
+      ...(code === 'invalid_argument' ? { details: { argument: '/operation_id' } } : {}),
+    });
+    const input = expectedInput(fallback);
+    const expected = Object.freeze({ requestId: 17, ...input, frame: Object.freeze(input.frame), action: 'target' } satisfies ExpectedReply & ExpectedPointer);
+    for (const echo of ['absent', 'correct']) {
+      test(`${tool} early ${code} keeps ${echo} operation ID valid (§9.2:1256, §9.5:1407-1426)`, () => {
+        const received = { ...seed, ...(echo === 'correct' ? { operation_id: expected.operationId } : {}) };
+        const raw = canonicalEchoReply(tool, received);
+        const result = tool === 'pointer' ? boundary.pointer(raw, expected) : boundary.keyboard(raw, expected);
+        assert.equal(result.kind, 'tool-error');
+        assert(result.kind === 'tool-error');
+        assert.deepEqual(wireError(result.error), received);
+        assert.deepEqual(result.error.reportedOperationId, echo === 'correct' ? { kind: 'present', value: expected.operationId } : { kind: 'absent' });
+      });
+    }
+  }
+}
+
+for (const tool of ['status', 'displays', 'screenshot', 'lease']) {
+  test(`${tool} early error remains without an operation ID (§9.2:1256)`, () => {
+    const seed = fixture('status.output.error-invalid-argument.json');
+    assert(!Object.hasOwn(seed, 'operation_id'));
+    const result = observe({ tool, expectationSeed: seed, receivedReply: canonicalEchoReply(tool, seed) }).result;
+    assert.equal(result.kind, 'tool-error');
+    assert(result.kind === 'tool-error');
+    assert.deepEqual(result.error.reportedOperationId, { kind: 'absent' });
+    assert.deepEqual(wireError(result.error), seed);
+  });
 }
 
 for (const name of readdirSync(examples).filter((name) => /^[a-z]+\.output\./.test(name))) {
