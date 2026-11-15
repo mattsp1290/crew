@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { CrewClient, CrewHttpError } from "@birbcrew/client";
 import { createCrewObserver } from "@birbcrew/client/agui";
 import { commands, pendingSchema } from "./member-commands.mts";
@@ -20,8 +17,6 @@ await withServices({ label: "integration-api" }, async s => {
     [createHash("sha256").update(token).digest("hex")]: ownerId,
     [createHash("sha256").update(stranger).digest("hex")]: randomUUID(),
   } }), { mode: 0o600 });
-  // The operator's price table, which the worker's supervisor reads at startup and applies to each
-  // reported segment as it writes the segment's ledger row.
   const prices = join(s.directory, "prices.json");
   await writeFile(prices, JSON.stringify({ version: 1, unit: "usd-per-million-tokens", models: {
     "claude-sonnet-4-6": { input: "3", output: "15" }, "gpt-5.4": { input: "1.25", cachedInput: "0.125", output: "10" },
@@ -31,19 +26,10 @@ await withServices({ label: "integration-api" }, async s => {
   let client = new CrewClient({ baseUrl: "http://127.0.0.1", token });
   let stopGateway: (() => Promise<void>) | undefined;
   async function gateway() {
-    const child = spawn(process.execPath, ["src/service/gateway.ts", config], { env: s.env, stdio: ["ignore", "pipe", "inherit"] });
-    const exit = once(child, "exit");
-    const lines = createInterface({ input: child.stdout });
-    const url = await Promise.race([
-      once(lines, "line").then(([line]) => JSON.parse(line).url as string),
-      exit.then(() => { throw new Error("Gateway exited before listening"); }),
-    ]).finally(() => lines.close());
-    endpoint = url;
+    const owned = await s.gateway(config);
+    endpoint = owned.url;
     client = new CrewClient({ baseUrl: endpoint, token });
-    stopGateway = async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      await exit;
-    };
+    stopGateway = owned.stop;
   }
   async function rawRequest(path: string, body?: unknown, auth = token) {
     return fetch(endpoint + path, { method: body === undefined ? "GET" : "POST",
@@ -58,11 +44,12 @@ await withServices({ label: "integration-api" }, async s => {
   }
   const fixtures = await startRestartFixtures({ codexUsage: () => ({ input_tokens: 1000, input_tokens_details: { cached_tokens: 400 },
     output_tokens: 50, output_tokens_details: { reasoning_tokens: 10 }, total_tokens: 1050 }) });
+  let outcome: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
   try {
     s.env.BIRBCREW_PROXY_FIXTURE_ENDPOINTS = JSON.stringify(fixtures.endpoints);
-    const stopTemporal = await s.startTemporal();
+    await s.startTemporal();
     let stopWorker = await s.child(process.execPath, ["src/service/cli.ts", "worker", "tests/proof/proxy-restart-profiles.mts"]);
-    try {
+    {
       await until(async () => {
         try { return await s.sql("SELECT count(*) FROM birbcrew_ts.profiles WHERE name='proxy.fixture.v1'") === "3" || undefined; }
         catch { return undefined; }
@@ -80,6 +67,7 @@ await withServices({ label: "integration-api" }, async s => {
         await client.openConversation({ memberId: member.memberId, conversationId });
         const marker = randomUUID(), submissions: { requestId: string; text: string }[] = [];
         let observer = observe(conversationId);
+        let observed: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
         try {
           await until(async () => observer.seen.includes("STATE_SNAPSHOT") || undefined, "independent official AG-UI snapshot");
           for (let i = 0; i < 6; i++) {
@@ -133,7 +121,13 @@ await withServices({ label: "integration-api" }, async s => {
             inputTokens: r.inputTokens, outputTokens: r.outputTokens, costUsd: r.costUsd, estimatedCostUsd: r.estimatedCostUsd })),
           Array.from({ length: 6 }, () => ({ lane: "member", costUsd: null, ...metered })));
           console.log(`${engine}: v1 HTTP acceptance, six turns across rollover, gateway SIGKILL/restart, original results, official AG-UI observation, no-inference duplicate reconciliation and metered usage passed`);
-        } finally { await observer.stop(); }
+        } catch (error) { observed = { kind: "failed", error }; }
+        try { await observer.stop(); }
+        catch (error) {
+          if (observed.kind === "passed") throw error;
+          console.error("API observer cleanup also failed", error);
+        }
+        if (observed.kind === "failed") throw observed.error;
       }
       // Billed and estimated cost stay apart in the owner's totals: no provider billed these turns.
       const { total } = await (await rawRequest("/v1/usage")).json();
@@ -156,8 +150,15 @@ await withServices({ label: "integration-api" }, async s => {
         await until(async () => pendingSchema.parse(await command("pending", { ownerId, conversationId }))[0], "pending protected request");
         // Reading and disconnecting the official observer cannot cancel the waiting operation.
         const observer = observe(conversationId);
-        await until(async () => observer.seen.includes("STATE_SNAPSHOT") || undefined, "pending observation");
-        await observer.stop();
+        let observed: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
+        try { await until(async () => observer.seen.includes("STATE_SNAPSHOT") || undefined, "pending observation"); }
+        catch (error) { observed = { kind: "failed", error }; }
+        try { await observer.stop(); }
+        catch (error) {
+          if (observed.kind === "passed") throw error;
+          console.error("API pending observer cleanup also failed", error);
+        }
+        if (observed.kind === "failed") throw observed.error;
         assert.equal(pendingSchema.parse(await command("pending", { ownerId, conversationId })).length, 1);
         await client.submit({ conversationId, requestId: successor, text: "remember never-run" });
         const receipt = await client.cancel({ conversationId, requestId: predecessor });
@@ -191,7 +192,13 @@ await withServices({ label: "integration-api" }, async s => {
         assert.equal(await s.sql(`SELECT count(*) FROM birbcrew_ts.work_items WHERE conversation_id='${approvalConversation}'`), "0");
         console.log(`${engine}: installed client approval decision, duplicate receipt and denied effect passed`);
       }
-    } finally { await stopGateway?.(); await stopWorker(); await stopTemporal(); }
-  } finally { await fixtures.close(); }
+    }
+  } catch (error) { outcome = { kind: "failed", error }; }
+  try { await fixtures.close(); }
+  catch (error) {
+    if (outcome.kind === "passed") throw error;
+    console.error("API provider cleanup also failed", error);
+  }
+  if (outcome.kind === "failed") throw outcome.error;
 });
 console.log("Versioned integration API proof passed with actual service fixtures; no live inference.");

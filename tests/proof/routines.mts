@@ -28,7 +28,6 @@ await withServices({ label: "routines", engine: "pi" }, async s => {
   }
   type Firing = { status: string; reason: string | null; conversationId: string | null; requestId: string | null };
   async function routine(memberId: string, prompt: string, approvalPolicy: "wait" | "fail_closed") {
-    // A yearly schedule, so no real window falls inside the proof.
     const created = await api("/v1/routines", { requestId: randomUUID(), memberId, schedule: "0 0 1 1 *", prompt, approvalPolicy });
     const due = () => s.sql(`UPDATE birbcrew_ts.routines SET next_window=now() WHERE routine_id='${created.routineId}'`);
     const firings = async (): Promise<Firing[]> => (await api(`/v1/routines/${created.routineId}/firings`)).firings;
@@ -59,7 +58,6 @@ await withServices({ label: "routines", engine: "pi" }, async s => {
   const capabilities = await api("/v1/capabilities");
   assert.deepEqual(capabilities.initiatorKinds, ["owner", "routine", "handoff"]);
 
-  // A firing opens a new conversation, runs to completion and is attributed to its routine.
   const marker = randomUUID();
   const complete = await routine(chat.memberId, "remember " + marker, "wait");
   await complete.due();
@@ -73,7 +71,6 @@ await withServices({ label: "routines", engine: "pi" }, async s => {
   assert.equal(audit[0].payload.routineId, complete.routineId);
   console.log("pi: a routine firing ran to completion in its own conversation, attributed to the routine");
 
-  // wait: the card stays pending in the conversation snapshot until the owner decides.
   const waiting = await routine(guarded.memberId, "record assigned", "wait");
   await waiting.due();
   const pending = await waiting.settled("waiting");
@@ -87,7 +84,6 @@ await withServices({ label: "routines", engine: "pi" }, async s => {
   assert.equal(await count("work_items", approved.conversationId!), 1);
   console.log("pi: a wait routine's approval card appeared in pendingApprovals and its approved turn completed");
 
-  // fail_closed: reaching the card records the reason and requests durable cancellation.
   const closed = await routine(guarded.memberId, "record assigned", "fail_closed");
   await closed.due();
   const refused = await closed.settled("failed");
@@ -98,8 +94,6 @@ await withServices({ label: "routines", engine: "pi" }, async s => {
   assert.equal((await api(`/v1/routines/${closed.routineId}`)).consecutiveFailures, 1);
   console.log(`pi: a fail_closed routine requested cancellation at its card and failed with approval_required (request ${cancelled.status})`);
 
-  // A gateway killed between claim and admission: with no worker the admission cannot commit, so
-  // the gateway is still inside acceptTurn when it dies. The next gateway retries the stored identity.
   await stopWorker();
   const crash = await routine(chat.memberId, "remember " + randomUUID(), "wait");
   await crash.due();

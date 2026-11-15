@@ -53,7 +53,10 @@ export async function startRestartFixtures(options: { codexUsage?: (request: num
   const claude = await startClaudeFixtureProvider();
   let codex: Awaited<ReturnType<typeof startProvider>>;
   try { codex = await startProvider(undefined, undefined, undefined, options.codexUsage); }
-  catch { await claude.close(); throw new Error("Restart fixture initialization failed"); }
+  catch (error) {
+    try { await claude.close(); } catch (cleanup) { console.error("Restart fixture initialization cleanup also failed", cleanup); }
+    throw error;
+  }
   const evidence: Evidence = {
     claude: { requests: 0, credentialDigests: [] },
     codex: { requests: 0, credentialDigests: [] },
@@ -112,11 +115,20 @@ export async function startRestartFixtures(options: { codexUsage?: (request: num
   }
   let completion: Promise<void> | undefined;
   const close = () => completion ??= (async () => {
-    for (const stop of active) stop.abort();
-    const closed = new Promise<void>(resolve => server.close(() => resolve()));
-    server.closeAllConnections();
-    await closed;
-    await Promise.all([claude.close(), codex.close()]);
+    const results = await Promise.allSettled([
+      ...[...active].map(stop => Promise.resolve().then(() => stop.abort())),
+      Promise.resolve().then(async () => {
+        const closed = new Promise<void>((resolve, reject) => server.close(error => {
+          if (error && !("code" in error && error.code === "ERR_SERVER_NOT_RUNNING")) reject(error); else resolve();
+        }));
+        server.closeAllConnections();
+        await closed;
+      }),
+      Promise.resolve().then(() => claude.close()),
+      Promise.resolve().then(() => codex.close()),
+    ]);
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Restart fixture cleanup failed");
   })();
   try {
     server.listen(0, "127.0.0.1");
@@ -129,8 +141,8 @@ export async function startRestartFixtures(options: { codexUsage?: (request: num
       evidence: (): Evidence => structuredClone(evidence),
       close,
     };
-  } catch {
-    await close();
-    throw new Error("Restart fixture initialization failed");
+  } catch (error) {
+    try { await close(); } catch (cleanup) { console.error("Restart fixture initialization cleanup also failed", cleanup); }
+    throw error;
   }
 }

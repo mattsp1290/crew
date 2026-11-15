@@ -31,7 +31,6 @@ await withServices({ label: "memories" }, async s => {
   const evidence = async (): Promise<Evidence[]> => (await readFile(s.env.BIRBCREW_PROOF_NOTES!, "utf8").catch(() => ""))
     .split("\n").filter(Boolean).map(line => JSON.parse(line));
   let seen = 0;
-  /** The provider requests made since the last call: each one's system-context and message markers. */
   async function requests() {
     const rows = await evidence();
     const fresh = rows.slice(seen);
@@ -77,7 +76,6 @@ await withServices({ label: "memories" }, async s => {
   await remember(member.memberId, "Deploys need " + second);
   await requests();
 
-  // Conversation A opens with both entries; its turn carries both, as system context only.
   const a = await open(member.memberId);
   assert.equal((await turn(a, "remember cedar")).result.text, "stored cedar");
   assert.deepEqual(await requests(), [{ engine: "pi", system: [first, second].sort(), messages: [], continuation: false }]);
@@ -101,7 +99,6 @@ await withServices({ label: "memories" }, async s => {
   await api(`/v1/memories/${one.memoryId}`, { token: other.token, expected: 404 });
   console.log("pi: another owner's member saw none of these entries");
 
-  // The worker dies while A's turn waits on its approval card; a new worker resumes it after approval.
   await turn(a, "record assigned", { status: "waiting" });
   assert.deepEqual(await requests(), [{ engine: "pi", system: [second], messages: [], continuation: false }]);
   await stopWorker();
@@ -117,9 +114,6 @@ await withServices({ label: "memories" }, async s => {
   assert.deepEqual(await requests(), [{ engine: "pi", system: [second], messages: [], continuation: true }]);
   console.log("pi: after the worker was killed mid-turn, the resumed segment saw the same entries");
 
-  // With these fixtures, Claude and Codex record the system context in their native session on a
-  // conversation's first turn and send it again on every later turn, so a deletion does not reach a conversation
-  // that has already run a turn. The deleted text stays in the session files.
   for (const engine of ["claude", "codex"] as const) {
     const native = await api("/v1/members", { body: { requestId: randomUUID(), engine, profile: "fixture.v1" } });
     const [gone, kept] = [marker(), marker()];
@@ -142,7 +136,6 @@ await withServices({ label: "memories" }, async s => {
     console.log(`${engine}: a deletion did not reach a conversation that had already run a turn; its session file keeps the text`);
   }
 
-  // No marker reaches what observers, receipts or the audit trail return.
   const all = [first, second, third];
   const leaked = async (statement: string) => {
     const rows = await s.sql(statement);
@@ -161,15 +154,10 @@ await withServices({ label: "memories" }, async s => {
   assert.deepEqual(JSON.parse(await s.sql(`SELECT json_agg(event_type ORDER BY event_id) FROM birbcrew_ts.audit_events
     WHERE owner_id='${owner.id}' AND member_id='${member.memberId}' AND event_type LIKE 'memory.%'`)),
   ["memory.created", "memory.created", "memory.deleted", "memory.created"]);
-  // The deleted entry's text is gone from its row; the tombstone stays.
   assert.equal(await s.sql(`SELECT state || ':' || coalesce(body, 'null') FROM birbcrew_ts.member_memories WHERE memory_id='${one.memoryId}'`), "deleted:null");
-  // Pi's native checkpoint records each turn's system prompt, so A's still holds the deleted
-  // entry's text. Later turns send only the current prompt: Crew's Pi models do not take
-  // mid-conversation system messages, so Pi collapses them into the current one.
   const checkpoint = async (table: string, conversation: string) =>
     [...new Set(await leaked(`SELECT checkpoint FROM birbcrew_ts.${table} WHERE conversation_id='${conversation}'`))].sort();
   assert.deepEqual([await checkpoint("turns", a), await checkpoint("turns", b)], [[first, second].sort(), [second, third].sort()]);
-  // The checkpoint A's approval wait saved, which holds the turns before it, keeps it too.
   assert.deepEqual(await checkpoint("paused_segments", a), [first, second].sort());
   console.log("pi: no entry text reached public events, snapshots, receipts or the audit trail; Pi's checkpoint keeps what each turn saw");
 });

@@ -75,12 +75,16 @@ export async function boundedCommand(program: string, args: string[], deadline: 
   options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
   assert.ok(now() < deadline, `${program}: no operation budget remains`);
   const child = spawn(program, args, { env: options.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "", received = 0, timedOut = false;
+  const chunks: Buffer[] = [];
+  let retained = 0, received = 0, timedOut = false;
+  let commandFailure: CommandResult | undefined;
   let end = deadline;
   const failures: unknown[] = [];
   function drain(chunk: Buffer) {
     received += chunk.length;
-    if (output.length < 128 * 1024) output += chunk.subarray(0, 128 * 1024 - output.length).toString();
+    const keep = chunk.subarray(0, Math.max(0, 128 * 1024 - retained));
+    if (keep.length) chunks.push(Buffer.from(keep));
+    retained += keep.length;
   }
   child.stdout.on("data", drain); child.stderr.on("data", drain);
   const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
@@ -100,7 +104,7 @@ export async function boundedCommand(program: string, args: string[], deadline: 
   try {
     const outcome = await before(Promise.race([result, cancellation]), deadline - killReserve / 2, program);
     if (timedOut || options.signal?.aborted) throw new Error(`${program}: ${timedOut ? "deadline exceeded" : "aborted"}`);
-    if (outcome.kind !== "exited" || outcome.code !== 0) throw new CommandFailure(program + " " + output, outcome);
+    if (outcome.kind !== "exited" || outcome.code !== 0) commandFailure = outcome;
   } catch (error) { failures.push(error); }
   finally {
     clearTimeout(timer);
@@ -110,8 +114,10 @@ export async function boundedCommand(program: string, args: string[], deadline: 
     try { await before(closed, end, `${program} client close`); } catch (error) { failures.push(error); }
     child.stdout.destroy(); child.stderr.destroy(); child.unref();
   }
+  const output = Buffer.concat(chunks, retained).toString("utf8");
+  if (commandFailure) failures.unshift(new CommandFailure(program + " " + output, commandFailure));
   if (failures.length) throw new CaptureFailure(failures, child.pid, received);
-  return { pid: child.pid, output, received };
+  return { pid: child.pid, output, received, retained };
 }
 export async function receipt(path: string, value: unknown, deadline: number) {
   await boundedCommand(process.execPath, ["--input-type=module", "-e",

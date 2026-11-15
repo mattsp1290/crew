@@ -29,7 +29,6 @@ await withServices({ label: "handoffs" }, async s => {
   }
   const marker = () => "BIRBNOTE_" + randomUUID().replaceAll("-", "").toUpperCase();
   let seen = 0;
-  /** The provider requests made since the last call: each one's system-context and message markers. */
   async function requests() {
     const rows = (await readFile(s.env.BIRBCREW_PROOF_NOTES!, "utf8").catch(() => "")).split("\n").filter(Boolean)
       .map(line => JSON.parse(line) as { engine: Engine; system: string[]; messages: string[]; continuation: boolean });
@@ -63,14 +62,10 @@ await withServices({ label: "handoffs" }, async s => {
   for (const engine of ["pi", "claude", "codex"] as const) {
     const target = await api("/v1/members", { body: { requestId: randomUUID(), engine, profile: "fixture.v1" } });
     const conversation = await open(source.memberId);
-    // Two turns of about 8 KB each way, nearly all quotes and backslashes, sized so the transcript is
-    // exactly its 65,536-byte budget: four times the public prompt limit, and every one of those
-    // characters escaped once in the transcript and again on each engine's JSON wire.
     const [first, second] = [marker(), marker()];
     const escapes = (count: number) => "\"\\".repeat(Math.ceil(count / 2)).slice(0, count);
     const bytes = (paddings: string[]) => Buffer.byteLength(renderTranscript({ sourceEngine: "pi", omittedTurns: 0, uncertainTurns: 0,
       turns: [first, second].map((note, index) => ({ ownerPrompt: "remember " + note + paddings[index], modelReply: "stored " + note + paddings[index] })) }));
-    // Each escaped character adds four bytes (twice in the prompt, twice in the reply) and a space two.
     const missing = 65_536 - bytes(["", ""]), escaped = Math.floor(missing / 4);
     const paddings = [" ".repeat((missing - 4 * escaped) / 2) + escapes(Math.ceil(escaped / 2)), escapes(Math.floor(escaped / 2))];
     assert.equal(bytes(paddings), 65_536);
@@ -85,14 +80,12 @@ await withServices({ label: "handoffs" }, async s => {
     const receipt = await completed(targetId, handoff.firstRequestId, `${engine} handoff turn`);
     assert.deepEqual(receipt.initiator, { kind: "handoff", id: handoff.handoffId });
     assert.equal(receipt.result.text, "acknowledged 2 turns from pi");
-    // The target model got the transcript once, as a user message: both turns' markers, none in its system context.
     assert.deepEqual(await requests(), [{ engine, system: [], messages: [first, second].sort(), continuation: false }]);
     const { messages } = await api(`/v1/conversations/${targetId}`);
     assert.deepEqual(messages.map((message: { role: string }) => message.role), ["user", "assistant"]);
     assert.equal(createHash("sha256").update(messages[0].content).digest("hex"), handoff.transcriptDigest);
     console.log(`${engine}: the target's first turn carried ${handoff.transcriptBytes} transcript bytes as a user message and the model answered`);
 
-    // The owner continues in the target; the source is sealed and still readable.
     assert.equal((await turn(targetId, "remember cedar")).result.text, "stored cedar");
     assert.deepEqual(await api(`/v1/conversations/${conversation}/requests`, { body: { requestId: randomUUID(), text: "more" }, expected: 409 }),
       { error: "handed_off" });
@@ -101,7 +94,6 @@ await withServices({ label: "handoffs" }, async s => {
     await requests();
     console.log(`${engine}: the owner continued in the target; the source refused new requests`);
   }
-  // The audit trail names every handoff by identifiers and digest; no marker reaches it.
   const trail = JSON.stringify(await api("/v1/audit?limit=1000"));
   assert.equal([...trail.matchAll(/"conversation\.handed_off"/g)].length, 3);
   assert.deepEqual(trail.match(/BIRBNOTE_[A-Z0-9]+/g), null);
