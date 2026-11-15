@@ -87,7 +87,7 @@ export async function readOwnerApprovalDetail(pool: Pool, ownerId: string, input
       p.policy_version AS "policyVersion", p.tool_name AS "toolName", p.arguments, '1' AS "apiVersion"
      FROM birbcrew_ts.deferred_calls p JOIN birbcrew_ts.conversations c USING (conversation_id)
      WHERE c.owner_id=$1 AND c.member_id=$2 AND c.conversation_id=$3 AND p.request_id=$4
-       AND p.invocation_id=$5 AND p.approval_id=$6 AND p.decision_version=$7 AND p.tool_name='record_work_item'`,
+       AND p.invocation_id=$5 AND p.approval_id=$6 AND p.decision_version=$7::bigint AND p.tool_name='record_work_item'`,
     [ownerId, key.memberId, key.conversationId, key.requestId, key.invocationId, key.approvalId, key.version],
   );
   const detail = ownerApprovalDetailSchema.safeParse(row);

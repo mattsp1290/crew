@@ -861,7 +861,7 @@ test("owner proposal details require the full identity, preserve exact arguments
     assert.equal(denied.status, 404, field);
     assert.deepEqual(await denied.json(), { error: "not_found" });
   }
-  for (const version of [0, 2]) assert.equal((await f.api(path({ ...identity, version }))).status, 404);
+  for (const version of [0, 2, 32768, -32769]) assert.equal((await f.api(path({ ...identity, version }))).status, 404);
   const foreign = await f.api(path(), undefined, f.stranger);
   assert.equal(foreign.status, 404); assert.deepEqual(await foreign.json(), { error: "not_found" });
   assert.equal((await f.api(path(), undefined, "invalid")).status, 401);
