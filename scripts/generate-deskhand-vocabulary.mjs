@@ -4,6 +4,10 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, relative } from 'node:path';
 
+const check = process.argv.includes('--check');
+const record = process.argv.includes('--record-reviewed-pin');
+assert(!(check && record), '--check cannot record a reviewed pin');
+const mode = check ? 'check' : record ? 'record' : 'generate';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = join(root, 'vendor/deskhand/contract-v0.11-draft');
 const schemas = join(source, 'docs/schemas');
@@ -66,12 +70,16 @@ function collect(directory) {
 collect(schemas);
 sources.push({ file: 'docs/contract.md', sha256: hash(contract) });
 const reviewed = { purpose: 'Semantic review required for every source change, including conditionals without new properties.', sources };
-function checkOrWrite(path, value) {
-  if (process.argv.includes('--check')) assert.equal(readFileSync(path, 'utf8'), value, `${relative(root, path)} drift requires review`);
-  else writeFileSync(path, value);
+const outputs = [
+  { path: destination, contents: generated },
+  { path: provenancePath, contents: `${JSON.stringify(entries.map(({ name, file, pointer, sha256 }) => ({ name, file, pointer, sha256 })), null, 2)}\n` },
+  { path: inventoryPath, contents: `${JSON.stringify(inventory, null, 2)}\n` },
+];
+const reviewedContents = `${JSON.stringify(reviewed, null, 2)}\n`;
+if (mode !== 'record') assert.deepEqual(load(reviewPath), reviewed, 'Semantic pin changed. Review contract conditions and behavioral fixtures before recording approval.');
+if (mode === 'check') {
+  for (const { path, contents } of outputs) assert.equal(readFileSync(path, 'utf8'), contents, `${relative(root, path)} drift requires review`);
+} else {
+  for (const { path, contents } of outputs) writeFileSync(path, contents);
+  if (mode === 'record') writeFileSync(reviewPath, reviewedContents);
 }
-checkOrWrite(destination, generated);
-checkOrWrite(provenancePath, `${JSON.stringify(entries.map(({ name, file, pointer, sha256 }) => ({ name, file, pointer, sha256 })), null, 2)}\n`);
-checkOrWrite(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
-if (process.argv.includes('--record-reviewed-pin')) writeFileSync(reviewPath, `${JSON.stringify(reviewed, null, 2)}\n`);
-else assert.deepEqual(load(reviewPath), reviewed, 'Semantic pin changed. Review contract conditions and behavioral fixtures before recording approval.');

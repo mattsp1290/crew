@@ -8,7 +8,15 @@ const argument = process.argv.indexOf('--root');
 const root = argument < 0 ? ownRoot : resolve(process.argv[argument + 1]);
 const canonical = (path) => existsSync(path) ? realpathSync(path) : resolve(path);
 const protectedRoot = canonical(join(root, 'src/service/deskhand'));
-const tests = new Set(['tests/service/deskhand-results.test.ts', 'tests/service/deskhand-results.types.ts'].map((path) => canonical(join(root, path))));
+const behaviorSuites = new Set([
+  'tests/service/deskhand-results/corpus.test.ts',
+  'tests/service/deskhand-results/metadata.test.ts',
+  'tests/service/deskhand-results/effects.test.ts',
+].map((path) => canonical(join(root, path))));
+const typeSpecimen = canonical(join(root, 'tests/service/deskhand-results.types.ts'));
+const tests = new Set([...behaviorSuites, typeSpecimen, canonical(join(root, 'tests/service/deskhand-results/tooling.test.ts'))]);
+const support = canonical(join(root, 'tests/service/deskhand-results/support.ts'));
+const privateConsumers = new Set([...behaviorSuites, typeSpecimen, support]);
 const inside = (path) => path === protectedRoot || path.startsWith(`${protectedRoot}${sep}`);
 const configFile = ts.readConfigFile(join(root, 'tsconfig.json'), ts.sys.readFile);
 if (configFile.error) throw new Error('boundary-config');
@@ -35,7 +43,8 @@ for (const file of files) {
     const direct = specifier.text.startsWith('.') || isAbsolute(specifier.text) ? resolve(dirname(file), specifier.text) : undefined;
     const target = resolved ? canonical(resolved) : direct && existsSync(direct) ? canonical(direct) : undefined;
     if (!target) return;
-    if (inside(target) && !inside(importer) && !tests.has(importer)) report(file, 'private-edge');
+    if (inside(target) && !inside(importer) && !privateConsumers.has(importer)) report(file, 'private-edge');
+    if (target === support && !behaviorSuites.has(importer)) report(file, 'private-support-edge');
     if (tests.has(target) && !tests.has(importer)) report(file, 'private-test-edge');
   }
   function visit(node) {
