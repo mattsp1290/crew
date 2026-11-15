@@ -1140,6 +1140,40 @@ test('actual known-path and dropped-optional source mutations fail preservation'
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
+for (const mode of ['unreviewed generation', 'conflicting check and record']) {
+  test(`generator ${mode} rejects without changing artifacts`, () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'deskhand-generator-state-'));
+    const outputs = ['src/service/deskhand/vocabulary.generated.ts', 'tests/fixtures/deskhand-results/vocabulary-provenance.json',
+      'tests/fixtures/deskhand-results/schema-inventory.json', 'tests/fixtures/deskhand-results/reviewed-sources.json'];
+    try {
+      for (const path of ['scripts/generate-deskhand-vocabulary.mjs', 'vendor/deskhand', ...outputs]) {
+        const target = join(temporary, path);
+        mkdirSync(dirname(target), { recursive: true });
+        cpSync(join(root, path), target, { recursive: true });
+      }
+      const snapshot = () => outputs.map(path => readFileSync(join(temporary, path), 'utf8'));
+      const run = (...args: string[]) => spawnSync(process.execPath, ['scripts/generate-deskhand-vocabulary.mjs', ...args], { cwd: temporary, encoding: 'utf8' });
+      const original = snapshot();
+      assert.equal(run('--check').status, 0);
+      assert.equal(run().status, 0);
+      assert.deepEqual(snapshot(), original);
+      const path = join(temporary, 'vendor/deskhand/contract-v0.11-draft/docs/schemas/defs.json');
+      const schema = JSON.parse(readFileSync(path, 'utf8'));
+      schema.$defs.state.enum.push('new_state');
+      writeFileSync(path, JSON.stringify(schema));
+      if (mode === 'conflicting check and record') {
+        assert.equal(run('--record-reviewed-pin').status, 0);
+        assert.equal(run('--check').status, 0);
+        writeFileSync(join(temporary, outputs[3]), original[3]);
+      }
+      const before = snapshot();
+      const rejected = mode === 'unreviewed generation' ? run() : run('--check', '--record-reviewed-pin');
+      assert.equal(rejected.status, 1);
+      assert.deepEqual(snapshot(), before, 'Rejected generation must preserve generated and review bytes');
+    } finally { rmSync(temporary, { recursive: true, force: true }); }
+  });
+}
+
 test('literal, property, required-member, reference and conditional-only drift require review', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'deskhand-drift-'));
   try {
