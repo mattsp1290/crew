@@ -1,53 +1,22 @@
+import "./member-service-processes.test.mts";
+import "./member-service-contract-history.test.mts";
+import "./member-service-recovery.test.mts";
+import "./member-service-recovery.history.test.mts";
+import "./member-service-recovery.lifecycle.test.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { constants, readFileSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { z } from "zod";
 import { before, boundedCommand, collectFiles, CommandFailure, describe, liveGroup, now, stopGroup } from "./member-service-diagnostics.mts";
-import { ownedProcessMapSchema, parseProcess, positiveGroupProcessSchema, processKey, selectOwnedProcesses, type PositiveGroupProcess } from "./member-service-processes.mts";
+import { parseProcess, positiveGroupProcessSchema, processKey, type PositiveGroupProcess } from "./member-service-processes.mts";
+import { atomicReceipt, contractRunSchema, missingProcess, observeOwned, ownershipSchema, processIdentity, recoverFixture, regularFile, stopOwned } from "./member-service-recovery.mts";
 import { run, until } from "./member-services.mts";
 
 const diagnostics = resolve("tests/proof/member-service-diagnostics.mts");
-function missingProcess(error: unknown) {
-  return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH");
-}
-async function processIdentity(pid: number) {
-  try { return parseProcess(pid, await readFile(`/proc/${pid}/stat`, "utf8")); }
-  catch (error) { if (missingProcess(error)) return undefined; throw error; }
-}
-async function observeOwned(owned: Map<string, PositiveGroupProcess>, deadline: number) {
-  const authority = ownedProcessMapSchema.parse(owned);
-  if (!authority.size) return [];
-  const table = await before(readdir("/proc").then(names => Promise.all(names.filter(name => /^\d+$/.test(name))
-    .map(name => processIdentity(Number(name))))), deadline, "Owned process census");
-  const observation = selectOwnedProcesses(authority, table.filter(proc => proc !== undefined));
-  for (const [key, proc] of observation.owned) owned.set(key, proc);
-  return observation.live;
-}
-async function stopOwned(owned: Map<string, PositiveGroupProcess>, deadline: number) {
-  const live = await observeOwned(owned, deadline);
-  const groups = new Set([...owned.values()].map(proc => proc.group));
-  const results = await Promise.allSettled([...groups].map(async group => {
-    const members = live.filter(proc => proc.group === group);
-    if (members.length) {
-      const anchor = members.find(proc => owned.has(processKey(proc)));
-      assert.ok(anchor, `Process group ${group} has no surviving owned identity; absence unknown`);
-      const current = await before(processIdentity(anchor.pid), deadline, "Verify process identity before signaling");
-      if (current && current.state !== "Z" && current.state !== "X") {
-        assert.equal(processKey(current), processKey(anchor), "Process identity changed before signaling");
-        assert.equal(current.group, group, "Process group changed before signaling");
-        try { process.kill(-group, "SIGKILL"); } catch (error) { if (!missingProcess(error)) throw error; }
-      }
-    }
-    await before(until(async () => await liveGroup(group) ? undefined : true, `Owned group ${group} absence`,
-      Math.max(1, deadline - now())), deadline, `Owned group ${group} absence`);
-  }));
-  const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
-  if (failures.length) throw new AggregateError(failures, "Owned process recovery failed");
-}
 async function node(args: string[], env = process.env, timeout = 20_000) {
   const bodyDeadline = now() + timeout;
   let cleanupDeadline = bodyDeadline + 16_000;
@@ -683,19 +652,13 @@ async function contractDirectory(t: TestContext) {
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, "crew-contract-"));
   if (!process.env.BIRBCREW_PROOF_ARTIFACTS) t.after(() => rm(directory, { recursive: true, force: true }));
+  const worker = positiveGroupProcessSchema.parse(await processIdentity(process.pid));
+  atomicReceipt(join(directory, "contract-run.json"), contractRunSchema.parse({ version: 1, worker, launch: { kind: "not-requested" } }));
   return directory;
 }
 
-const ownershipSchema = z.object({
-  label: z.literal("contract"), directory: z.string(), container: z.string().regex(/^birb-proof-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
-  allocation: z.discriminatedUnion("kind", [z.object({ kind: z.literal("not-started") }), z.object({ kind: z.literal("pending") }),
-    z.object({ kind: z.literal("settled"), container: z.string().regex(/^[0-9a-f]{64}$/) })]),
-  processes: z.array(z.object({ pid: z.number().int().positive(), log: z.string(),
-    identity: z.discriminatedUnion("kind", [z.object({ kind: z.literal("pending") }),
-      z.object({ kind: z.literal("known"), group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/) })]) })),
-});
 test("local fixture receipt keeps known groups positive and preserves pending identities", () => {
-  const evidence = { label: "contract", directory: "/tmp/birb-members-example",
+  const evidence = { version: 1, pendingProcessAcquisitions: 0, label: "contract", directory: "/tmp/birb-members-example",
     container: "birb-proof-11111111-1111-1111-1111-111111111111", allocation: { kind: "not-started" }, processes: [] };
   assert.deepEqual(ownershipSchema.parse(evidence), evidence);
   const pending = { ...evidence, processes: [{ pid: 23, log: "worker.log", identity: { kind: "pending" } }] };
@@ -707,93 +670,20 @@ test("local fixture receipt keeps known groups positive and preserves pending id
     assert.throws(() => ownershipSchema.parse({ ...evidence, processes: [invalid] }));
   }
 });
-async function regularFile(path: string) {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try { assert.ok((await file.stat()).isFile(), "Ownership evidence must be a regular file"); return await file.readFile("utf8"); }
-  finally { await file.close(); }
-}
-async function recoverFixture(directory: string, observed: PositiveGroupProcess[], deadline: number) {
-  const observedProcesses = z.array(positiveGroupProcessSchema).parse(observed);
-  const recovery: { failures: string[]; container: "absent" | "unknown"; directory: "absent" | "unknown";
-    processes: "absent" | "unknown" } = { failures: [], container: "unknown", directory: "unknown", processes: "unknown" };
-  const attempt = async (operation: () => Promise<void>) => {
-    try { await before(operation(), deadline - 300, "Fixture recovery"); }
-    catch (error) { recovery.failures.push(describe(error)); }
-  };
-  const evidence = await before((async () => {
-    assert.ok((await lstat(directory)).isDirectory(), "Contract root must be a real directory");
-    const entries = (await readdir(directory)).filter(name => name !== "recovery.json");
-    assert.equal(entries.length, 1, "Expected exactly one fixture ownership entry");
-    const entry = entries[0];
-    assert.ok(entry && /^contract-[a-zA-Z0-9]+$/.test(entry), "Unexpected fixture artifact entry");
-    const artifacts = join(directory, entry);
-    assert.ok((await lstat(artifacts)).isDirectory(), "Fixture artifacts must be a real directory");
-    assert.equal(dirname(await realpath(artifacts)), await realpath(directory), "Fixture artifacts escaped contract root");
-    return ownershipSchema.parse(JSON.parse(await regularFile(join(artifacts, "ownership.json"))));
-  })(), deadline - 300, "Fixture ownership evidence").catch(error => { recovery.failures.push(describe(error)); return undefined; });
-  const owned = new Map(observedProcesses.map(proc => [processKey(proc), proc]));
-  if (evidence) for (const proc of evidence.processes) {
-    if (proc.identity.kind === "pending") { recovery.failures.push("Recorded process identity is pending; absence unknown"); continue; }
-    if (proc.pid !== proc.identity.group) { recovery.failures.push("Recorded fixture process is not a group leader"); continue; }
-    const identity = positiveGroupProcessSchema.parse({ pid: proc.pid, ...proc.identity, parent: 0, state: "recorded" });
-    owned.set(processKey(identity), identity);
-  }
-  await Promise.all([
-    attempt(async () => {
-      await stopOwned(owned, deadline - 500);
-      if (evidence && evidence.processes.every(proc => proc.identity.kind === "known" && proc.identity.group === proc.pid)) recovery.processes = "absent";
-    }),
-    ...(evidence ? [attempt(async () => {
-      if (evidence.allocation.kind === "not-started") { recovery.container = "absent"; return; }
-      const query = () => boundedCommand("docker", ["ps", "-aq", "--filter", "name=^/" + evidence.container + "$"], Math.min(deadline - 500, now() + 1_500));
-      const found = await query();
-      assert.ok(found.stdout.kind === "complete", "Docker recovery presence query stdout was truncated");
-      if (found.stdout.text.trim()) {
-        const inspected = await boundedCommand("docker", ["inspect", "--format",
-          '{{.Id}} {{.Name}} {{index .Config.Labels "birb-proof-owner"}}', evidence.container], Math.min(deadline - 500, now() + 1_500));
-        assert.ok(inspected.stdout.kind === "complete", "Docker recovery inspection stdout was truncated");
-        const [id, name, marker] = inspected.stdout.text.trim().split(/\s+/);
-        assert.ok(id && /^[a-f0-9]{64}$/.test(id), "Container identity missing");
-        assert.equal(name, "/" + evidence.container, "Container name disagrees with ownership");
-        assert.equal(marker, evidence.container, "Container label disagrees with ownership");
-        if (evidence.allocation.kind === "settled") assert.equal(id, evidence.allocation.container, "Allocated container identity changed");
-        await boundedCommand("docker", ["rm", "-f", id], Math.min(deadline - 500, now() + 2_000));
-      }
-      const remaining = await query();
-      assert.ok(remaining.stdout.kind === "complete", "Docker recovery absence query stdout was truncated");
-      assert.equal(remaining.stdout.text.trim(), "", "Exact owned container remains");
-      assert.notEqual(evidence.allocation.kind, "pending", "Docker allocation pending; eventual absence unknown");
-      recovery.container = "absent";
-    }), attempt(async () => {
-      const path = evidence.directory, temporary = await realpath(tmpdir());
-      assert.ok(isAbsolute(path) && /^birb-members-[a-zA-Z0-9]+$/.test(basename(path)), "Unexpected fixture directory");
-      assert.equal(await realpath(dirname(path)), temporary, "Fixture directory is outside the actual temporary root");
-      assert.notEqual(resolve(path), resolve(directory), "Fixture directory is the artifact root");
-      assert.notEqual(resolve(path), temporary, "Fixture directory is the temporary root");
-      let metadata;
-      try { metadata = await lstat(path); }
-      catch (error) { if (missingProcess(error)) { recovery.directory = "absent"; return; } throw error; }
-      assert.ok(metadata.isDirectory() && !metadata.isSymbolicLink(), "Fixture directory was replaced by a symlink");
-      assert.equal(dirname(await realpath(path)), temporary, "Fixture directory resolved outside temporary root");
-      assert.equal(await regularFile(join(path, ".fixture-owner")), evidence.container, "Fixture directory marker disagrees with ownership");
-      await boundedCommand("chmod", ["-R", "u+rwX", "--", path], Math.min(deadline - 500, now() + 1_500));
-      await boundedCommand("rm", ["-rf", "--", path], Math.min(deadline - 500, now() + 2_000));
-      await assert.rejects(lstat(path), { code: "ENOENT" });
-      recovery.directory = "absent";
-    })] : []),
-  ]);
-  await attempt(() => writeFile(join(directory, "recovery.json"), JSON.stringify(recovery, null, 2), { mode: 0o600 }));
-  return recovery;
-}
 async function fixtureNode(directory: string, args: string[]) {
   const absoluteDeadline = now() + 116_000;
   let command: Awaited<ReturnType<typeof node>> | undefined;
   let failure: { error: unknown } | undefined;
   let recovery: Awaited<ReturnType<typeof recoverFixture>>;
-  try { command = await node(args, { ...process.env, BIRBCREW_PROOF_ARTIFACTS: directory }, 100_000); }
+  const run = contractRunSchema.parse(JSON.parse(await regularFile(join(directory, "contract-run.json"))));
+  atomicReceipt(join(directory, "contract-run.json"), { ...run, launch: { kind: "requested" } });
+  try { command = await node(args, { ...process.env, BIRBCREW_PROOF_ARTIFACTS: directory, BIRBCREW_CONTRACT_ROOT: directory }, 100_000); }
   catch (error) { failure = { error }; }
   finally { recovery = await recoverFixture(directory, command?.processes ?? [],
-    Math.min(absoluteDeadline, command?.cleanupDeadline ?? now() + 16_000)); }
+    Math.min(absoluteDeadline, command?.cleanupDeadline ?? now() + 16_000));
+    try { atomicReceipt(join(directory, "recovery.json"), recovery); }
+    catch (error) { recovery.failures.push(describe(error)); }
+  }
   if (failure) {
     console.error("Fixture command recovery", recovery);
     throw failure.error;
@@ -830,7 +720,7 @@ async function fixtureRun(directory: string, body: string) {
   return fixtureNode(directory, ["--input-type=module", "-e", source]);
 }
 async function fixtureReceipt(directory: string) {
-  const entries = (await readdir(directory)).filter(name => name !== "recovery.json");
+  const entries = (await readdir(directory)).filter(name => name !== "recovery.json" && name !== "contract-run.json");
   assert.equal(entries.length, 1, "Expected one fixture lifetime and cleanup receipt");
   const [entry] = entries;
   assert.ok(entry);

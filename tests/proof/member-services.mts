@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,6 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { before, boundedCommand, captureDiagnostics, CommandFailure, describe, exitStatus, now, receipt, stopGroup, type CommandResult } from "./member-service-diagnostics.mts";
+import { atomicReceipt, contractRunSchema, fixtureOwnerSchema, isolatedOwnerSchema, regularFileSync } from "./member-service-recovery.mts";
 import { parseProcess, positiveGroupProcessSchema } from "./member-service-processes.mts";
 
 export type Engine = "pi" | "claude" | "codex";
@@ -56,6 +57,21 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
   assert.ok(isAbsolute(root), "BIRBCREW_PROOF_ARTIFACTS must be absolute");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const artifacts = mkdtempSync(join(root, label + "-"));
+  const fixtureOwner = positiveGroupProcessSchema.parse(parseProcess(process.pid, readFileSync(`/proc/${process.pid}/stat`, "utf8")));
+  const contractRoot = process.env.BIRBCREW_CONTRACT_ROOT;
+  if (contractRoot) {
+    assert.ok(lstatSync(contractRoot).isDirectory(), "Contract root must be a real directory");
+    assert.equal(realpathSync(contractRoot), realpathSync(root), "Contract request root disagrees with fixture artifacts");
+    const request = contractRunSchema.parse(JSON.parse(regularFileSync(join(contractRoot, "contract-run.json"))));
+    assert.equal(request.launch.kind, "requested", "Fixture launch has not been requested");
+    isolatedOwnerSchema.parse({ version: 1, fixtureOwner });
+    assert.equal(fixtureOwner.parent, request.worker.pid, "Fixture parent disagrees with requesting worker");
+    const currentWorker = positiveGroupProcessSchema.parse(parseProcess(request.worker.pid, readFileSync(`/proc/${request.worker.pid}/stat`, "utf8")));
+    assert.equal(currentWorker.startTime, request.worker.startTime, "Requesting worker identity changed");
+    assert.equal(currentWorker.group, request.worker.group, "Requesting worker group changed");
+    assert.notEqual(fixtureOwner.group, request.worker.group, "Fixture owner shares worker group");
+  }
+  atomicReceipt(join(artifacts, "owner.json"), fixtureOwnerSchema.parse({ version: 1, fixtureOwner }), { immutable: true });
   const directory = mkdtempSync(join(tmpdir(), "birb-members-"));
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: directory, BIRBCREW_STATE_DIR: join(directory, "native"),
@@ -74,19 +90,19 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
   let proof: Promise<void> | undefined;
   let allocation: ReturnType<typeof boundedCommand> | undefined;
   let allocationState: { kind: "not-started" } | { kind: "pending" } | { kind: "settled"; container: string } = { kind: "not-started" };
-  let gatewayNumber = 0;
+  let gatewayNumber = 0, pendingProcessAcquisitions = 0;
   const failures: unknown[] = [];
   function publishOwnership() {
-    const path = join(artifacts, "ownership.json");
-    writeFileSync(path + ".tmp", JSON.stringify({ label, directory, container: db, allocation: allocationState,
-      processes: processes.map(({ pid, identity, log }) => ({ pid, identity, log })) }), { mode: 0o600 });
-    renameSync(path + ".tmp", path);
+    atomicReceipt(join(artifacts, "ownership.json"), { version: 1, label, directory, container: db, allocation: allocationState,
+      pendingProcessAcquisitions, processes: processes.map(({ pid, identity, log }) => ({ pid, identity, log })) });
   }
   writeFileSync(join(directory, ".fixture-owner"), db, { mode: 0o600 });
   publishOwnership();
   function ensureOpen() { assert.equal(state.kind, "open", "Fixture is closing"); }
   async function start(program: string, args: string[], options: NodeJS.ProcessEnv, log: string) {
     ensureOpen();
+    pendingProcessAcquisitions++;
+    publishOwnership();
     const file = await open(join(directory, log), "a", 0o600);
     let owned: OwnedProcess;
     try {
@@ -108,10 +124,13 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
       }
       owned = { pid, identity: { kind: "pending" }, result, stop, log };
       processes.push(owned);
+      publishOwnership();
       const { group, startTime } = positiveGroupProcessSchema.parse(parseProcess(pid, readFileSync(`/proc/${pid}/stat`, "utf8")));
       assert.equal(group, pid, "Owned child must lead its detached process group");
       owned.identity = { kind: "known", group, startTime };
-      publishOwnership();
+      pendingProcessAcquisitions--;
+      try { publishOwnership(); }
+      catch (error) { pendingProcessAcquisitions++; throw error; }
     } finally { await file.close(); }
     return owned;
   }
@@ -202,6 +221,10 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
             resources.container = "absent";
           }),
           attempt(async () => {
+            assert.equal(pendingProcessAcquisitions, 0, "Process acquisition pending; private directory cannot be removed");
+            assert.notEqual(allocationState.kind, "pending", "Docker acquisition pending; private directory cannot be removed");
+            assert.equal(resources.processes.length, processes.length, "Process acquisition changed during cleanup");
+            assert.ok(resources.processes.every(proc => proc.status === "absent"), "Private directory removal requires process absence");
             await boundedCommand(process.execPath, ["--input-type=module", "-e",
               "import {readdirSync,unlinkSync,rmdirSync} from 'node:fs';import {join} from 'node:path';import {execFileSync} from 'node:child_process';" +
               "const root=process.argv[1],marker=join(root,'.fixture-owner'),entries=readdirSync(root).filter(name=>name!=='.fixture-owner').map(name=>join(root,name));" +
