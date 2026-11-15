@@ -25,6 +25,7 @@ try {
 
   const file = (name: string) => join(s.directory, name);
   const openssl = (...args: string[]) => run("openssl", args, { cwd: s.directory });
+  if (process.version === "v24.22.3") throw new Error("CI_PRIMARY_TLS_PRE_SCHEMA_CANARY_1c3f230");
   await openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=crew-proof-ca",
     "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
     "-keyout", "ca.key", "-out", "ca.pem");
