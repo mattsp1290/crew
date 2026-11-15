@@ -160,6 +160,43 @@ function observe(socketPath: string, token: string, conversationId: string, runI
 }
 type Observer = ReturnType<typeof observe>;
 
+test("a lock-blocked ledger read releases its hub and observers resume at the same cursor", { timeout: 30_000 }, async (t) => {
+  const f = await fixture(t);
+  const hub = await f.gateway(true);
+  const cid = await f.conversation(), requestId = randomUUID(), runId = randomUUID();
+  await f.publish(cid, input(requestId));
+  const observers = [observe(hub.socketPath, f.owner, cid, runId), observe(hub.socketPath, f.owner, cid, runId)];
+  for (const observer of observers) t.after(() => observer.close());
+  await until(() => observers.every((observer) => observer.has("STATE_SNAPSHOT")), "bootstrap");
+  const lock = await f.pool.connect();
+  try {
+    await lock.query("BEGIN");
+    await lock.query("LOCK TABLE birbcrew_ts.public_events IN ACCESS EXCLUSIVE MODE");
+    await until(async () => {
+      const { rows } = await f.pool.query(`SELECT pid FROM pg_stat_activity
+        WHERE wait_event_type='Lock' AND query LIKE 'SELECT e.cursor,e.event FROM birbcrew_ts.public_events%'`);
+      return rows.length === 1 || undefined;
+    }, "one PostgreSQL hub read blocked on the ledger lock");
+    const reconnect = observe(hub.socketPath, f.owner, cid, runId);
+    observers.push(reconnect);
+    t.after(() => reconnect.close());
+    await until(() => reconnect.has("STATE_SNAPSHOT") && hub.stats()?.observers === 3 || undefined, "reconnect joins blocked hub");
+    await until(() => hub.stats()?.fallbacks === 3 || undefined, "blocked read times out and frees every observer", 6_000);
+    assert.equal(hub.stats()?.hubs, 0);
+  } finally {
+    await lock.query("ROLLBACK");
+    lock.release();
+  }
+  await f.publish(cid, text(requestId, 0, "after lock"), { kind: "reply", requestId, text: "after lock" });
+  assert.deepEqual(await Promise.all(observers.map((observer) => observer.done)), [200, 200, 200]);
+  for (const observer of observers) {
+    assert.ok(!observer.has("RUN_ERROR"));
+    assertLedger(observer, await f.ledger(cid));
+  }
+  assert.equal(observers[0].raw, observers[1].raw);
+  assert.equal(observers[0].raw, observers[2].raw);
+});
+
 /** The bootstrap's state snapshot carries the snapshot cursor as its SSE id; every later id'd frame must be exactly
  * the ledger's rows after it, in cursor order. */
 function assertLedger(observer: Observer, rows: { cursor: number; event: unknown }[]) {
