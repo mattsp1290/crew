@@ -1,0 +1,236 @@
+[
+  {
+    "name": "states",
+    "file": "defs.json",
+    "pointer": "/$defs/state/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "blockingStates",
+    "file": "defs.json",
+    "pointer": "/$defs/blocking_state/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "conditions",
+    "file": "defs.json",
+    "pointer": "/$defs/condition/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "errorCodes",
+    "file": "defs.json",
+    "pointer": "/$defs/error_code/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "operationStatuses",
+    "file": "defs.json",
+    "pointer": "/$defs/operation_status/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "staleReasons",
+    "file": "defs.json",
+    "pointer": "/$defs/stale_frame_reason/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "buttons",
+    "file": "defs.json",
+    "pointer": "/$defs/mouse_button/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "modifiers",
+    "file": "defs.json",
+    "pointer": "/$defs/modifier/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "keys",
+    "file": "defs.json",
+    "pointer": "/$defs/key/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "deniedBy",
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/details/properties/denied_by/enum",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "completedStatus",
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/status/const",
+    "sha256": "276bbdd4e48c6da5371ab0f5ad2bc857df49136aa7ec9ab569b93f89c74f0ee1"
+  },
+  {
+    "name": "statusErrors",
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_error/allOf/1/properties/code/enum",
+    "sha256": "6b350f6196798fd17cf2c8eff5223b938476fc9c8d8e01e42245759af95b2b77"
+  },
+  {
+    "name": "displaysErrors",
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_error/allOf/1/properties/code/enum",
+    "sha256": "ff46b9d718108b6b6c9bdaa3e4e711eefe4ff1cfde0533bbe52aa2ad24440d28"
+  },
+  {
+    "name": "screenshotErrors",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_error/allOf/1/properties/code/enum",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "pointerErrors",
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_error/allOf/1/properties/code/enum",
+    "sha256": "d097baf3e18d18369726e61bc1ea02c4ad6dfe72617b4f3a37f9c6fa5c24abb8"
+  },
+  {
+    "name": "keyboardErrors",
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_error/allOf/1/properties/code/enum",
+    "sha256": "944b794d9c8d703686f521f5bd472bdd8a772e73eb5fca9ea7c93e17600ff529"
+  },
+  {
+    "name": "leaseErrors",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_error/allOf/1/properties/code/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "contractVersion",
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/contract_version/const",
+    "sha256": "6b350f6196798fd17cf2c8eff5223b938476fc9c8d8e01e42245759af95b2b77"
+  },
+  {
+    "name": "protocolVersion",
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/mcp_protocol_version/const",
+    "sha256": "6b350f6196798fd17cf2c8eff5223b938476fc9c8d8e01e42245759af95b2b77"
+  },
+  {
+    "name": "formats",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/format/enum",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "jpegQualities",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/jpeg_quality/enum",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "jpegMime",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/then/properties/mime_type/const",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "pngMime",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/else/properties/mime_type/const",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "maxImageBytes",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/image_bytes/maximum",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "maxWidth",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/output_pixel_size/properties/width/maximum",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "maxHeight",
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/output_pixel_size/properties/height/maximum",
+    "sha256": "a1a6aaf6446177bd22bf8b7b057e92be77ef44db4059a2b7f05dd6006e61fb43"
+  },
+  {
+    "name": "maxPixels",
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/limits/properties/max_pixels/const",
+    "sha256": "6b350f6196798fd17cf2c8eff5223b938476fc9c8d8e01e42245759af95b2b77"
+  },
+  {
+    "name": "maxDragPoints",
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_drag/properties/path/maxItems",
+    "sha256": "8f403c4afffbf55c690a2712ce11894569d02c468461945313ded80041fea05f"
+  },
+  {
+    "name": "leaseOperations",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/properties/op/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "leaseOutcomes",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/properties/outcome/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "leaseRefusals",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/properties/code/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "acquireOutcomes",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/2/then/properties/outcome/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "acquireRefusals",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/2/then/properties/code/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "renewOutcomes",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/3/then/properties/outcome/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "releaseOperation",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/4/if/properties/op/const",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "releaseOutcomes",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/4/then/properties/outcome/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "releaseRefusals",
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/4/then/properties/code/enum",
+    "sha256": "5deb6634e9b713142d71c990f6bad8fa05552df175e00f9d81d88853e83fa220"
+  },
+  {
+    "name": "leaseInputOperations",
+    "file": "tools/lease.input.json",
+    "pointer": "/properties/op/enum",
+    "sha256": "66054aea0503411a808d295c20b4196aceb0cd452b0243b4999a91af1db34490"
+  },
+  {
+    "name": "rpcErrors",
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "/properties/error/properties/code/enum",
+    "sha256": "09973d0df6012ec3fa0005d53d51b095044c93a421831b2ca6b7d7b8850fa66b"
+  }
+]
