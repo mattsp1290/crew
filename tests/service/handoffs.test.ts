@@ -1,3 +1,4 @@
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -986,7 +987,7 @@ test("MemberClient checks admission again before each rollover retry, and admiss
 
 /** A database migrated only up to version 26, as the previous release left it; dropped after the test. */
 async function databaseAt26(t: TestContext) {
-  const name = "handoffs_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("handoffs_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -1078,10 +1079,11 @@ test("migration 027 completes while a native turn holds its admission, and that 
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 27).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 027 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "ran");
   });
+  await current.migrate();
   await current.commitTurn({ ownerId, conversationId, requestId, token: start.token, reply: "ran", checkpoint: { version: 1, engine: "pi", state: {} } });
   const members = { async open(input: Parameters<MemberStore["openConversation"]>[0]) { return current.openConversation(input); },
     async accept(input: TurnRequest) { await current.recordAcceptance(input, ownerInitiator); return { requestId: input.requestId }; } };
