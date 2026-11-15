@@ -197,8 +197,9 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
         await Promise.all([
           attempt(async () => {
             await boundedCommand("docker", ["rm", "-f", db], deadline - 1_200);
-            const { output } = await boundedCommand("docker", ["ps", "-aq", "--filter", "name=^/" + db + "$"], deadline - 700);
-            assert.equal(output.trim(), "", "Owned PostgreSQL container remained after removal");
+            const { stdout } = await boundedCommand("docker", ["ps", "-aq", "--filter", "name=^/" + db + "$"], deadline - 700);
+            assert.ok(stdout.kind === "complete", "Docker absence query stdout was truncated");
+            assert.equal(stdout.text.trim(), "", "Owned PostgreSQL container remained after removal");
             assert.notEqual(allocationState.kind, "pending", "Docker allocation was interrupted; daemon allocation completion unknown");
             resources.container = "absent";
           }),
@@ -267,7 +268,8 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
       "-p", "127.0.0.1::5432", "postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"],
       now() + 30_000, { env: { ...process.env, POSTGRES_PASSWORD: password }, signal: controller.signal });
     const allocated = await allocation;
-    allocationState = { kind: "settled", container: z.string().regex(/^[a-f0-9]{64}$/).parse(allocated.output.trim()) };
+    assert.ok(allocated.stdout.kind === "complete", "Docker allocation stdout was truncated");
+    allocationState = { kind: "settled", container: z.string().regex(/^[a-f0-9]{64}$/).parse(allocated.stdout.text.trim()) };
     publishOwnership();
     await databaseReady();
     ensureOpen();

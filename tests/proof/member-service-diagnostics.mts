@@ -71,22 +71,32 @@ class CaptureFailure extends AggregateError {
     this.pid = pid; this.received = received;
   }
 }
+type CapturedStdout =
+  | { kind: "complete"; text: string; received: number; retained: number }
+  | { kind: "truncated"; received: number; retained: number };
 export async function boundedCommand(program: string, args: string[], deadline: number,
   options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
   assert.ok(now() < deadline, `${program}: no operation budget remains`);
   const child = spawn(program, args, { env: options.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-  const chunks: Buffer[] = [];
-  let retained = 0, received = 0, timedOut = false;
+  const diagnosticBytes = Buffer.alloc(128 * 1024), stdoutBytes = Buffer.alloc(128 * 1024);
+  let retained = 0, received = 0, stdoutRetained = 0, stdoutReceived = 0, timedOut = false;
   let commandFailure: CommandResult | undefined;
   let end = deadline;
   const failures: unknown[] = [];
   function drain(chunk: Buffer) {
     received += chunk.length;
-    const keep = chunk.subarray(0, Math.max(0, 128 * 1024 - retained));
-    if (keep.length) chunks.push(Buffer.from(keep));
-    retained += keep.length;
+    const keep = Math.min(chunk.length, diagnosticBytes.length - retained);
+    chunk.copy(diagnosticBytes, retained, 0, keep);
+    retained += keep;
   }
-  child.stdout.on("data", drain); child.stderr.on("data", drain);
+  child.stdout.on("data", (chunk: Buffer) => {
+    drain(chunk);
+    stdoutReceived += chunk.length;
+    const keep = Math.min(chunk.length, stdoutBytes.length - stdoutRetained);
+    chunk.copy(stdoutBytes, stdoutRetained, 0, keep);
+    stdoutRetained += keep;
+  });
+  child.stderr.on("data", drain);
   const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
   const result = new Promise<CommandResult>((resolve, reject) => {
     child.once("error", reject);
@@ -114,10 +124,13 @@ export async function boundedCommand(program: string, args: string[], deadline: 
     try { await before(closed, end, `${program} client close`); } catch (error) { failures.push(error); }
     child.stdout.destroy(); child.stderr.destroy(); child.unref();
   }
-  const output = Buffer.concat(chunks, retained).toString("utf8");
-  if (commandFailure) failures.unshift(new CommandFailure(program + " " + output, commandFailure));
+  const diagnostics = diagnosticBytes.toString("utf8", 0, retained);
+  if (commandFailure) failures.unshift(new CommandFailure(program + " " + diagnostics, commandFailure));
   if (failures.length) throw new CaptureFailure(failures, child.pid, received);
-  return { pid: child.pid, output, received, retained };
+  const stdout: CapturedStdout = stdoutReceived === stdoutRetained
+    ? { kind: "complete", text: stdoutBytes.toString("utf8", 0, stdoutRetained), received: stdoutReceived, retained: stdoutRetained }
+    : { kind: "truncated", received: stdoutReceived, retained: stdoutRetained };
+  return { pid: child.pid, diagnostics, stdout, received, retained };
 }
 export async function receipt(path: string, value: unknown, deadline: number) {
   await boundedCommand(process.execPath, ["--input-type=module", "-e",
