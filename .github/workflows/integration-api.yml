@@ -28,26 +28,18 @@ jobs:
           curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
           (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
-      - name: Proof lifecycle cancellation contract probe
-        id: contracts
+      - name: Fixed late TLS primary failure probe
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          date -u +%FT%TZ > "$BIRBCREW_PROOF_ARTIFACTS/contracts-started-utc.txt"
-          node --test --test-name-pattern='^remote real fixture forced timeout recovers PostgreSQL, Temporal and worker$' tests/proof/member-services.test.mts
+          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: Recover exact cancellation probe fixture
+      - name: Independently inspect late TLS failure and resource absence
         if: ${{ always() }}
         timeout-minutes: 1
-        run: node tests/proof/platform-recovery-probe.mjs
-        env:
-          CONTRACTS_CONCLUSION: ${{ steps.contracts.conclusion }}
-      - name: Independently inspect cancellation probe resource absence
-        if: ${{ always() }}
-        timeout-minutes: 1
-        run: node tests/proof/platform-inspection-probe.mjs
+        run: node tests/proof/lifecycle-probe-resources.mjs
       - name: Retain actual-service failure diagnostics
         if: ${{ failure() || cancelled() }}
         timeout-minutes: 1
