@@ -11,6 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { before, boundedCommand, captureDiagnostics, CommandFailure, describe, exitStatus, now, receipt, stopGroup, type CommandResult } from "./member-service-diagnostics.mts";
+import { parseProcess, positiveGroupProcessSchema } from "./member-service-processes.mts";
 
 export type Engine = "pi" | "claude" | "codex";
 export const run = promisify(execFile);
@@ -97,7 +98,7 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
       });
       void result.catch(() => {});
       if (!proc.pid) { await result; throw new Error("Child has no process identity"); }
-      const pid = proc.pid;
+      const pid = z.number().int().positive().parse(proc.pid);
       let stopped: Promise<void> | undefined;
       function stop(deadline = state.kind === "closing" ? state.deadline - 2_800 : now() + 3_000) {
         return stopped ??= (async () => {
@@ -107,11 +108,8 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
       }
       owned = { pid, identity: { kind: "pending" }, result, stop, log };
       processes.push(owned);
-      const fields = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const parts = fields.slice(fields.lastIndexOf(")") + 2).split(" ");
-      const group = Number(parts[2]), startTime = parts[19];
+      const { group, startTime } = positiveGroupProcessSchema.parse(parseProcess(pid, readFileSync(`/proc/${pid}/stat`, "utf8")));
       assert.equal(group, pid, "Owned child must lead its detached process group");
-      assert.ok(startTime && /^\d+$/.test(startTime), "Owned child has no start identity");
       owned.identity = { kind: "known", group, startTime };
       publishOwnership();
     } finally { await file.close(); }

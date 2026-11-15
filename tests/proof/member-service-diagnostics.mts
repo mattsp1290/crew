@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { performance } from "node:perf_hooks";
+import { positiveGroupSchema } from "./member-service-processes.mts";
 
 const exec = promisify(execFile);
 export type CommandResult = { kind: "exited"; code: number } | { kind: "signalled"; signal: NodeJS.Signals };
@@ -37,9 +38,11 @@ export async function before<T>(operation: Promise<T>, deadline: number, label: 
 }
 function missing(error: unknown) { return error instanceof Error && "code" in error && error.code === "ESRCH"; }
 export function signalGroup(pid: number, signal: NodeJS.Signals) {
+  positiveGroupSchema.parse(pid);
   try { process.kill(-pid, signal); } catch (error) { if (!missing(error)) throw error; }
 }
 export async function liveGroup(pid: number): Promise<boolean> {
+  positiveGroupSchema.parse(pid);
   try { process.kill(-pid, 0); } catch (error) { if (missing(error)) return false; throw error; }
   const entries = await opendir("/proc");
   for await (const entry of entries) {
@@ -56,6 +59,7 @@ export async function liveGroup(pid: number): Promise<boolean> {
   return false;
 }
 export async function stopGroup(pid: number, deadline = now() + 3_000) {
+  positiveGroupSchema.parse(pid);
   signalGroup(pid, "SIGKILL");
   while (await before(liveGroup(pid), deadline, `Inspect process group ${pid}`)) {
     if (now() >= deadline) throw new Error(`Owned process group ${pid} remained alive after SIGKILL`);

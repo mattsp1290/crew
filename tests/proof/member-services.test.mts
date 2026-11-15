@@ -7,16 +7,10 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { z } from "zod";
 import { before, boundedCommand, collectFiles, CommandFailure, describe, liveGroup, now, stopGroup } from "./member-service-diagnostics.mts";
+import { ownedProcessMapSchema, parseProcess, positiveGroupProcessSchema, processKey, selectOwnedProcesses, type PositiveGroupProcess } from "./member-service-processes.mts";
 import { run, until } from "./member-services.mts";
 
 const diagnostics = resolve("tests/proof/member-service-diagnostics.mts");
-const processSchema = z.object({ pid: z.number().int().positive(), parent: z.number().int().nonnegative(),
-  group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/), state: z.string() });
-type ProcessIdentity = z.infer<typeof processSchema>;
-function parseProcess(pid: number, text: string): ProcessIdentity {
-  const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
-  return processSchema.parse({ pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), startTime: fields[19] });
-}
 function missingProcess(error: unknown) {
   return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH");
 }
@@ -24,29 +18,16 @@ async function processIdentity(pid: number) {
   try { return parseProcess(pid, await readFile(`/proc/${pid}/stat`, "utf8")); }
   catch (error) { if (missingProcess(error)) return undefined; throw error; }
 }
-const processKey = (proc: Pick<ProcessIdentity, "pid" | "startTime">) => `${proc.pid}:${proc.startTime}`;
-async function observeOwned(owned: Map<string, ProcessIdentity>, deadline: number) {
+async function observeOwned(owned: Map<string, PositiveGroupProcess>, deadline: number) {
+  const authority = ownedProcessMapSchema.parse(owned);
+  if (!authority.size) return [];
   const table = await before(readdir("/proc").then(names => Promise.all(names.filter(name => /^\d+$/.test(name))
     .map(name => processIdentity(Number(name))))), deadline, "Owned process census");
-  const live = table.filter(proc => proc !== undefined).filter(proc => proc.state !== "Z" && proc.state !== "X");
-  const anchors = live.filter(proc => owned.has(processKey(proc)));
-  for (const proc of anchors) assert.equal(proc.group, owned.get(processKey(proc))?.group, "Owned process changed its group");
-  const related = new Set(anchors.map(proc => proc.pid));
-  const groups = new Set(anchors.map(proc => proc.group));
-  for (let size = -1; size !== related.size;) {
-    size = related.size;
-    for (const proc of live) if (related.has(proc.parent) || groups.has(proc.group)) {
-      related.add(proc.pid);
-      if (proc.group === proc.pid) groups.add(proc.group);
-    }
-  }
-  for (const proc of live) if (related.has(proc.pid)) {
-    assert.ok(groups.has(proc.group), "Descendant joined a process group without an owned leader");
-    owned.set(processKey(proc), proc);
-  }
-  return live;
+  const observation = selectOwnedProcesses(authority, table.filter(proc => proc !== undefined));
+  for (const [key, proc] of observation.owned) owned.set(key, proc);
+  return observation.live;
 }
-async function stopOwned(owned: Map<string, ProcessIdentity>, deadline: number) {
+async function stopOwned(owned: Map<string, PositiveGroupProcess>, deadline: number) {
   const live = await observeOwned(owned, deadline);
   const groups = new Set([...owned.values()].map(proc => proc.group));
   const results = await Promise.allSettled([...groups].map(async group => {
@@ -70,7 +51,7 @@ async function stopOwned(owned: Map<string, ProcessIdentity>, deadline: number) 
 async function node(args: string[], env = process.env, timeout = 20_000) {
   const bodyDeadline = now() + timeout;
   let cleanupDeadline = bodyDeadline + 16_000;
-  const owned = new Map<string, ProcessIdentity>(), cleanupFailures: string[] = [];
+  const owned = new Map<string, PositiveGroupProcess>(), cleanupFailures: string[] = [];
   const child = spawn(process.execPath, args, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal }));
@@ -92,7 +73,8 @@ async function node(args: string[], env = process.env, timeout = 20_000) {
   let failure: { error: unknown } | undefined;
   try {
     if (child.pid) {
-      const identity = parseProcess(child.pid, readFileSync(`/proc/${child.pid}/stat`, "utf8"));
+      const identity = positiveGroupProcessSchema.parse(parseProcess(child.pid, readFileSync(`/proc/${child.pid}/stat`, "utf8")));
+      assert.equal(identity.group, child.pid, "Contract entry must lead its detached process group");
       owned.set(processKey(identity), identity);
     }
     interval = setInterval(sample, 100);
@@ -105,6 +87,8 @@ async function node(args: string[], env = process.env, timeout = 20_000) {
       if (child.pid) {
         const identity = await processIdentity(child.pid);
         assert.ok(identity && owned.has(processKey(identity)), "Entry identity unavailable for cancellation");
+        const current = positiveGroupProcessSchema.parse(identity);
+        assert.equal(current.group, owned.get(processKey(current))?.group, "Entry process group changed before cancellation");
         child.kill("SIGTERM");
       }
       const grace = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 6_000); });
@@ -131,22 +115,6 @@ async function node(args: string[], env = process.env, timeout = 20_000) {
   assert.ok(result, "Contract command exit unknown");
   return { ...result, output, timedOut, cleanupFailures, processes: [...owned.values()], cleanupDeadline };
 }
-
-test("local raw process parser accepts the retained Colima host kthreadd row", () => {
-  const stat = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 6 0 0 20 0 1 0 0 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
-  assert.deepEqual(parseProcess(2, stat), { pid: 2, parent: 0, group: 0, startTime: "0", state: "S" });
-});
-
-test("local raw process parser rejects malformed observed fields", () => {
-  const fields = ["S", "0", "23", ...Array<string>(16).fill("0"), "0"];
-  const row = (parts: string[]) => "23 (payload with spaces) " + parts.join(" ");
-  assert.deepEqual(parseProcess(23, row(fields)), { pid: 23, parent: 0, group: 23, startTime: "0", state: "S" });
-  for (const [index, value] of [[1, "invalid"], [2, "-1"], [2, "1.5"], [19, "missing"]] satisfies [number, string][]) {
-    const invalid = fields.with(index, value);
-    assert.throws(() => parseProcess(23, row(invalid)));
-  }
-  assert.throws(() => parseProcess(23, row(fields.slice(0, 19))));
-});
 
 test("local capture preserves exit 23 and marker, including a failed destination", async t => {
   const dir = await mkdtemp(join(tmpdir(), "crew-capture-"));
@@ -415,7 +383,7 @@ test("local subprocess timeout lets its payload stop a detached descendant befor
 test("local subprocess timeout escalates after a detached group leader exits", { timeout: 15_000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "crew-helper-force-"));
   const ready = join(dir, "ready.json"), term = join(dir, "term.txt");
-  const owned = new Map<string, ProcessIdentity>();
+  const owned = new Map<string, PositiveGroupProcess>();
   let pending: Promise<Awaited<ReturnType<typeof node>>> | undefined;
   t.after(async () => {
     await pending?.catch(() => {});
@@ -438,7 +406,8 @@ test("local subprocess timeout escalates after a detached group leader exits", {
   for (const pid of Object.values(identities)) {
     const identity = await processIdentity(pid);
     assert.ok(identity, "Forced payload exited before identity capture");
-    owned.set(processKey(identity), identity);
+    const positive = positiveGroupProcessSchema.parse(identity);
+    owned.set(processKey(positive), positive);
   }
   const result = await pending;
   for (const identity of result.processes) owned.set(processKey(identity), identity);
@@ -458,7 +427,7 @@ test("local subprocess timeout escalates after a detached group leader exits", {
 test("local supervising assertion failure sees descendants already disposed", { timeout: 15_000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "crew-helper-assertion-"));
   const ready = join(dir, "ready.json");
-  const owned = new Map<string, ProcessIdentity>();
+  const owned = new Map<string, PositiveGroupProcess>();
   let pending: Promise<Awaited<ReturnType<typeof node>>> | undefined;
   t.after(async () => {
     await pending?.catch(() => {});
@@ -477,7 +446,8 @@ test("local supervising assertion failure sees descendants already disposed", { 
   for (const pid of Object.values(identities)) {
     const identity = await processIdentity(pid);
     assert.ok(identity, "Assertion payload exited before identity capture");
-    owned.set(processKey(identity), identity);
+    const positive = positiveGroupProcessSchema.parse(identity);
+    owned.set(processKey(positive), positive);
   }
   const result = await pending;
   await assert.rejects(async () => {
@@ -636,12 +606,11 @@ test("local workflow entry PID relays cancellation and finishes before runner es
   entry.once("error", error => { spawnError = error; });
   const groups = new Set<number>();
   if (entry.pid) groups.add(entry.pid);
-  const owned = new Map<string, ProcessIdentity>();
+  const owned = new Map<string, PositiveGroupProcess>();
   async function identity(pid: number) {
     const found = await processIdentity(pid);
     assert.ok(found, `Workflow process ${pid} identity is missing`);
-    owned.set(processKey(found), found);
-    return found;
+    return positiveGroupProcessSchema.parse(found);
   }
   async function optionalFile(path: string) {
     try { return await readFile(path, "utf8"); }
@@ -663,7 +632,8 @@ test("local workflow entry PID relays cancellation and finishes before runner es
     if (failures.length) throw new AggregateError(failures, "Workflow test process cleanup failed");
   });
   if (entry.pid) {
-    const initial = parseProcess(entry.pid, readFileSync(`/proc/${entry.pid}/stat`, "utf8"));
+    const initial = positiveGroupProcessSchema.parse(parseProcess(entry.pid, readFileSync(`/proc/${entry.pid}/stat`, "utf8")));
+    assert.equal(initial.group, entry.pid, "Workflow entry must lead its detached process group");
     owned.set(processKey(initial), initial);
   }
   assert.ok(entry.pid, "Workflow Bash entry has no PID");
@@ -681,7 +651,10 @@ test("local workflow entry PID relays cancellation and finishes before runner es
     lineage.push(await identity(parent));
   }
   for (const proc of lineage) {
-    assert.ok(lineage.some(owner => owner.pid === proc.group), "Refusing to own an unrelated process group");
+    assert.ok(lineage.some(owner => owner.pid === proc.group && owner.group === owner.pid), "Refusing to own an unrelated process group");
+  }
+  for (const proc of lineage) {
+    owned.set(processKey(proc), proc);
     groups.add(proc.group);
   }
   t.diagnostic("Owned workflow process ancestry " + JSON.stringify(lineage));
@@ -721,12 +694,26 @@ const ownershipSchema = z.object({
     identity: z.discriminatedUnion("kind", [z.object({ kind: z.literal("pending") }),
       z.object({ kind: z.literal("known"), group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/) })]) })),
 });
+test("local fixture receipt keeps known groups positive and preserves pending identities", () => {
+  const evidence = { label: "contract", directory: "/tmp/birb-members-example",
+    container: "birb-proof-11111111-1111-1111-1111-111111111111", allocation: { kind: "not-started" }, processes: [] };
+  assert.deepEqual(ownershipSchema.parse(evidence), evidence);
+  const pending = { ...evidence, processes: [{ pid: 23, log: "worker.log", identity: { kind: "pending" } }] };
+  assert.deepEqual(ownershipSchema.parse(pending), pending);
+  const known = { pid: 23, log: "worker.log", identity: { kind: "known", group: 23, startTime: "0" } };
+  assert.deepEqual(ownershipSchema.parse({ ...evidence, processes: [known] }).processes, [known]);
+  for (const group of [0, -0, -1, 1.5]) {
+    const invalid = { ...known, identity: { ...known.identity, group } };
+    assert.throws(() => ownershipSchema.parse({ ...evidence, processes: [invalid] }));
+  }
+});
 async function regularFile(path: string) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try { assert.ok((await file.stat()).isFile(), "Ownership evidence must be a regular file"); return await file.readFile("utf8"); }
   finally { await file.close(); }
 }
-async function recoverFixture(directory: string, observed: ProcessIdentity[], deadline: number) {
+async function recoverFixture(directory: string, observed: PositiveGroupProcess[], deadline: number) {
+  const observedProcesses = z.array(positiveGroupProcessSchema).parse(observed);
   const recovery: { failures: string[]; container: "absent" | "unknown"; directory: "absent" | "unknown";
     processes: "absent" | "unknown" } = { failures: [], container: "unknown", directory: "unknown", processes: "unknown" };
   const attempt = async (operation: () => Promise<void>) => {
@@ -744,11 +731,11 @@ async function recoverFixture(directory: string, observed: ProcessIdentity[], de
     assert.equal(dirname(await realpath(artifacts)), await realpath(directory), "Fixture artifacts escaped contract root");
     return ownershipSchema.parse(JSON.parse(await regularFile(join(artifacts, "ownership.json"))));
   })(), deadline - 300, "Fixture ownership evidence").catch(error => { recovery.failures.push(describe(error)); return undefined; });
-  const owned = new Map(observed.map(proc => [processKey(proc), proc]));
+  const owned = new Map(observedProcesses.map(proc => [processKey(proc), proc]));
   if (evidence) for (const proc of evidence.processes) {
     if (proc.identity.kind === "pending") { recovery.failures.push("Recorded process identity is pending; absence unknown"); continue; }
     if (proc.pid !== proc.identity.group) { recovery.failures.push("Recorded fixture process is not a group leader"); continue; }
-    const identity = { pid: proc.pid, ...proc.identity, parent: 0, state: "recorded" };
+    const identity = positiveGroupProcessSchema.parse({ pid: proc.pid, ...proc.identity, parent: 0, state: "recorded" });
     owned.set(processKey(identity), identity);
   }
   await Promise.all([
