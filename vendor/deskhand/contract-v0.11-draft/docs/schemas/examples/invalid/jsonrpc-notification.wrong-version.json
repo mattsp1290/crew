@@ -1,0 +1,4 @@
+{
+  "jsonrpc": "1.0",
+  "method": "example/notification"
+}

@@ -1,0 +1,25 @@
+{
+  "resultType": "complete",
+  "tools": [
+    {
+      "name": "status",
+      "title": "Status",
+      "description": "Report deskhand's state.",
+      "inputSchema": {
+        "type": "object",
+        "$id": "https://deskhand.invalid/schemas/tools/status.input.json"
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "ttlMs": 300000,
+  "cacheScope": "private"
+}

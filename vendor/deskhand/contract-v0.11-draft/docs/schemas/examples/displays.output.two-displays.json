@@ -1,0 +1,43 @@
+{
+  "display_config_generation": 3,
+  "displays": [
+    {
+      "display_id": 1,
+      "uuid": "37D8832A-2D66-02CA-B9F7-8F30A301B230",
+      "name": "Built-in Retina Display",
+      "is_main": true,
+      "is_builtin": true,
+      "asleep": false,
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1728,
+        "height": 1117
+      },
+      "pixel_size": {
+        "width": 3456,
+        "height": 2234
+      },
+      "point_pixel_scale": 2
+    },
+    {
+      "display_id": 2,
+      "uuid": "5F1A0C44-9B1E-4E0D-8C2B-6A7D3E9F0B12",
+      "name": "DELL U2723QE",
+      "is_main": false,
+      "is_builtin": false,
+      "asleep": false,
+      "bounds": {
+        "x": -2560,
+        "y": 0,
+        "width": 2560,
+        "height": 1440
+      },
+      "pixel_size": {
+        "width": 2560,
+        "height": 1440
+      },
+      "point_pixel_scale": 1
+    }
+  ]
+}

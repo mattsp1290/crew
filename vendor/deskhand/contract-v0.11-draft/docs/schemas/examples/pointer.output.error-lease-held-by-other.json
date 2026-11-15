@@ -1,0 +1,9 @@
+{
+  "code": "lease_held_by_other",
+  "message": "Another holder has the lease.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9Q3",
+  "details": {
+    "expires_in_ms": 21500
+  }
+}

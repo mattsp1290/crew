@@ -1,0 +1,12 @@
+{
+  "lease_result": {
+    "op": "acquire",
+    "outcome": "acquired"
+  },
+  "lease": {
+    "held_by_caller": true,
+    "acquired_at": "2026-11-14T15:02:11.482Z",
+    "expires_at": "2026-11-14T15:02:41.482Z",
+    "expires_in_ms": 30000
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "code": "out_of_frame",
+  "message": "x",
+  "state": "ok",
+  "details": {
+    "point_index": 0,
+    "output_pixel_size": {
+      "width": 2355,
+      "height": 1522
+    }
+  }
+}

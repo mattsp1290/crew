@@ -1,0 +1,9 @@
+{
+  "code": "denied_shortcut",
+  "message": "command+space is a denied global shortcut on this Mac.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R3",
+  "details": {
+    "shortcut": "command+space"
+  }
+}

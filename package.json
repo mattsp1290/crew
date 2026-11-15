@@ -54,6 +54,7 @@
     "build:client": "npm run build --prefix packages/client",
     "openapi": "node scripts/generate-openapi.mjs",
     "check:openapi": "node scripts/generate-openapi.mjs --check",
+    "test:deskhand": "node --test tests/service/deskhand-contract.test.ts",
     "test:client": "node --test tests/client/*.test.mts",
     "verify:client": "node scripts/verify-client-package.mjs"
   },

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/wire/jsonrpc-notification.json",
+  "title": "JSON-RPC notification",
+  "description": "A request object without an id (docs/contract.md section 2.4, check 15). This MCP revision defines no notification that a client sends over HTTP. deskhand answers a notification that passed checks 1 to 14 with 202 and no body, and otherwise ignores it. The examples use a placeholder method for that reason.",
+  "type": "object",
+  "properties": {
+    "jsonrpc": { "const": "2.0" },
+    "method": { "type": "string" },
+    "params": { "type": "object" }
+  },
+  "required": ["jsonrpc", "method"],
+  "additionalProperties": false,
+  "examples": [
+    { "jsonrpc": "2.0", "method": "example/notification" },
+    {
+      "jsonrpc": "2.0",
+      "method": "example/notification",
+      "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }
+    }
+  ]
+}

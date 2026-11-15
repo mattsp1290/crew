@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/status.input.json",
+  "title": "status arguments",
+  "description": "Report deskhand's state. A pure read: it changes nothing and never posts input. Optionally report whether a named holder holds the lease, and look up one operation record.",
+  "type": "object",
+  "properties": {
+    "holder_id": {
+      "description": "Report the lease as seen from this holder. Without it the result's lease is null.",
+      "$ref": "../defs.json#/$defs/holder_id"
+    },
+    "operation": {
+      "description": "Look up the record of one effect call. Nothing is executed and nothing is posted. The result's operation member is the record, or null when there is none.",
+      "type": "object",
+      "properties": {
+        "holder_id": { "$ref": "../defs.json#/$defs/holder_id" },
+        "operation_id": { "$ref": "../defs.json#/$defs/operation_id" }
+      },
+      "required": ["holder_id", "operation_id"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

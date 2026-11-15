@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/displays.input.json",
+  "title": "displays arguments",
+  "description": "List the active displays. Takes no arguments.",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
