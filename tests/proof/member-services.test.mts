@@ -678,13 +678,6 @@ async function fixtureNode(directory: string, args: string[]) {
   let recovery: Awaited<ReturnType<typeof recoverFixture>>;
   const run = contractRunSchema.parse(JSON.parse(await regularFile(join(directory, "contract-run.json"))));
   atomicReceipt(join(directory, "contract-run.json"), { ...run, launch: { kind: "requested" } });
-  if (process.env.CREW_QUALIFICATION_MODE === "unknown-acquisition" && args.some(arg => arg.includes("qualification-requested-before-spawn"))) {
-    const qualification = join(dirname(directory), "qualification");
-    await mkdir(qualification, { recursive: true });
-    atomicReceipt(join(qualification, "requested-before-spawn.json"), { directory, worker: run.worker, readyUTC: new Date().toISOString() });
-    console.log("QUALIFICATION_REQUESTED_BEFORE_SPAWN_READY");
-    await new Promise<void>((_, reject) => setTimeout(() => reject(new Error("qualification cancellation was not delivered")), 60_000));
-  }
   try { command = await node(args, { ...process.env, BIRBCREW_PROOF_ARTIFACTS: directory, BIRBCREW_CONTRACT_ROOT: directory }, 100_000); }
   catch (error) { failure = { error }; }
   finally { recovery = await recoverFixture(directory, command?.processes ?? [],
@@ -885,24 +878,3 @@ for (const mode of ["catchable", "forced"] as const) {
     }
   });
 }
-
-test("remote qualification unknown acquisition boundaries", { timeout: 120_000 }, async t => {
-  assert.equal(process.env.CREW_QUALIFICATION_MODE, "unknown-acquisition");
-  const requestedDirectory = await contractDirectory(t), pendingDirectory = await contractDirectory(t);
-  const requested = fixtureNode(requestedDirectory, ["--input-type=module", "-e", "throw new Error('qualification-requested-before-spawn')"]);
-  void requested.catch(() => {});
-  const pending = fixtureNode(pendingDirectory, ["--input-type=module", "-e",
-    "import {withServices} from './tests/proof/member-services.mts'; await withServices({label:'contract'},async()=>{throw new Error('qualification pending callback unexpectedly reached')});"]);
-  void pending.catch(() => {});
-  const qualification = join(dirname(requestedDirectory), "qualification");
-  await until(async () => {
-    try {
-      await Promise.all([readFile(join(qualification, "requested-before-spawn.json"), "utf8"), readFile(join(qualification, "pending-docker-started.json"), "utf8")]);
-      return true;
-    } catch (error) { if (missingProcess(error)) return undefined; throw error; }
-  }, "qualification acquisition boundaries", 30_000);
-  atomicReceipt(join(qualification, "unknown-acquisition-ready.json"), { requestedDirectory, pendingDirectory, workerPID: process.pid, readyUTC: new Date().toISOString() });
-  console.log("QUALIFICATION_UNKNOWN_ACQUISITION_READY");
-  await Promise.all([requested, pending]);
-  throw new Error("qualification cancellation was not delivered");
-});

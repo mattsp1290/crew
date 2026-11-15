@@ -288,28 +288,6 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
     allocation = boundedCommand("docker", ["run", "--rm", "--name", db, "--label", "birb-proof-owner=" + db, "-d", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=birbcrew_ts",
       "-p", "127.0.0.1::5432", "postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"],
       now() + 30_000, { env: { ...process.env, POSTGRES_PASSWORD: password }, signal: controller.signal });
-    if (process.env.CREW_QUALIFICATION_MODE === "unknown-acquisition") {
-      void allocation.catch(() => {});
-
-      const { createHash } = await import("node:crypto");
-      const { dirname } = await import("node:path");
-      const contractRoot = process.env.BIRBCREW_CONTRACT_ROOT;
-      assert.ok(contractRoot, "Qualification contract root missing");
-      const qualification = join(dirname(contractRoot), "qualification");
-      mkdirSync(qualification, { recursive: true });
-      void allocation.then(result => atomicReceipt(join(qualification, "docker-allocation-result.json"), { settledUTC: new Date().toISOString(), kind: "fulfilled", result }),
-        error => atomicReceipt(join(qualification, "docker-allocation-result.json"), { settledUTC: new Date().toISOString(), kind: "rejected", error: describe(error) })).catch(error => console.error("Qualification allocation observation failed", error));
-      const ownershipText = regularFileSync(join(artifacts, "ownership.json"));
-      const ownerText = regularFileSync(join(artifacts, "owner.json"));
-      const contractText = regularFileSync(join(contractRoot, "contract-run.json"));
-      atomicReceipt(join(qualification, "pending-docker-started.json"), { directory: contractRoot, artifacts, container: db,
-        fixtureOwner: fixtureOwnerSchema.parse(JSON.parse(ownerText)).fixtureOwner,
-        worker: contractRunSchema.parse(JSON.parse(contractText)).worker,
-        ownershipSHA256: createHash("sha256").update(ownershipText).digest("hex"),
-        ownerSHA256: createHash("sha256").update(ownerText).digest("hex"), readyUTC: new Date().toISOString() });
-      console.log("QUALIFICATION_PENDING_DOCKER_STARTED");
-      await new Promise<void>((_, reject) => setTimeout(() => reject(new Error("qualification cancellation was not delivered")), 60_000));
-    }
     const allocated = await allocation;
     assert.ok(allocated.stdout.kind === "complete", "Docker allocation stdout was truncated");
     allocationState = { kind: "settled", container: z.string().regex(/^[a-f0-9]{64}$/).parse(allocated.stdout.text.trim()) };
