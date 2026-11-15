@@ -27,6 +27,22 @@ export function exitStatus(error: unknown): number {
 export function describe(error: unknown): string {
   return (error instanceof Error ? error.stack ?? error.message : String(error)).slice(0, 32_768);
 }
+export async function withCleanup<T>(
+  label: string,
+  operation: () => Promise<T>,
+  cleanup: () => Promise<void>,
+): Promise<T> {
+  let value: T;
+  try {
+    value = await operation();
+  } catch (primary) {
+    try { await cleanup(); }
+    catch (secondary) { console.error(label, secondary); }
+    finally { throw primary; }
+  }
+  await cleanup();
+  return value;
+}
 export function firstFailure(path: string, error: unknown) {
   try { writeFileSync(path, describe(error), { mode: 0o600, flag: "wx" }); }
   catch (failure) {

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { run, until, type Engine, type Services } from "./member-services.mts";
+import { withCleanup } from "./member-service-diagnostics.mts";
 
 async function optionalFile(path: string) {
   try { return await readFile(path, "utf8"); }
@@ -21,8 +22,7 @@ export async function verifyObserverProcesses(s: Services, engines: Engine[]) {
   const stop = new AbortController();
   const signal = AbortSignal.any([stop.signal, s.signal]);
   const clients: { close: Promise<void>; abort: () => void }[] = [];
-  let outcome: { kind: "passed" } | { kind: "failed"; error: unknown } = { kind: "passed" };
-  try {
+  await withCleanup("Observer cleanup also failed", async () => {
     const url = gateway.url;
     await writeFile(clientConfig, JSON.stringify({ url, tokens: { owner: token } }), { mode: 0o600 });
     async function api(path: string, body?: object) {
@@ -84,19 +84,16 @@ export async function verifyObserverProcesses(s: Services, engines: Engine[]) {
       assert.equal(receipts, "1");
       console.log(engine + " independent CLI observer processes converged on the canonical SQL and gateway messages.");
     }
-  } catch (error) { outcome = { kind: "failed", error }; }
-  stop.abort();
-  for (const client of clients) client.abort();
-  let timer: NodeJS.Timeout | undefined;
-  const closed = Promise.all(clients.map(client => client.close));
-  const clientsStopped = Promise.race([closed, new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Independent observer clients did not exit after abort")), 3_000);
-  })]).finally(() => clearTimeout(timer));
-  const cleanup = await Promise.allSettled([gateway.stop(), clientsStopped]);
-  const failures = cleanup.filter(result => result.status === "rejected").map(result => result.reason);
-  if (outcome.kind === "failed") {
-    for (const error of failures) console.error("Observer cleanup also failed", error);
-    throw outcome.error;
-  }
-  if (failures.length) throw new AggregateError(failures, "Observer cleanup failed");
+  }, async () => {
+    stop.abort();
+    for (const client of clients) client.abort();
+    let timer: NodeJS.Timeout | undefined;
+    const closed = Promise.all(clients.map(client => client.close));
+    const clientsStopped = Promise.race([closed, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Independent observer clients did not exit after abort")), 3_000);
+    })]).finally(() => clearTimeout(timer));
+    const cleanup = await Promise.allSettled([gateway.stop(), clientsStopped]);
+    const failures = cleanup.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Observer cleanup failed");
+  });
 }
