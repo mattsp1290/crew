@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { z } from "zod";
-import { before, boundedCommand, collectFiles, describe, liveGroup, now, stopGroup } from "./member-service-diagnostics.mts";
+import { before, boundedCommand, collectFiles, CommandFailure, describe, liveGroup, now, stopGroup } from "./member-service-diagnostics.mts";
 import { run, until } from "./member-services.mts";
 
 const diagnostics = resolve("tests/proof/member-service-diagnostics.mts");
@@ -193,10 +193,10 @@ test("local bounded command retains at most 128 KiB of multibyte output and drai
   });
   pid = result.pid;
   if (pid !== undefined) t.diagnostic(`Owned process group ${pid}`);
-  t.diagnostic(JSON.stringify({ receivedBytes: result.received, retainedUtf8Bytes: Buffer.byteLength(result.output, "utf8") }));
+  t.diagnostic(JSON.stringify({ receivedBytes: result.received, retainedUtf8Bytes: Buffer.byteLength(result.diagnostics, "utf8") }));
   assert.equal(result.received, repetitions * 4, "Command output was not fully drained");
-  assert.ok(Buffer.byteLength(result.output, "utf8") <= 128 * 1024, "Retained output exceeds its byte limit");
-  assert.match(result.output, /^(?:\u{1f600})+$/u, "Retained output contains a split UTF-8 character");
+  assert.ok(Buffer.byteLength(result.diagnostics, "utf8") <= 128 * 1024, "Retained output exceeds its byte limit");
+  assert.match(result.diagnostics, /^(?:\u{1f600})+$/u, "Retained output contains a split UTF-8 character");
   if (pid !== undefined) assert.equal(await liveGroup(pid), false, `Owned output group ${pid} remains`);
 });
 
@@ -206,10 +206,135 @@ test("local bounded command decodes a character split across writes only after d
   const result = await boundedCommand(process.execPath, ["-e", source], now() + 4_000);
   assert.equal(result.received, 4 + 150_000);
   assert.equal(result.retained, 128 * 1024);
-  assert.match(result.output, /^😀€+\uFFFD$/u, "Only the final truncation boundary may contain a replacement character");
-  assert.equal(result.output.indexOf("\uFFFD"), result.output.length - 1);
+  assert.match(result.diagnostics, /^😀€+\uFFFD$/u, "Only the final truncation boundary may contain a replacement character");
+  assert.equal(result.diagnostics.indexOf("\uFFFD"), result.diagnostics.length - 1);
   if (result.pid) assert.equal(await liveGroup(result.pid), false);
 });
+
+async function boundedNode(t: TestContext, source: string) {
+  let pid: number | undefined;
+  t.after(async () => {
+    if (pid !== undefined) {
+      await stopGroup(pid);
+      assert.equal(await liveGroup(pid), false, `Owned output group ${pid} remains`);
+    }
+  });
+  try {
+    const result = await boundedCommand(process.execPath, ["-e", source], now() + 4_000);
+    pid = result.pid;
+    if (pid !== undefined) t.diagnostic(`Owned process group ${pid}`);
+    return result;
+  } catch (error) {
+    if (error instanceof Error && "pid" in error && typeof error.pid === "number" && Number.isSafeInteger(error.pid) && error.pid > 0) {
+      pid = error.pid;
+      t.diagnostic(`Owned process group ${pid}`);
+    }
+    throw error;
+  }
+}
+
+test("local bounded command preserves protocol ID stdout alongside a stderr warning", { timeout: 8_000 }, async t => {
+  const id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const warning = "channel-warning-before-id\n", stdout = id + "\n";
+  const source = `process.stderr.write(${JSON.stringify(warning)},()=>process.stdout.write(${JSON.stringify(stdout)}))`;
+  const result = await boundedNode(t, source);
+  assert.ok("stdout" in result);
+  assert.deepEqual(result.stdout, { kind: "complete", text: stdout, received: 65, retained: 65 });
+  const protocol = z.object({ text: z.string() }).parse(result.stdout);
+  assert.equal(z.string().regex(/^[a-f0-9]{64}$/).parse(protocol.text.trim()), id);
+  assert.ok("diagnostics" in result && typeof result.diagnostics === "string");
+  assert.ok(result.diagnostics.includes(warning));
+  assert.equal(result.received, Buffer.byteLength(warning) + 65);
+  assert.equal(result.retained, result.received);
+  if (result.pid !== undefined) assert.equal(await liveGroup(result.pid), false, `Owned output group ${result.pid} remains`);
+});
+
+test("local bounded command keeps protocol ID stdout after stderr exceeds the diagnostic cap", { timeout: 8_000 }, async t => {
+  const id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+  const stderrBytes = 128 * 1024 + 1, stdout = id + "\n";
+  const source = `process.stderr.write(Buffer.alloc(${stderrBytes},119),()=>process.stdout.write(${JSON.stringify(stdout)}))`;
+  const result = await boundedNode(t, source);
+  assert.ok("stdout" in result);
+  assert.deepEqual(result.stdout, { kind: "complete", text: stdout, received: 65, retained: 65 });
+  const protocol = z.object({ text: z.string() }).parse(result.stdout);
+  assert.equal(z.string().regex(/^[a-f0-9]{64}$/).parse(protocol.text.trim()), id);
+  assert.ok("diagnostics" in result && typeof result.diagnostics === "string");
+  assert.equal(Buffer.byteLength(result.diagnostics), 128 * 1024);
+  assert.equal(result.received, stderrBytes + 65, "Both command streams were not fully drained");
+  assert.equal(result.retained, 128 * 1024);
+  if (result.pid !== undefined) assert.equal(await liveGroup(result.pid), false, `Owned output group ${result.pid} remains`);
+});
+
+test("local bounded command preserves protocol JSON row stdout alongside a stderr warning", { timeout: 8_000 }, async t => {
+  const stdout = '{"conversation_id":"channel-contract","attempt":2}\n';
+  const warning = "channel-warning-before-json-row\n", stdoutBytes = Buffer.byteLength(stdout);
+  const source = `process.stderr.write(${JSON.stringify(warning)},()=>process.stdout.write(${JSON.stringify(stdout)}))`;
+  const result = await boundedNode(t, source);
+  assert.ok("stdout" in result);
+  assert.deepEqual(result.stdout, { kind: "complete", text: stdout, received: stdoutBytes, retained: stdoutBytes });
+  assert.ok("diagnostics" in result && typeof result.diagnostics === "string");
+  assert.ok(result.diagnostics.includes(warning));
+  assert.equal(result.received, Buffer.byteLength(warning) + stdoutBytes);
+  assert.equal(result.retained, result.received);
+  if (result.pid !== undefined) assert.equal(await liveGroup(result.pid), false, `Owned output group ${result.pid} remains`);
+});
+
+test("local bounded command reconstructs stdout emoji across an intervening stderr write", { timeout: 8_000 }, async t => {
+  const warning = "channel-warning-between-stdout-bytes\n";
+  const source = `const bytes=Buffer.from('😀');process.stdout.write(bytes.subarray(0,1),()=>{
+    process.stderr.write(${JSON.stringify(warning)},()=>setTimeout(()=>process.stdout.write(bytes.subarray(1)),50))
+  })`;
+  const result = await boundedNode(t, source);
+  assert.ok("stdout" in result);
+  assert.deepEqual(result.stdout, { kind: "complete", text: "😀", received: 4, retained: 4 });
+  assert.ok("diagnostics" in result && typeof result.diagnostics === "string");
+  assert.ok(result.diagnostics.includes(warning));
+  assert.equal(result.received, 4 + Buffer.byteLength(warning));
+  assert.equal(result.retained, result.received);
+  if (result.pid !== undefined) assert.equal(await liveGroup(result.pid), false, `Owned output group ${result.pid} remains`);
+});
+
+test("local bounded command marks stdout beyond 131072 bytes as truncated without protocol text", { timeout: 8_000 }, async t => {
+  const source = "process.stdout.write(Buffer.alloc(131073,120))";
+  const result = await boundedNode(t, source);
+  assert.ok("stdout" in result);
+  assert.deepEqual(result.stdout, { kind: "truncated", received: 131073, retained: 131072 });
+  assert.ok("diagnostics" in result && typeof result.diagnostics === "string");
+  assert.equal(result.diagnostics, "x".repeat(131072));
+  assert.equal(result.received, 131073, "Oversized stdout was not fully drained");
+  assert.equal(result.retained, 131072);
+  if (result.pid !== undefined) assert.equal(await liveGroup(result.pid), false, `Owned output group ${result.pid} remains`);
+});
+
+for (const code of [23, 124]) {
+  test(`local bounded command failure preserves nested ordinary exit ${code} and stderr marker`, { timeout: 8_000 }, async t => {
+    let pid: number | undefined;
+    t.after(async () => {
+      if (pid !== undefined) {
+        await stopGroup(pid);
+        assert.equal(await liveGroup(pid), false, `Owned output group ${pid} remains`);
+      }
+    });
+    const marker = `bounded-command-stderr-exit-${code}`;
+    const source = `process.stderr.write(${JSON.stringify(marker + "\n")},()=>{
+      process.stdout.write('ordinary-exit-${code}-stdout\\n',()=>{process.exitCode=${code}})
+    })`;
+    await assert.rejects(boundedCommand(process.execPath, ["-e", source], now() + 4_000), (error: unknown) => {
+      if (error instanceof Error && "pid" in error && typeof error.pid === "number" && Number.isSafeInteger(error.pid) && error.pid > 0) {
+        pid = error.pid;
+        t.diagnostic(`Owned process group ${pid}`);
+      }
+      assert.ok(error instanceof AggregateError);
+      const [first]: unknown[] = error.errors;
+      assert.ok(first instanceof CommandFailure);
+      assert.deepEqual(first.result, { kind: "exited", code });
+      assert.ok(first.message.includes(marker));
+      assert.ok(error.message.includes(marker));
+      return true;
+    });
+    if (pid !== undefined) assert.equal(await liveGroup(pid), false, `Owned output group ${pid} remains`);
+  });
+}
 
 test("local subprocess timeout lets its payload stop a detached descendant before returning", { timeout: 14_000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "crew-helper-timeout-"));
@@ -618,18 +743,22 @@ async function recoverFixture(directory: string, observed: ProcessIdentity[], de
     ...(evidence ? [attempt(async () => {
       if (evidence.allocation.kind === "not-started") { recovery.container = "absent"; return; }
       const query = () => boundedCommand("docker", ["ps", "-aq", "--filter", "name=^/" + evidence.container + "$"], Math.min(deadline - 500, now() + 1_500));
-      const { output } = await query();
-      if (output.trim()) {
+      const found = await query();
+      assert.ok(found.stdout.kind === "complete", "Docker recovery presence query stdout was truncated");
+      if (found.stdout.text.trim()) {
         const inspected = await boundedCommand("docker", ["inspect", "--format",
           '{{.Id}} {{.Name}} {{index .Config.Labels "birb-proof-owner"}}', evidence.container], Math.min(deadline - 500, now() + 1_500));
-        const [id, name, marker] = inspected.output.trim().split(/\s+/);
+        assert.ok(inspected.stdout.kind === "complete", "Docker recovery inspection stdout was truncated");
+        const [id, name, marker] = inspected.stdout.text.trim().split(/\s+/);
         assert.ok(id && /^[a-f0-9]{64}$/.test(id), "Container identity missing");
         assert.equal(name, "/" + evidence.container, "Container name disagrees with ownership");
         assert.equal(marker, evidence.container, "Container label disagrees with ownership");
         if (evidence.allocation.kind === "settled") assert.equal(id, evidence.allocation.container, "Allocated container identity changed");
         await boundedCommand("docker", ["rm", "-f", id], Math.min(deadline - 500, now() + 2_000));
       }
-      assert.equal((await query()).output.trim(), "", "Exact owned container remains");
+      const remaining = await query();
+      assert.ok(remaining.stdout.kind === "complete", "Docker recovery absence query stdout was truncated");
+      assert.equal(remaining.stdout.text.trim(), "", "Exact owned container remains");
       assert.notEqual(evidence.allocation.kind, "pending", "Docker allocation pending; eventual absence unknown");
       recovery.container = "absent";
     }), attempt(async () => {
