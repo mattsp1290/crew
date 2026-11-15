@@ -295,7 +295,9 @@ test("histories recorded with the workflow source before targets replay, and a c
       assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
       return {
         memberId, requestId, workflowId, base,
-        settled: (phase: string) => until(async () => (await api(base)).body.state.phase === phase || undefined, "phase " + phase),
+        settled: (phase: string) => until(async () =>
+          (await api(`${base}/requests/${requestId}`)).body.status === "completed" &&
+          (await api(base)).body.state.phase === phase || undefined, "completed request at phase " + phase),
         reply: async () => (await pool.query<{ reply: string }>("SELECT reply FROM birbcrew_ts.turns WHERE request_id=$1", [requestId])).rows[0].reply,
         children: async () => (await pool.query<{ child_id: string }>("SELECT child_id FROM birbcrew_ts.pi_children WHERE request_id=$1 ORDER BY ordinal",
           [requestId])).rows.map(row => `birbcrew-ts/child/${row.child_id}`),

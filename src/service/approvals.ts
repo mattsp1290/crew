@@ -1,9 +1,10 @@
 import { decideSchema, nextStep, standingChoice } from "@birbcrew/client/contract";
-import { acceptsChoice, emptyToolArguments, recordWorkItemArguments, toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
+import { acceptsChoice, emptyToolArguments, publicToolArguments, recordWorkItemArguments, toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
 import { createGrant, grantable, proposalGrant, standingScope } from "./grants.ts";
 import { publishObservation } from "./observation.ts";
 import { appendAudit } from "./audit.ts";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { MemberStore } from "./store.ts";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -246,6 +247,7 @@ export class ApprovalStore {
     }
     const approval = publicApproval(key, row);
     await publishObservation(db, key.conversationId, { kind: "call", approval,
+      ...(isDeepStrictEqual(key.arguments, publicToolArguments(key.toolName, key.requestId)) && { argumentsComplete: true }),
       ...(mode && "liveDeadline" in mode && { expiresAt: mode.liveDeadline }),
       ...(approval.expiresAt && { deadline: approval.expiresAt }),
       ...(standing.grant ? { grant: standing.grant } : standing.grantable && { standing: true }) });
