@@ -7,6 +7,7 @@ import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 
 const exec = promisify(execFile);
 export type CommandResult = { kind: "exited"; code: number } | { kind: "signalled"; signal: NodeJS.Signals };
@@ -18,11 +19,21 @@ export class CommandFailure extends Error {
   }
 }
 export function exitStatus(error: unknown): number {
+  if (error instanceof CommandDeadline) return 124;
   if (error instanceof CommandFailure) return error.result.kind === "exited" ? Math.max(1, error.result.code) : 128 + osConstants.signals[error.result.signal];
   return 1;
 }
 export function describe(error: unknown): string {
   return (error instanceof Error ? error.stack ?? error.message : String(error)).slice(0, 32_768);
+}
+export const now = () => performance.now();
+export async function before<T>(operation: Promise<T>, deadline: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([operation, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}: deadline exceeded; completion unknown`)), Math.max(0, deadline - now()));
+    })]);
+  } finally { clearTimeout(timer); }
 }
 function missing(error: unknown) { return error instanceof Error && "code" in error && error.code === "ESRCH"; }
 export function signalGroup(pid: number, signal: NodeJS.Signals) {
@@ -44,42 +55,81 @@ export async function liveGroup(pid: number): Promise<boolean> {
   }
   return false;
 }
-export async function stopGroup(pid: number) {
+export async function stopGroup(pid: number, deadline = now() + 3_000) {
   signalGroup(pid, "SIGKILL");
-  const deadline = Date.now() + 3_000;
-  while (await liveGroup(pid)) {
-    if (Date.now() >= deadline) throw new Error(`Owned process group ${pid} remained alive after SIGKILL`);
-    await delay(40);
+  while (await before(liveGroup(pid), deadline, `Inspect process group ${pid}`)) {
+    if (now() >= deadline) throw new Error(`Owned process group ${pid} remained alive after SIGKILL`);
+    await delay(Math.min(40, Math.max(0, deadline - now())));
   }
 }
 
-export async function captureDiagnostics(directory: string, destination: string, container: string) {
-  const collector = spawn(process.execPath, [fileURLToPath(import.meta.url), "--collect", directory, destination, container],
-    { detached: true, stdio: ["ignore", "pipe", "pipe"] });
-  const pid = collector.pid;
-  let output = "", received = 0;
+class CaptureFailure extends AggregateError {
+  readonly pid: number | undefined;
+  readonly received: number;
+  constructor(errors: unknown[], pid: number | undefined, received: number) {
+    super(errors, errors.map(describe).join("\n"));
+    this.pid = pid; this.received = received;
+  }
+}
+export async function boundedCommand(program: string, args: string[], deadline: number,
+  options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
+  assert.ok(now() < deadline, `${program}: no operation budget remains`);
+  const child = spawn(program, args, { env: options.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "", received = 0, timedOut = false;
+  let end = deadline;
+  const failures: unknown[] = [];
   function drain(chunk: Buffer) {
     received += chunk.length;
     if (output.length < 128 * 1024) output += chunk.subarray(0, 128 * 1024 - output.length).toString();
   }
-  collector.stdout.on("data", drain); collector.stderr.on("data", drain);
+  child.stdout.on("data", drain); child.stderr.on("data", drain);
+  const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
   const result = new Promise<CommandResult>((resolve, reject) => {
-    collector.once("error", reject);
-    collector.once("exit", (code, signal) => resolve(signal ? { kind: "signalled", signal } : { kind: "exited", code: code ?? 1 }));
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve(signal ? { kind: "signalled", signal } : { kind: "exited", code: code ?? 1 }));
   });
-  const timer = setTimeout(() => { if (pid) signalGroup(pid, "SIGKILL"); }, 8_000);
-  const failures: unknown[] = [];
+  function kill() {
+    try { if (child.pid) signalGroup(child.pid, "SIGKILL"); } catch (error) { failures.push(error); }
+  }
+  const { promise: cancellation, reject: rejectCancellation } = Promise.withResolvers<never>();
+  const aborted = () => { end = Math.min(end, now() + 500); kill(); rejectCancellation(new Error(`${program}: aborted`)); };
+  const killReserve = Math.min(150, Math.max(10, (deadline - now()) / 4));
+  const timer = setTimeout(() => { timedOut = true; kill(); }, Math.max(0, deadline - now() - killReserve));
+  options.signal?.addEventListener("abort", aborted, { once: true });
+  if (options.signal?.aborted) aborted();
   try {
-    const outcome = await result;
-    if (outcome.kind !== "exited" || outcome.code !== 0) throw new CommandFailure("Diagnostic collector " + output, outcome);
+    const outcome = await before(Promise.race([result, cancellation]), deadline - killReserve / 2, program);
+    if (timedOut || options.signal?.aborted) throw new Error(`${program}: ${timedOut ? "deadline exceeded" : "aborted"}`);
+    if (outcome.kind !== "exited" || outcome.code !== 0) throw new CommandFailure(program + " " + output, outcome);
   } catch (error) { failures.push(error); }
   finally {
     clearTimeout(timer);
-    if (pid) { try { await stopGroup(pid); } catch (error) { failures.push(error); } }
-    collector.stdout.destroy(); collector.stderr.destroy();
+    options.signal?.removeEventListener("abort", aborted);
+    kill();
+    if (child.pid) { try { await stopGroup(child.pid, end); } catch (error) { failures.push(error); } }
+    try { await before(closed, end, `${program} client close`); } catch (error) { failures.push(error); }
+    child.stdout.destroy(); child.stderr.destroy(); child.unref();
   }
-  try { await writeFile(join(destination, "collector.json"), JSON.stringify({ pid, received,
-    truncated: received > 128 * 1024, failures: failures.map(describe) }, null, 2)); }
+  if (failures.length) throw new CaptureFailure(failures, child.pid, received);
+  return { pid: child.pid, output, received };
+}
+export async function receipt(path: string, value: unknown, deadline: number) {
+  await boundedCommand(process.execPath, ["--input-type=module", "-e",
+    "import {writeFileSync} from 'node:fs';writeFileSync(process.argv[1],process.argv[2],{mode:0o600})",
+    path, typeof value === "string" ? value : JSON.stringify(value, null, 2)], deadline, { env: { ...process.env, NODE_OPTIONS: undefined } });
+}
+export async function captureDiagnostics(directory: string, destination: string, container: string, deadline = now() + 3_000) {
+  const failures: unknown[] = [];
+  let pid: number | undefined, received = 0;
+  try {
+    const result = await boundedCommand(process.execPath, [fileURLToPath(import.meta.url), "--collect", directory, destination, container], deadline - 300);
+    pid = result.pid; received = result.received;
+  } catch (error) {
+    failures.push(error);
+    if (error instanceof CaptureFailure) { pid = error.pid; received = error.received; }
+  }
+  try { await receipt(join(destination, "collector.json"), { pid, received,
+    truncated: received > 128 * 1024, failures: failures.map(describe) }, deadline); }
   catch (error) { failures.push(error); }
   if (failures.length) throw new AggregateError(failures, failures.map(describe).join("\n"));
 }
@@ -130,31 +180,49 @@ async function collect(directory: string, destination: string, container: string
   if (failures.length) throw new AggregateError(failures, "Lifecycle SQL capture failed");
 }
 
+class CommandDeadline extends Error {
+  constructor() { super("Proof command exceeded its 20-minute deadline"); }
+}
+
 export async function captureCommand(log: string, program: string, args: string[]) {
-  let fd: number | undefined, retained = 0, received = 0;
+  let fd: number | undefined, retained = 0, received = 0, pid: number | undefined;
   const failures: string[] = [];
   const limit = 8 * 1024 * 1024;
+  type Termination = { kind: "signal"; signal: "SIGINT" | "SIGTERM"; deadline: number } | { kind: "deadline"; deadline: number };
+  const control: { termination: Termination | undefined; primary: unknown } = { termination: undefined, primary: undefined };
+  let force: NodeJS.Timeout | undefined, releaseTimer: NodeJS.Timeout | undefined;
+  let release: (result: { kind: "unknown" }) => void = () => {};
+  const abandoned = new Promise<{ kind: "unknown" }>(resolve => { release = resolve; });
+  function send(signal: NodeJS.Signals) {
+    try { if (pid) signalGroup(pid, signal); } catch (error) { failures.push(describe(error)); }
+  }
+  function terminate(reason: Termination) {
+    if (control.termination) return;
+    control.termination = reason;
+    control.primary ??= reason.kind === "deadline" ? new CommandDeadline() : new CommandFailure(program, { kind: "signalled", signal: reason.signal });
+    send(reason.kind === "signal" ? reason.signal : "SIGTERM");
+    force = setTimeout(() => send("SIGKILL"), Math.max(0, reason.deadline - now() - 700));
+    releaseTimer = setTimeout(() => release({ kind: "unknown" }), Math.max(0, reason.deadline - now() - 600));
+  }
+  const int = () => terminate({ kind: "signal", signal: "SIGINT", deadline: now() + 6_900 });
+  const term = () => terminate({ kind: "signal", signal: "SIGTERM", deadline: now() + 6_900 });
+  process.on("SIGINT", int); process.on("SIGTERM", term);
+  const commandTimer = setTimeout(() => terminate({ kind: "deadline", deadline: now() + 6_900 }), 20 * 60_000);
   try {
     fd = openSync(log, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     assert.ok(fstatSync(fd).isFile(), "Command log must be a regular file");
   } catch (error) { failures.push(describe(error)); }
   const child = spawn(program, args, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  pid = child.pid;
   const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
-  const result = new Promise<CommandResult>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve(signal ? { kind: "signalled", signal } : { kind: "exited", code: code ?? 1 }));
+  const result = new Promise<CommandResult>(resolve => {
+    child.once("error", error => { failures.push(describe(error)); resolve({ kind: "exited", code: 1 }); });
+    child.once("exit", (code, signal) => {
+      const outcome: CommandResult = signal ? { kind: "signalled", signal } : { kind: "exited", code: code ?? 1 };
+      if (outcome.kind !== "exited" || outcome.code !== 0) control.primary ??= new CommandFailure(program, outcome);
+      resolve(outcome);
+    });
   });
-  let interrupted: NodeJS.Signals | undefined;
-  let force: NodeJS.Timeout | undefined;
-  let interruptDeadline = 0;
-  function interrupt(signal: "SIGINT" | "SIGTERM") {
-    interrupted ??= signal;
-    interruptDeadline ||= Date.now() + 65_000;
-    if (child.pid) signalGroup(child.pid, signal);
-    force ??= setTimeout(() => { if (child.pid) signalGroup(child.pid, "SIGKILL"); }, 65_000);
-  }
-  const int = () => interrupt("SIGINT"), term = () => interrupt("SIGTERM");
-  process.on("SIGINT", int); process.on("SIGTERM", term);
   function drain(chunk: Buffer) {
     received += chunk.length;
     const keep = chunk.subarray(0, Math.max(0, limit - retained));
@@ -171,36 +239,32 @@ export async function captureCommand(log: string, program: string, args: string[
     }
   }
   child.stdout.on("data", drain); child.stderr.on("data", drain);
-  let outcome: CommandResult;
-  try { outcome = await result; }
-  catch (error) { failures.push(describe(error)); outcome = { kind: "exited", code: 1 }; }
+  const outcome = await Promise.race([result, abandoned]);
+  const deadline = control.termination?.deadline ?? now() + 3_000;
   try {
-    if (child.pid) {
+    if (pid) {
       try {
-        while (interrupted && Date.now() < interruptDeadline && await liveGroup(child.pid)) await delay(100);
-        await stopGroup(child.pid);
+        while (control.termination && now() < deadline - 700 && await before(liveGroup(pid), deadline - 500, "Command group inspection")) {
+          await delay(Math.min(40, Math.max(0, deadline - 700 - now())));
+        }
+        await stopGroup(pid, deadline - 400);
       } catch (error) { failures.push(describe(error)); }
     }
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([closed, new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Command streams did not close")), 2_000);
-      })]);
-    } catch (error) { failures.push(describe(error)); child.stdout.destroy(); child.stderr.destroy(); }
-    finally { clearTimeout(timer); }
+    try { await before(closed, deadline - 350, "Command streams"); }
+    catch (error) { failures.push(describe(error)); }
+    child.stdout.destroy(); child.stderr.destroy(); child.unref();
+    if (fd !== undefined) { try { closeSync(fd); } catch (error) { failures.push(describe(error)); } fd = undefined; }
+    const report = { pid, outcome, interrupted: control.termination?.kind === "signal" ? control.termination.signal : undefined,
+      deadlineExceeded: control.termination?.kind === "deadline", received, retained, truncated: received > retained, failures };
+    try { await receipt(log + ".result.json", report, deadline); }
+    catch (error) { failures.push(describe(error)); }
+    if (control.primary || failures.length) console.error(JSON.stringify(report));
   } finally {
-    if (force) clearTimeout(force);
+    clearTimeout(commandTimer); clearTimeout(force); clearTimeout(releaseTimer);
     process.off("SIGINT", int); process.off("SIGTERM", term);
-    if (fd !== undefined) { try { closeSync(fd); } catch (error) { failures.push(describe(error)); } }
+    child.stdout.destroy(); child.stderr.destroy(); child.unref();
   }
-  const report = { pid: child.pid, outcome, interrupted, received, retained, truncated: received > retained, failures };
-  try { await writeFile(log + ".result.json", JSON.stringify(report, null, 2), { mode: 0o600 }); }
-  catch (error) { failures.push(describe(error)); }
-  if (outcome.kind === "signalled" || outcome.code !== 0) {
-    console.error(JSON.stringify(report));
-    throw new CommandFailure(program, outcome);
-  }
-  if (interrupted) throw new CommandFailure(program, { kind: "signalled", signal: interrupted });
+  if (control.primary) throw control.primary;
   if (failures.length) throw new AggregateError(failures, "Command capture or cleanup failed");
 }
 

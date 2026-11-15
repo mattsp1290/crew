@@ -33,9 +33,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
-          timeout --signal=TERM --kill-after=90s 20m node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
+          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/tls.stdout.log" npm run test:temporal:tls
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
+      - name: Independently inspect probe resource absence
+        if: ${{ failure() || cancelled() }}
+        run: node tests/proof/lifecycle-probe-resources.mjs
       - name: Retain actual-service failure diagnostics
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4

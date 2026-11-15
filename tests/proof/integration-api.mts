@@ -8,55 +8,54 @@ import { createInterface } from "node:readline";
 import { CrewClient, CrewHttpError } from "@birbcrew/client";
 import { createCrewObserver } from "@birbcrew/client/agui";
 import { commands, pendingSchema } from "./member-commands.mts";
-import { services, until, type Engine } from "./member-services.mts";
+import { withServices, until, type Engine } from "./member-services.mts";
 import { startRestartFixtures } from "./proxy-restart-fixtures.mts";
 
 // Public HTTP boundary + real Temporal/SQL/native worker fixtures. No live inference.
 assert.equal(process.version, "v24.22.3");
-const s = await services();
-const ownerId = randomUUID(), token = randomUUID(), stranger = randomUUID();
-const config = join(s.directory, "gateway.json");
-await writeFile(config, JSON.stringify({ port: 0, tokenHashes: {
-  [createHash("sha256").update(token).digest("hex")]: ownerId,
-  [createHash("sha256").update(stranger).digest("hex")]: randomUUID(),
-} }), { mode: 0o600 });
-// The operator's price table, which the worker's supervisor reads at startup and applies to each
-// reported segment as it writes the segment's ledger row.
-const prices = join(s.directory, "prices.json");
-await writeFile(prices, JSON.stringify({ version: 1, unit: "usd-per-million-tokens", models: {
-  "claude-sonnet-4-6": { input: "3", output: "15" }, "gpt-5.4": { input: "1.25", cachedInput: "0.125", output: "10" },
-} }), { mode: 0o600 });
-s.env.BIRBCREW_USAGE_PRICES_PATH = prices;
-let endpoint = "";
-let client = new CrewClient({ baseUrl: "http://127.0.0.1", token });
-let stopGateway: (() => Promise<void>) | undefined;
-async function gateway() {
-  const child = spawn(process.execPath, ["src/service/gateway.ts", config], { env: s.env, stdio: ["ignore", "pipe", "inherit"] });
-  const exit = once(child, "exit");
-  const lines = createInterface({ input: child.stdout });
-  const url = await Promise.race([
-    once(lines, "line").then(([line]) => JSON.parse(line).url as string),
-    exit.then(() => { throw new Error("Gateway exited before listening"); }),
-  ]).finally(() => lines.close());
-  endpoint = url;
-  client = new CrewClient({ baseUrl: endpoint, token });
-  stopGateway = async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exit;
-  };
-}
-async function rawRequest(path: string, body?: unknown, auth = token) {
-  return fetch(endpoint + path, { method: body === undefined ? "GET" : "POST",
-    headers: { Authorization: "Bearer " + auth, "Content-Type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-}
-function observe(conversationId: string) {
-  const agent = createCrewObserver({ baseUrl: endpoint, token, conversationId });
-  const seen: string[] = [];
-  const done = agent.runAgent({}, { onEvent({ event }) { seen.push(event.type); } }).catch(() => undefined);
-  return { agent, seen, stop: async () => { agent.abortRun(); await agent.detachActiveRun(); await done; } };
-}
-try {
+await withServices({ label: "integration-api" }, async s => {
+  const ownerId = randomUUID(), token = randomUUID(), stranger = randomUUID();
+  const config = join(s.directory, "gateway.json");
+  await writeFile(config, JSON.stringify({ port: 0, tokenHashes: {
+    [createHash("sha256").update(token).digest("hex")]: ownerId,
+    [createHash("sha256").update(stranger).digest("hex")]: randomUUID(),
+  } }), { mode: 0o600 });
+  // The operator's price table, which the worker's supervisor reads at startup and applies to each
+  // reported segment as it writes the segment's ledger row.
+  const prices = join(s.directory, "prices.json");
+  await writeFile(prices, JSON.stringify({ version: 1, unit: "usd-per-million-tokens", models: {
+    "claude-sonnet-4-6": { input: "3", output: "15" }, "gpt-5.4": { input: "1.25", cachedInput: "0.125", output: "10" },
+  } }), { mode: 0o600 });
+  s.env.BIRBCREW_USAGE_PRICES_PATH = prices;
+  let endpoint = "";
+  let client = new CrewClient({ baseUrl: "http://127.0.0.1", token });
+  let stopGateway: (() => Promise<void>) | undefined;
+  async function gateway() {
+    const child = spawn(process.execPath, ["src/service/gateway.ts", config], { env: s.env, stdio: ["ignore", "pipe", "inherit"] });
+    const exit = once(child, "exit");
+    const lines = createInterface({ input: child.stdout });
+    const url = await Promise.race([
+      once(lines, "line").then(([line]) => JSON.parse(line).url as string),
+      exit.then(() => { throw new Error("Gateway exited before listening"); }),
+    ]).finally(() => lines.close());
+    endpoint = url;
+    client = new CrewClient({ baseUrl: endpoint, token });
+    stopGateway = async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await exit;
+    };
+  }
+  async function rawRequest(path: string, body?: unknown, auth = token) {
+    return fetch(endpoint + path, { method: body === undefined ? "GET" : "POST",
+      headers: { Authorization: "Bearer " + auth, "Content-Type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  }
+  function observe(conversationId: string) {
+    const agent = createCrewObserver({ baseUrl: endpoint, token, conversationId });
+    const seen: string[] = [];
+    const done = agent.runAgent({}, { onEvent({ event }) { seen.push(event.type); } }).catch(() => undefined);
+    return { agent, seen, stop: async () => { agent.abortRun(); await agent.detachActiveRun(); await done; } };
+  }
   const fixtures = await startRestartFixtures({ codexUsage: () => ({ input_tokens: 1000, input_tokens_details: { cached_tokens: 400 },
     output_tokens: 50, output_tokens_details: { reasoning_tokens: 10 }, total_tokens: 1050 }) });
   try {
@@ -194,5 +193,5 @@ try {
       }
     } finally { await stopGateway?.(); await stopWorker(); await stopTemporal(); }
   } finally { await fixtures.close(); }
-} finally { await s.close(); }
+});
 console.log("Versioned integration API proof passed with actual service fixtures; no live inference.");
