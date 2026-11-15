@@ -278,6 +278,31 @@ test('display IDs are unique within the reported generation (§6.2:707-713)', ()
   assert.equal(result.failure.stage, 'relationship');
 });
 
+for (const entry of [0, 1]) {
+  test(`successful displays rejects asleep entry ${entry} (Appendix A:25)`, () => {
+    const seed = fixture('displays.output.two-displays.json');
+    assert(Array.isArray(seed.displays));
+    const expected = Object.freeze({ requestId: 17 });
+    const control = boundary.displays(wrap('displays', seed), expected);
+    assert.equal(control.kind, 'ok');
+    assert(control.kind === 'ok');
+    assert.deepEqual(wireDisplays(control.value), seed);
+    const received = { ...seed, displays: seed.displays.map((display, index) => index === entry ? { ...object(display), asleep: true } : display) };
+    const result = boundary.displays(wrap('displays', received), expected);
+    assert.equal(result.kind, 'rejected');
+    assert(result.kind === 'rejected');
+    assert.equal(result.failure.stage, 'relationship');
+  });
+}
+
+test('display_asleep remains a valid displays refusal (Appendix A:25)', () => {
+  const wire = { code: 'display_asleep', state: 'display_asleep', message: 'The display is asleep.' };
+  const result = boundary.displays(wrap('displays', wire), { requestId: 17 });
+  assert.equal(result.kind, 'tool-error');
+  assert(result.kind === 'tool-error');
+  assert.deepEqual(wireError(result.error), wire);
+});
+
 test('different display IDs do not require different UUIDs (§6.2:707-713)', () => {
   const original = fixture('displays.output.two-displays.json');
   assert(Array.isArray(original.displays));
@@ -831,7 +856,7 @@ for (const { name, source, reason } of [
 
 test('separately compiled negative callers reject each forbidden type use', () => {
   const filename = join(root, 'tests/service/deskhand-results.types.ts');
-  const prelude = `import type { FramePoint, GlobalPoint, OperationId, FrameId, KeyboardCompletion, ToolError, OperationRecord, ScreenshotObservation, ResultBoundary } from '../../src/service/deskhand/contract.ts';
+  const prelude = `import type { FramePoint, GlobalPoint, OperationId, FrameId, KeyboardCompletion, ToolError, OperationRecord, ScreenshotObservation, ResultBoundary, Display } from '../../src/service/deskhand/contract.ts';
 declare const global: GlobalPoint;
 declare const operation: OperationId;
 declare const keyboard: KeyboardCompletion;
@@ -841,6 +866,7 @@ declare const metadata: ScreenshotObservation;
 declare const boundary: ResultBoundary;
 `;
   const failures = [
+    "const sleeping: Display['asleep'] = true;",
     'const point: FramePoint = global;',
     'const frame: FrameId = operation;',
     'const point: GlobalPoint = keyboard.measured.globalPoint;',
