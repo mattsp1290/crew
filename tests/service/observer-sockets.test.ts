@@ -5,10 +5,14 @@ import { connect, createServer, type Socket } from "node:net";
 import test from "node:test";
 import { Pool } from "pg";
 import { readEvents } from "../../src/service/observation.ts";
+import { MemberStore } from "../../src/service/store.ts";
 
 for (const mode of ["setup-silence", "select-silence", "commit-silence", "select-disconnect"]) {
   test(`ledger read discards its client and recovers after ${mode}`, { timeout: 15_000 }, async (t) => {
     const target = new URL(process.env.BIRBCREW_TEST_DATABASE_URL!);
+    const source = new Pool({ connectionString: target.href });
+    try { await new MemberStore(source).migrate(); }
+    finally { await source.end(); }
     let drop = false, triggered = false;
     const sockets = new Set<Socket>();
     const marker = Buffer.from(mode === "setup-silence" ? "BEGIN READ ONLY" : mode === "commit-silence" ? "COMMIT" : "SELECT e.cursor,e.event");
