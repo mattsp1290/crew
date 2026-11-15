@@ -579,12 +579,15 @@ function errorSemantics(wire: Record<string, unknown>, tool: ToolName, expected?
   const input = tool === 'pointer' || tool === 'keyboard';
   requireFact(input || ['operation_id', 'operation', 'replayed', 'current_state', 'measured'].every((key) => !Object.hasOwn(wire, key)), 'schema', 'relationship');
   const admitted = Object.hasOwn(wire, 'replayed');
-  if (!admitted && Object.hasOwn(wire, 'operation')) {
+  if (!admitted) {
     switch (code) {
       case 'cleanup_pending': case 'lease_held_by_other': case 'lease_expired': case 'lease_not_held':
       case 'rate_limited': case 'operation_capacity': case 'stale_frame': case 'out_of_frame':
       case 'user_active': case 'denied_shortcut': case 'denied_app': case 'log_unavailable':
-        throw new BoundaryFailure('schema', 'relationship');
+        requireFact(!Object.hasOwn(wire, 'operation') && (!input || Object.hasOwn(wire, 'operation_id')), 'schema', 'relationship');
+        break;
+      case 'busy':
+        requireFact(!input || Object.hasOwn(wire, 'operation_id'), 'schema', 'relationship');
     }
   }
   if (code === 'stale_frame') {
@@ -702,7 +705,8 @@ export function createResultBoundary(configuration: BoundaryContext): ResultBoun
           error.code === 'stale_frame' && error.details.reason === 'pixels_changed' || error.code === 'denied_app'
           ? error.details.pointIndex : undefined;
         if (pointIndex !== undefined) requireFact(expected.action === 'target' ? pointIndex === 0 : pointIndex < vocabulary.maxDragPoints, 'schema', 'relationship');
-        if (error.code === 'denied_app' && error.details.pointIndex !== undefined) requireFact(error.measured.value.globalPoint !== null, 'schema', 'relationship');
+        if (error.code === 'denied_app' && error.details.pointIndex !== undefined) requireFact(
+          error.measured.value.globalPoint !== null && error.measured.value.target !== null, 'schema', 'relationship');
         return { kind: 'tool-error', error };
       }
       return { kind: 'ok', value: { ...completionFacts(result.wire, expected), measured: pointerMeasurement(result.wire.measured, expected.action) } };
