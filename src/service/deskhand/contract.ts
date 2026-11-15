@@ -492,6 +492,8 @@ function errorVariants<M>(wire: Record<string, unknown>, measured: Presence<M>):
     case 'out_of_frame': {
       const details = diagnostics(wire.details);
       requireFact(details.pointIndex !== undefined && details.outputPixels !== undefined);
+      requireFact(details.outputPixels.width <= vocabulary.maxWidth && details.outputPixels.height <= vocabulary.maxHeight &&
+        details.outputPixels.width * details.outputPixels.height <= vocabulary.maxPixels, 'image-metadata', 'relationship');
       return { ...facts, code, details: { ...details, pointIndex: details.pointIndex, outputPixels: details.outputPixels } };
     }
     case 'image_too_large': {
@@ -700,6 +702,7 @@ export function createResultBoundary(configuration: BoundaryContext): ResultBoun
           error.code === 'stale_frame' && error.details.reason === 'pixels_changed' || error.code === 'denied_app'
           ? error.details.pointIndex : undefined;
         if (pointIndex !== undefined) requireFact(expected.action === 'target' ? pointIndex === 0 : pointIndex < vocabulary.maxDragPoints, 'schema', 'relationship');
+        if (error.code === 'denied_app' && error.details.pointIndex !== undefined) requireFact(error.measured.value.globalPoint !== null, 'schema', 'relationship');
         return { kind: 'tool-error', error };
       }
       return { kind: 'ok', value: { ...completionFacts(result.wire, expected), measured: pointerMeasurement(result.wire.measured, expected.action) } };
