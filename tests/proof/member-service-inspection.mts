@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { before, boundedCommand, describe, now } from "./member-service-diagnostics.mts";
 import { parseProcess, processKey, type PositiveGroupProcess, type RawProcess } from "./member-service-processes.mts";
-import { atomicReceipt, missingProcess, ownershipSchema, readContractFixture, readContractRoots, readRecoveryReports,
-  regularFile, reportPath, retainedProcesses } from "./member-service-recovery.mts";
+import { assertContractHistory, atomicReceipt, missingProcess, ownershipSchema, readContractFixture, readContractRoots, readRecoveryReports,
+  regularFile, reportPath, retainedProcesses, type ContractRoot } from "./member-service-recovery.mts";
 
 type Observation = { status: "absent" } | { status: "present"; evidence: string } | { status: "unknown"; reason: string };
 type ContractObservation = { directory: string; worker: Observation; owner: Observation;
@@ -80,6 +80,7 @@ export async function inspectContracts(root: string, conclusion: string, deadlin
     completed: false, observations: [], failures: [] };
   const path = await reportPath(root, "ci-inspection", report);
   try {
+    let first: ContractRoot[] | undefined;
     for (let round = 0; round < 2; round++) {
       if (round) await before(delay(500), deadline - 500, "Independent observation spacing");
       const sample: InspectionSample = { observedAt: new Date().toISOString(), roots: [], failures: [] };
@@ -88,6 +89,11 @@ export async function inspectContracts(root: string, conclusion: string, deadlin
       const discovered = await readContractRoots(root, deadline - 500);
       sample.failures.push(...discovered.failures);
       const previous = await readRecoveryReports(root, deadline - 500);
+      assertContractHistory(discovered.roots, previous.flatMap(report => report.roots));
+      if (first) {
+        assertContractHistory(discovered.roots, first);
+        assertContractHistory(first, discovered.roots);
+      } else first = discovered.roots;
       let table: RawProcess[] | undefined;
       try { table = await processTable(deadline - 500); }
       catch (error) { sample.failures.push(describe(error)); }

@@ -1,4 +1,5 @@
 import "./member-service-processes.test.mts";
+import "./member-service-contract-history.test.mts";
 import "./member-service-recovery.test.mts";
 import "./member-service-recovery.history.test.mts";
 import "./member-service-recovery.lifecycle.test.mts";

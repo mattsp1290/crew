@@ -89,11 +89,37 @@ export type Recovery = z.infer<typeof recoverySchema>;
 const rootRecoverySchema = contractRootSchema.extend({ fixture: fixtureAuthoritySchema, worker: absenceSchema,
   owner: z.enum(["absent", "unknown", "not-requested"]), observed: z.array(positiveGroupProcessSchema),
   originals: z.object({ before: z.array(receiptStateSchema), after: z.array(receiptStateSchema) }),
-  recovery: recoverySchema, failures: z.array(z.string()) }).strict();
+  recovery: recoverySchema, failures: z.array(z.string()) }).strict()
+  .refine(root => root.run.launch.kind === "requested" || (root.fixture.kind !== "known" && root.observed.length === 0),
+    "Non-requested contract has fixture authority or retained descendants");
 export const contractRecoveryReportSchema = z.object({ version: z.literal(1), kind: z.literal("contract-recovery"),
   conclusion: z.string(), started: z.string(), completed: z.boolean(), roots: z.array(rootRecoverySchema),
   failures: z.array(z.string()) }).strict();
 export type ContractRecoveryReport = z.infer<typeof contractRecoveryReportSchema>;
+
+export function assertContractHistory(current: readonly ContractRoot[], prior: readonly ContractRoot[]): void {
+  const directories = new Map<string, ContractRoot>(), groups = new Map<string, number>();
+  for (const contract of current) {
+    const worker = contract.run.worker, key = processKey(worker), duplicate = directories.get(contract.directory);
+    if (duplicate) {
+      assert.equal(processKey(duplicate.run.worker), key, contract.directory + ": Conflicting current worker authority");
+      assert.equal(duplicate.run.worker.group, worker.group, contract.directory + ": Conflicting current worker group");
+      assert.equal(duplicate.run.launch.kind, contract.run.launch.kind, contract.directory + ": Conflicting current launch authority");
+    }
+    const group = groups.get(key);
+    assert.ok(group === undefined || group === worker.group, `Worker ${key}: Conflicting worker group authority`);
+    groups.set(key, worker.group);
+    directories.set(contract.directory, contract);
+  }
+  for (const previous of prior) {
+    const contract = directories.get(previous.directory);
+    assert.ok(contract, previous.directory + ": Previously acknowledged contract root missing");
+    assert.equal(processKey(contract.run.worker), processKey(previous.run.worker), previous.directory + ": Prior contract worker authority changed");
+    assert.equal(contract.run.worker.group, previous.run.worker.group, previous.directory + ": Prior contract worker group changed");
+    assert.ok(previous.run.launch.kind !== "requested" || contract.run.launch.kind === "requested",
+      previous.directory + ": Contract launch authority regressed");
+  }
+}
 
 export function atomicReceipt(path: string, value: unknown, options: { immutable?: boolean } = {}) {
   const temporary = path + "." + randomUUID() + ".tmp";
@@ -271,9 +297,6 @@ export function retainedProcesses(reports: readonly ContractRecoveryReport[], co
   }
   for (const report of reports) for (const previous of report.roots) {
     if (previous.directory !== contract.directory) continue;
-    assert.equal(processKey(previous.run.worker), processKey(contract.run.worker), "Prior contract worker authority changed");
-    assert.equal(previous.run.worker.group, contract.run.worker.group, "Prior contract worker group changed");
-    assert.ok(previous.run.launch.kind !== "requested" || contract.run.launch.kind === "requested", "Contract launch authority regressed");
     if (previous.fixture.kind !== "known") {
       assert.equal(previous.observed.length, 0, "Prior descendants have no fixture authority");
       continue;
@@ -356,6 +379,8 @@ export async function recoverContracts(root: string, conclusion: string, deadlin
     const previous = await readRecoveryReports(root, deadline);
     const first = await readContractRoots(root, deadline - 500);
     report.failures.push(...first.failures);
+    const priorRoots = previous.flatMap(report => report.roots);
+    assertContractHistory(first.roots, priorRoots);
     async function record(contract: ContractRoot): Promise<z.infer<typeof rootRecoverySchema>> {
       let fixture: z.infer<typeof fixtureAuthoritySchema>;
       if (contract.run.launch.kind === "not-requested") fixture = { kind: "not-requested" };
@@ -370,16 +395,10 @@ export async function recoverContracts(root: string, conclusion: string, deadlin
     for (const contract of first.roots) report.roots.push(await record(contract));
     persist();
     const protectedPids = await protectedProcesses(deadline - 500);
-    const workers = new Map<string, PositiveGroupProcess>(), conflicts = new Set<string>();
-    for (const { run: { worker } } of first.roots) {
-      const key = processKey(worker), prior = workers.get(key);
-      if (prior && prior.group !== worker.group) conflicts.add(key);
-      workers.set(key, worker);
-    }
+    const workers = new Map(first.roots.map(({ run: { worker } }) => [processKey(worker), worker]));
     const stopped = new Set<string>();
     await Promise.all([...workers].map(async ([key, worker]) => {
       try {
-        assert.ok(!conflicts.has(key), "Conflicting worker group authority");
         await stopExact(worker, protectedPids, Math.min(deadline - 10_000, now() + 7_000));
         stopped.add(key);
       }
@@ -387,15 +406,9 @@ export async function recoverContracts(root: string, conclusion: string, deadlin
     }));
     const second = await readContractRoots(root, deadline - 500);
     report.failures.push(...second.failures);
+    assertContractHistory(second.roots, [...first.roots, ...priorRoots]);
     const roots = new Map(first.roots.map(contract => [contract.directory, contract]));
-    for (const contract of second.roots) {
-      const initial = roots.get(contract.directory);
-      if (initial && (processKey(initial.run.worker) !== processKey(contract.run.worker) || initial.run.worker.group !== contract.run.worker.group)) {
-        report.failures.push(contract.directory + ": Contract worker authority changed during quiescence");
-        stopped.delete(processKey(contract.run.worker));
-      }
-      roots.set(contract.directory, contract);
-    }
+    for (const contract of second.roots) roots.set(contract.directory, contract);
     const originalRecords = new Map(report.roots.map(result => [result.directory, result]));
     report.roots = [];
     for (const contract of roots.values()) {
