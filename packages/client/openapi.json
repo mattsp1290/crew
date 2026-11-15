@@ -94,6 +94,87 @@
           "profile": {
             "type": "string"
           },
+          "subagents": {
+            "default": {
+              "mode": "legacy",
+              "targets": []
+            },
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "legacy",
+                  "named"
+                ]
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "analyst",
+                        "recorder"
+                      ]
+                    },
+                    "engine": {
+                      "type": "string",
+                      "enum": [
+                        "pi",
+                        "claude",
+                        "codex"
+                      ]
+                    },
+                    "profile": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "providerHost": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "accountDigest": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "availability": {
+                      "type": "string",
+                      "enum": [
+                        "executable",
+                        "unsupported_engine",
+                        "removed"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "role",
+                    "engine",
+                    "profile",
+                    "model",
+                    "providerHost",
+                    "accountDigest",
+                    "availability"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "mode",
+              "targets"
+            ],
+            "additionalProperties": false
+          },
           "instructions": {
             "$ref": "#/components/schemas/InstructionsSummary"
           },

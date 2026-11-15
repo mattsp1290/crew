@@ -1,3 +1,4 @@
+import { testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -39,7 +40,7 @@ const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
 const pool = new Pool({ connectionString: url });
 const store = new MemberStore(pool);
-const consumerDatabase = "integration_consumer_" + randomUUID().replaceAll("-", "");
+const consumerDatabase = testDatabaseName("integration_consumer_");
 const consumerUrl = new URL(url); consumerUrl.pathname = "/" + consumerDatabase;
 const consumerPool = new Pool({ connectionString: consumerUrl.toString() });
 let consumerCreated = false;
@@ -615,8 +616,8 @@ test("v1 listings page an owner's members and conversations without gaps, duplic
     return { rows, sizes };
   }
 
-  const expectedMembers = [{ memberId: first, engine: "pi", profile: "fixture-v1" },
-    { memberId: second.memberId, engine: "claude", profile: "fixture-claude" }].sort((a, b) => a.memberId < b.memberId ? -1 : 1);
+  const expectedMembers = [{ memberId: first, engine: "pi", profile: "fixture-v1", subagents: { mode: "legacy", targets: [] } },
+    { memberId: second.memberId, engine: "claude", profile: "fixture-claude", subagents: { mode: "legacy", targets: [] } }].sort((a, b) => a.memberId < b.memberId ? -1 : 1);
   assert.deepEqual((await all("/v1/members", "members")).rows, expectedMembers);
   const members = await all("/v1/members?limit=1", "members");
   assert.deepEqual(members.sizes, [1, 1], "an exactly full final page reports no next cursor");

@@ -1,3 +1,4 @@
+import { testDatabaseName } from "./database-fixtures.ts";
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {mkdir,mkdtemp,readFile,writeFile,rm,cp} from 'node:fs/promises';
@@ -44,7 +45,7 @@ function deferrer(context:TestContext) {
  return (step:()=>Promise<unknown>)=>{steps.push(step);};
 }
 async function database(defer:ReturnType<typeof deferrer>) {
- const name='recovery_'+randomUUID().replaceAll('-','');
+ const name=testDatabaseName('recovery_');
  await admin.query(`CREATE DATABASE ${name}`);
  // Not FORCE: end() resolves before its connections close, and terminating one then is an unhandled pool
  // error. A plain DROP waits up to 5 s for those sessions to exit, and fails loudly on a real leak.
@@ -785,4 +786,49 @@ test('bundle directory fsync failure cannot record a successful or transferable 
  assert.equal((await t.recovery.status()).latest,null);
  const manifest=await readRecoveryManifest(t.bundle);
  await assert.rejects(t.fence.transfer(manifest.installation,manifest.sourceInstance,randomUUID(),manifest.generation),/overlap/);
+});
+
+test('restoring an older snapshot retires named roles atomically after reconciliation and preserves recorded child identity',async context=>{
+ const t=await setup(context);
+ const {ChildStore}=await import('../../src/service/children.ts');
+ const {withNativeAdmission}=await import('../../src/service/native-admission.ts');
+ const {fixedRoles}=await import('@birbcrew/pi-subagents');
+ const account='a'.repeat(64),destination={engine:'pi',profile:'target',model:'fixture',providerHost:'fixture.invalid',accountDigest:account};
+ await t.pool.query("INSERT INTO birbcrew_ts.profiles(name,engine,account_digest) VALUES('target','pi',decode($1,'hex'))",[account]);
+ await t.pool.query(`INSERT INTO birbcrew_ts.profiles(name,engine,account_digest,delegate_task,child_target_seal,child_target_active)
+  VALUES('parent','pi',decode($1,'hex'),true,$2,ARRAY['analyst'])`,[account,{mode:'named',roles:{analyst:destination}}]);
+ const request={ownerId:'owner',requestId:randomUUID(),engine:'pi' as const,profile:'parent'};
+ const member=await t.store.spawn(request),conversationId=randomUUID(),requestId=randomUUID();
+ await t.store.openConversation({ownerId:'owner',memberId:member.memberId,conversationId});
+ const turn=await t.store.beginTurn({ownerId:'owner',conversationId,requestId,text:'delegate'});
+ if(turn.kind!=='start') throw Error('Expected started parent');
+ const [child]=await new ChildStore(t.pool).delegate(turn.conversation,requestId,turn.token,[{
+  nativeCallId:'restore-call',task:'private child',profile:{role:'analyst',version:1,...fixedRoles.analyst,model:'parent-model'},
+ }],{version:1,engine:'pi',state:{}});
+ const identity=(await t.pool.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile;
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ await t.recovery.resume(t.hooks);
+ await t.pool.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE name='parent'");
+ await t.recovery.holdForRestore(manifest.generation,t.hooks);
+ const restored=await restoreBundle(t),recovery=new InstallationRecovery(restored,t.fence);
+ await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ const active=async()=>(await restored.query("SELECT child_target_active FROM birbcrew_ts.profiles WHERE name='parent'")).rows[0].child_target_active;
+ assert.deepEqual(await active(),['analyst'],'the backup cannot retain an unknown later removal');
+ let providerCalls=0;
+ const launch={...child,text:'private child',token:randomUUID(),execution:{workflowRunId:randomUUID(),activityId:'child',attempt:1}};
+ await assert.rejects(withNativeAdmission(restored,launch,context.signal,async()=>{providerCalls++;}),/held for recovery/);
+ assert.equal(providerCalls,0);
+ await assert.rejects(recovery.resume({reconcile:async()=>{throw Error('reconcile first');}},manifest),/reconcile first/);
+ assert.deepEqual(await active(),['analyst']);
+ assert.equal((await recovery.status()).control.phase,'restored');
+ await recovery.resume(t.hooks,manifest);
+ assert.deepEqual(await active(),[]);
+ assert.deepEqual((await restored.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile,identity);
+ const replay=await new MemberStore(restored).spawn(request);
+ assert.equal(replay.subagents.targets[0].availability,'removed');
+ assert.deepEqual((await new MemberStore(restored).spawn({...request,requestId:randomUUID()})).subagents,{mode:'named',targets:[]});
+ const started=await new ChildStore(restored).begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1});
+ assert.equal(started.kind,'start','recorded child still follows normal post-reconciliation admission');
+ await assert.rejects(restored.query("UPDATE birbcrew_ts.profiles SET child_target_active=ARRAY['analyst'] WHERE name='parent'"),{code:'23514'});
 });

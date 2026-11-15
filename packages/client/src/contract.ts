@@ -185,10 +185,19 @@ export const instructionsSummarySchema = z.object({
   bytes: z.int().nonnegative(),
   digest: z.string().regex(/^[0-9a-f]{64}$/),
 });
+export const memberSubagentsSchema = z.strictObject({
+  mode: z.enum(["legacy", "named"]),
+  targets: z.array(z.strictObject({
+    role: z.enum(["analyst", "recorder"]), engine: engineSchema, profile: z.string().min(1).max(128),
+    model: z.string().min(1).max(256), providerHost: z.string().min(1).max(512), accountDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    availability: z.enum(["executable", "unsupported_engine", "removed"]),
+  })),
+});
 export const memberSchema = z.object({
   memberId: z.uuid(),
   engine: engineSchema,
   profile: z.string(),
+  subagents: memberSubagentsSchema.default({ mode: "legacy", targets: [] }),
   instructions: instructionsSummarySchema.optional(),
   instructionPacks: instructionPackIds.optional(),
 });

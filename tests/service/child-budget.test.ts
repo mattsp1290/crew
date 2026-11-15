@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { fixedRoles } from "@birbcrew/pi-subagents";
 import { Pool } from "pg";
 import { ChildStore, type ChildKey } from "../../src/service/children.ts";
 import { ApprovalStore } from "../../src/service/approvals.ts";
@@ -13,6 +14,7 @@ const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
 const pool = new Pool({ connectionString: url });
 const store = new MemberStore(pool), children = new ChildStore(pool), ledger = new ApprovalStore(pool), usage = new UsageApi(store);
+const namedProfile = "budget-named-" + randomUUID();
 const profile = "budget-parent-" + randomUUID(), targetProfile = "budget-target-" + randomUUID();
 const checkpoint = { version: 1, engine: "pi", state: {} };
 const execution = () => ({ workflowRunId: randomUUID(), activityId: "child", attempt: 1 });
@@ -20,12 +22,16 @@ before(async () => {
   await store.migrate();
   await pool.query(`INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,delegate_task,protected_tool)
     SELECT unnest($1::text[]),'pi',decode($2,'hex'),true,'record_work_item'`, [[profile, targetProfile], "00".repeat(32)]);
+  const destination = { engine: "pi", profile: targetProfile, model: "fixture", providerHost: "fixture.local", accountDigest: "00".repeat(32) };
+  await pool.query(`INSERT INTO birbcrew_ts.profiles(name,engine,account_digest,delegate_task,protected_tool,child_target_seal,child_target_active)
+    VALUES($1,'pi',decode($2,'hex'),true,'record_work_item',$3,ARRAY['analyst','recorder'])`,
+    [namedProfile, "00".repeat(32), { mode: "named", roles: { analyst: destination, recorder: destination } }]);
 });
 after(() => pool.end());
 
 async function parent(initiator?: { kind: "routine" | "handoff"; id: string }) {
   const ownerId = "owner-" + randomUUID();
-  const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: initiator ? namedProfile : profile });
   const conversationId = randomUUID();
   await store.openConversation({ ownerId, memberId, conversationId });
   const request = { ownerId, conversationId, requestId: randomUUID(), text: "private parent task" };
@@ -36,10 +42,9 @@ async function parent(initiator?: { kind: "routine" | "handoff"; id: string }) {
   const turn = await store.beginTurn(request, exec);
   assert.equal(turn.kind, "start");
   if (turn.kind !== "start") throw new Error("Expected a parent start");
-  const delegate = (roles: ("analyst" | "recorder")[] = ["analyst"], targeted = false) => children.delegate(turn.conversation,
+  const delegate = (roles: ("analyst" | "recorder")[] = ["analyst"]) => children.delegate(turn.conversation,
     request.requestId, turn.token, roles.map(role => ({ nativeCallId: "call_" + randomUUID(), task: "private child task",
-      profile: { role, version: 1, instructions: "private child instructions", model: "fixture", tools: role === "recorder" ? ["record_work_item"] : [],
-        ...(targeted && { target: { engine: "pi", profile: targetProfile } }) } })), checkpoint);
+      profile: { role, version: 1, instructions: fixedRoles[role].instructions, model: "fixture", tools: role === "recorder" ? ["record_work_item"] : [] } })), checkpoint);
   await pool.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, request.requestId, turn.token, exec.workflowRunId, exec.activityId]);
   const spend = () => recordSegmentUsage(pool, { ...request, token: turn.token, execution: exec }, {
@@ -69,7 +74,7 @@ async function start(key: ChildKey, exec = execution()) {
 for (const kind of ["routine", "handoff"] as const) test(`child audit uses stored targets and the parent's ${kind} initiator`, async () => {
   const initiator = { kind, id: randomUUID() };
   const p = await parent(initiator);
-  const keys = await p.delegate(["analyst", "recorder"], true);
+  const keys = await p.delegate(["analyst", "recorder"]);
   for (const key of keys) {
     const admitted = await start({ ...key, target: { engine: "codex", profile: "forged" } });
     const result = { text: "private child reply", checkpoint };

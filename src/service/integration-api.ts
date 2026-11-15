@@ -1,3 +1,4 @@
+import { memberSubagents } from "./child-target.ts";
 import { z } from "zod";
 import { serverRequestReceiptSchema, type ServerRequestReceipt } from "@birbcrew/client/contract";
 import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
@@ -189,17 +190,18 @@ export class IntegrationApi {
   async listMembers(ownerId: string, query: unknown) {
     const { limit, after } = memberListQuery.parse(query);
     const { rows } = await this.store.pool.query<{ memberId: string; engine: Engine; profile: string; instructions: InstructionsSummary | null;
-      instructionPacks: string[] | null }>(
-      `SELECT m.member_id AS "memberId",m.engine,m.profile,
+      instructionPacks: string[] | null; consent: unknown; seal: unknown; active: string[] | null }>(
+      `SELECT m.member_id AS "memberId",m.engine,m.profile,m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active,
          CASE WHEN i.member_id IS NOT NULL THEN ${instructionsSummarySql} END AS instructions,
          (SELECT array_agg(a.pack_id::text ORDER BY a.position) FROM birbcrew_ts.member_instruction_packs a
            WHERE a.owner_id=m.owner_id AND a.member_id=m.member_id) AS "instructionPacks"
-       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.member_instructions i ON i.owner_id=m.owner_id AND i.member_id=m.member_id
+       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
+       LEFT JOIN birbcrew_ts.member_instructions i ON i.owner_id=m.owner_id AND i.member_id=m.member_id
        WHERE m.owner_id=$1 AND ($2::uuid IS NULL OR m.member_id>$2) ORDER BY m.member_id LIMIT $3`,
       [ownerId, after ?? null, limit + 1]);
     const { items, next } = page("member", rows, limit, row => row.memberId);
     // Never the text: only GET /v1/members/{memberId}/instructions returns it. Pack IDs, in order.
-    const members = items.map(({ instructions, instructionPacks, ...member }) => ({ ...member, ...(instructions ? { instructions } : {}),
+    const members = items.map(({ instructions, instructionPacks, consent, seal, active, ...member }) => ({ ...member, subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
       ...(instructionPacks ? { instructionPacks } : {}) }));
     return { apiVersion: "1" as const, members, next };
   }
