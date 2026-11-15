@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ export async function until<T>(check: () => Promise<T | undefined>, label: strin
   throw new Error("Timed out waiting for " + label);
 }
 type Outcome = { kind: "passed" } | { kind: "failed"; error: unknown };
-type OwnedProcess = { pid: number; result: Promise<CommandResult>; stop: (deadline?: number) => Promise<void>; log: string };
+type OwnedProcess = { pid: number; identity: { kind: "pending" } | { kind: "known"; group: number; startTime: string }; result: Promise<CommandResult>; stop: (deadline?: number) => Promise<void>; log: string };
 
 const active = new Map<object, (error: CommandFailure) => Promise<void>>();
 let interruption: CommandFailure | undefined;
@@ -71,10 +71,18 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
   let state: { kind: "open" } | { kind: "closing"; done: Promise<void>; deadline: number } = { kind: "open" };
   let first: Outcome | undefined;
   let proof: Promise<void> | undefined;
-  let allocation: Promise<unknown> | undefined;
-  let allocated = false;
+  let allocation: ReturnType<typeof boundedCommand> | undefined;
+  let allocationState: { kind: "not-started" } | { kind: "pending" } | { kind: "settled"; container: string } = { kind: "not-started" };
   let gatewayNumber = 0;
   const failures: unknown[] = [];
+  function publishOwnership() {
+    const path = join(artifacts, "ownership.json");
+    writeFileSync(path + ".tmp", JSON.stringify({ label, directory, container: db, allocation: allocationState,
+      processes: processes.map(({ pid, identity, log }) => ({ pid, identity, log })) }), { mode: 0o600 });
+    renameSync(path + ".tmp", path);
+  }
+  writeFileSync(join(directory, ".fixture-owner"), db, { mode: 0o600 });
+  publishOwnership();
   function ensureOpen() { assert.equal(state.kind, "open", "Fixture is closing"); }
   async function start(program: string, args: string[], options: NodeJS.ProcessEnv, log: string) {
     ensureOpen();
@@ -97,8 +105,15 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
           await before(result, deadline, `Owned process ${pid} exit`);
         })();
       }
-      owned = { pid, result, stop, log };
+      owned = { pid, identity: { kind: "pending" }, result, stop, log };
       processes.push(owned);
+      const fields = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const parts = fields.slice(fields.lastIndexOf(")") + 2).split(" ");
+      const group = Number(parts[2]), startTime = parts[19];
+      assert.equal(group, pid, "Owned child must lead its detached process group");
+      assert.ok(startTime && /^\d+$/.test(startTime), "Owned child has no start identity");
+      owned.identity = { kind: "known", group, startTime };
+      publishOwnership();
     } finally { await file.close(); }
     return owned;
   }
@@ -124,9 +139,9 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
     }
     if (failure) throw failure;
   }
-  async function gateway(configuration: string) {
+  async function gateway(configuration: string, options = env) {
     const log = `gateway-${++gatewayNumber}.log`;
-    const proc = await start(process.execPath, ["src/service/gateway.ts", configuration], env, log);
+    const proc = await start(process.execPath, ["src/service/gateway.ts", configuration], options, log);
     const url = await Promise.race([
       until(async () => {
         ensureOpen();
@@ -167,8 +182,7 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
       controller.abort();
       try {
         await Promise.all([
-          attempt(() => receipt(join(artifacts, "ownership.json"), { label, directory, container: db,
-            processes: processes.map(({ pid, log }) => ({ pid, log })) }, deadline - 4_900)),
+          attempt(async () => publishOwnership()),
           attempt(() => persistFailure(deadline - 4_900)),
         ]);
         await Promise.all([
@@ -185,11 +199,14 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
             await boundedCommand("docker", ["rm", "-f", db], deadline - 1_200);
             const { output } = await boundedCommand("docker", ["ps", "-aq", "--filter", "name=^/" + db + "$"], deadline - 700);
             assert.equal(output.trim(), "", "Owned PostgreSQL container remained after removal");
-            assert.ok(!allocation || allocated, "Docker allocation was interrupted; daemon allocation completion unknown");
+            assert.notEqual(allocationState.kind, "pending", "Docker allocation was interrupted; daemon allocation completion unknown");
             resources.container = "absent";
           }),
           attempt(async () => {
-            await boundedCommand("rm", ["-rf", "--", directory], deadline - 800);
+            await boundedCommand(process.execPath, ["--input-type=module", "-e",
+              "import {readdirSync,unlinkSync,rmdirSync} from 'node:fs';import {join} from 'node:path';import {execFileSync} from 'node:child_process';" +
+              "const root=process.argv[1],marker=join(root,'.fixture-owner'),entries=readdirSync(root).filter(name=>name!=='.fixture-owner').map(name=>join(root,name));" +
+              "if(entries.length)execFileSync('rm',['-rf','--',...entries],{stdio:'inherit'});unlinkSync(marker);rmdirSync(root)", directory], deadline - 800);
             await boundedCommand(process.execPath, ["--input-type=module", "-e",
               "import {lstatSync} from 'node:fs';try{lstatSync(process.argv[1]);process.exitCode=1}catch(e){if(e.code!=='ENOENT')throw e}", directory], deadline - 700);
             resources.directory = "absent";
@@ -244,13 +261,14 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
     const cliVersion = await run(temporal, ["--version"], { timeout: 5_000, killSignal: "SIGKILL" });
     assert.match(cliVersion.stdout, /^temporal version 1\.10\.0\b/);
     ensureOpen();
-    await receipt(join(artifacts, "ownership.json"), { label, directory, container: db, processes: [] }, now() + 1_000);
-    ensureOpen();
-    allocation = boundedCommand("docker", ["run", "--rm", "--name", db, "-d", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=birbcrew_ts",
+    allocationState = { kind: "pending" };
+    publishOwnership();
+    allocation = boundedCommand("docker", ["run", "--rm", "--name", db, "--label", "birb-proof-owner=" + db, "-d", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=birbcrew_ts",
       "-p", "127.0.0.1::5432", "postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"],
       now() + 30_000, { env: { ...process.env, POSTGRES_PASSWORD: password }, signal: controller.signal });
-    await allocation;
-    allocated = true;
+    const allocated = await allocation;
+    allocationState = { kind: "settled", container: z.string().regex(/^[a-f0-9]{64}$/).parse(allocated.output.trim()) };
+    publishOwnership();
     await databaseReady();
     ensureOpen();
     const probe = createServer().listen(0, "127.0.0.1");

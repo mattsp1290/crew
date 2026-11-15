@@ -30,7 +30,6 @@ await withServices({ label: "member-instructions" }, async s => {
   const marker = () => "BIRBNOTE_" + randomUUID().replaceAll("-", "").toUpperCase();
   type Evidence = { engine: string; system: string[]; messages: string[]; continuation: boolean };
   let seen = 0;
-  /** The provider requests made since the last call: each one's system-context and message markers. */
   async function requests(): Promise<Evidence[]> {
     const rows = (await readFile(s.env.BIRBCREW_PROOF_NOTES!, "utf8").catch(() => "")).split("\n").filter(Boolean).map(line => JSON.parse(line));
     const fresh = rows.slice(seen);
@@ -67,7 +66,6 @@ await withServices({ label: "member-instructions" }, async s => {
   await api("/v1/memories", { body: { requestId: randomUUID(), memberId: pi.memberId, text: "Deploys need " + fact } });
   await requests();
 
-  // Every turn of a conversation carries the instructions, as system context only, with memory after them.
   const a = await open(pi.memberId);
   assert.equal((await turn(a, "remember cedar")).result.text, "stored cedar");
   assert.deepEqual(await requests(), [{ engine: "pi", system: [role, fact].sort(), messages: [], continuation: false }]);
@@ -82,7 +80,6 @@ await withServices({ label: "member-instructions" }, async s => {
   await api(`/v1/members/${pi.memberId}/instructions`, { token: other.token, expected: 404 });
   console.log("pi: a member without instructions, and another owner's member, saw none");
 
-  // The worker dies while A's turn waits on its approval card; a new worker resumes it after approval.
   await turn(a, "record assigned", { status: "waiting" });
   assert.deepEqual(await requests(), [{ engine: "pi", system: [role, fact].sort(), messages: [], continuation: false }]);
   await stopWorker();
@@ -97,7 +94,6 @@ await withServices({ label: "member-instructions" }, async s => {
   assert.deepEqual(await requests(), [{ engine: "pi", system: [role, fact].sort(), messages: [], continuation: true }]);
   console.log("pi: after the worker was killed mid-turn, the resumed segment saw the same instructions");
 
-  // A routine firing opens its own conversation, which gets the instructions like any other.
   const routine = await api("/v1/routines", { body: { requestId: randomUUID(), memberId: pi.memberId, schedule: "0 0 1 1 *",
     prompt: "remember pine", approvalPolicy: "wait" } });
   await s.sql(`UPDATE birbcrew_ts.routines SET next_window=now() WHERE routine_id='${routine.routineId}'`);
@@ -106,8 +102,6 @@ await withServices({ label: "member-instructions" }, async s => {
   assert.deepEqual(await requests(), [{ engine: "pi", system: [role, fact].sort(), messages: [], continuation: false }]);
   console.log("pi: a routine firing's conversation gave the model the instructions");
 
-  // A handoff target opens like any conversation of its member: the transcript arrives as its first user
-  // message, the target member's instructions stay in its system context, and the source's never cross.
   const source = await open(pi.memberId);
   await turn(source, "remember birch");
   await requests();
@@ -122,7 +116,6 @@ await withServices({ label: "member-instructions" }, async s => {
   assert.deepEqual(await requests(), [{ engine: "claude", system: [takeover], messages: [], continuation: false }]);
   console.log("claude: a handoff target's first turn had its own member's instructions as system context and none of the source's");
 
-  // Claude and Codex get them on the first turn and on every later one.
   const native: string[] = [];
   for (const engine of ["claude", "codex"] as const) {
     const text = marker();
@@ -137,7 +130,6 @@ await withServices({ label: "member-instructions" }, async s => {
     console.log(`${engine}: both turns of a conversation gave the model the member's instructions`);
   }
 
-  // Instruction packs reach every engine the same way, on every turn, with the member's own instructions after them.
   const [styleMark, safetyMark, reviewMark] = [marker(), marker(), marker()];
   const style = await api("/v1/instruction-packs", { body: { requestId: randomUUID(), name: "house style", text: "Answer tersely. " + styleMark } });
   const safety = await api("/v1/instruction-packs", { body: { requestId: randomUUID(), name: "safety", description: "Shared by every member",
@@ -162,7 +154,6 @@ await withServices({ label: "member-instructions" }, async s => {
   assert.equal((await api(`/v1/instruction-packs/${style.packId}`)).memberCount, 3);
   console.log("packs: another owner could not attach them, and a pack in use could not be deleted");
 
-  // No marker reaches what observers, receipts, listings or the audit trail return.
   const all = [role, takeover, ...native, styleMark, safetyMark, reviewMark];
   const leaked = async (statement: string) => [...(await s.sql(statement)).matchAll(/BIRBNOTE_[A-Z0-9]+/g)].map(match => match[0]);
   for (const table of ["public_events", "public_snapshots", "request_admissions", "audit_events", "conversation_handoffs"]) {
