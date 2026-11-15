@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import test from "node:test";
 import { CrewClient, CrewHttpError, CrewProtocolError, CrewTransportError, CrewUnknownOutcomeError } from "@birbcrew/client";
-import { requestInitiator, serverRequestReceiptSchema, requestReceiptResponseSchema } from "@birbcrew/client/contract";
+import { recordWorkItemArgumentsSchema, capabilitiesSchema, requestInitiator, serverRequestReceiptSchema, requestReceiptResponseSchema } from "@birbcrew/client/contract";
 
 const conversationId = randomUUID(), requestId = randomUUID(), memberId = randomUUID();
 const key = { conversationId, requestId };
@@ -211,4 +211,48 @@ test("bodyless reads omit JSON content type and unexpected successes release the
   await assert.rejects(client.requestStatus(key), CrewProtocolError);
   assert.equal(contentType, null);
   assert.equal(cancelled, true);
+});
+
+
+test("owner approval detail validates every echoed identity and complete proposal before returning", async () => {
+  const identity = { ...key, memberId, invocationId: randomUUID(), approvalId: randomUUID(), version: 1 };
+  const valid = { ...identity, apiVersion: "1", policyVersion: 1, toolName: "record_work_item", arguments: { operation_id: requestId, note: "  é\n\t🪶  " } };
+  let reply: unknown = valid;
+  const s = await serve((_, response) => json(response, reply));
+  try {
+    assert.deepEqual(await s.client.approvalDetail(identity), valid);
+    assert.equal(s.seen[0].path, `/v1/conversations/${conversationId}/requests/${requestId}/approvals/${identity.approvalId}?memberId=${memberId}&invocationId=${identity.invocationId}&version=1`);
+    assert.equal(s.seen[0].method, "GET"); assert.equal(s.seen[0].body, "");
+    for (const field of ["conversationId", "memberId", "requestId", "invocationId", "approvalId"] as const) {
+      reply = { ...valid, [field]: randomUUID() };
+      await assert.rejects(s.client.approvalDetail(identity), CrewProtocolError);
+    }
+    for (reply of [{ ...valid, version: 2 }, { ...valid, policyVersion: 2 }, { ...valid, toolName: "choose_next_step" },
+      { ...valid, apiVersion: "2" }, { ...valid, arguments: { operation_id: randomUUID() } },
+      { ...valid, arguments: { operation_id: requestId, extra: true } }, { ...valid, nativeCallId: "private" },
+      ...["é".repeat(2049), "\0", "\ud800"].map(note => ({ ...valid, arguments: { operation_id: requestId, note } }))]) {
+      await assert.rejects(s.client.approvalDetail(identity), CrewProtocolError);
+    }
+    for (const args of [{ operation_id: requestId }, { operation_id: requestId, note: "" },
+      { operation_id: requestId, note: "🪶".repeat(1024) }, { operation_id: requestId, note: "\u0001".repeat(4096) }]) {
+      reply = { ...valid, arguments: args };
+      assert.deepEqual((await s.client.approvalDetail(identity)).arguments, args);
+      assert.deepEqual(recordWorkItemArgumentsSchema.parse(args), args);
+    }
+    const sent = s.seen.length;
+    await assert.rejects(s.client.approvalDetail({ ...identity, approvalId: "invalid" }));
+    await assert.rejects(s.client.approvalDetail({ ...identity, version: 1.5 }));
+    await assert.rejects(s.client.approvalDetail(identity, { signal: AbortSignal.abort("stop") }), error => error === "stop");
+    assert.equal(s.seen.length, sent);
+  } finally { await s.close(); }
+});
+
+test("approval detail capability is optional and represents unsupported future versions", () => {
+  const base = { apiVersion: "1", requestContract: "sql-admission-temporal-queue-v1",
+    observation: { protocol: "AG-UI", mode: "snapshot-and-bounded-tail" }, initiatorKinds: ["owner"] };
+  assert.equal(capabilitiesSchema.parse(base).approvalDetails, undefined);
+  for (const version of [1, 2]) {
+    const approvalDetails = { version, tools: ["record_work_item", "future_tool"] };
+    assert.deepEqual(capabilitiesSchema.parse({ ...base, approvalDetails }).approvalDetails, approvalDetails);
+  }
 });

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { connection, type ConnectionOptions } from "./config.js";
 import {
+  approvalDetailIdentitySchema,
   conversationIdentitySchema,
   createMemberSchema,
   decideSchema,
@@ -10,6 +11,8 @@ import {
   requestIdentitySchema,
   routes,
   submitRequestSchema,
+  type ApprovalDetailIdentity,
+  type OwnerApprovalDetail,
   type CreateMember,
   type Decide,
   type OpenConversation,
@@ -17,6 +20,9 @@ import {
   type SubmitRequest,
 } from "./contract.js";
 export type {
+  RecordWorkItemArguments,
+  ApprovalDetailIdentity,
+  OwnerApprovalDetail,
   Engine,
   CreateMember,
   OpenConversation,
@@ -218,6 +224,20 @@ export class CrewClient {
   }
   async capabilities(options: CallOptions = {}) {
     return this.#call(routes.capabilities, options);
+  }
+  async approvalDetail(input: ApprovalDetailIdentity, options: CallOptions = {}): Promise<OwnerApprovalDetail> {
+    const key = approvalDetailIdentitySchema.parse(input);
+    const query = new URLSearchParams({
+      memberId: key.memberId, invocationId: key.invocationId, version: String(key.version),
+    });
+    return this.#call(routes.approvalDetail, {
+      ...options,
+      params: { conversationId: key.conversationId, requestId: key.requestId, approvalId: key.approvalId },
+      query: query.toString(),
+      expect: (detail) => detail.conversationId === key.conversationId && detail.memberId === key.memberId
+        && detail.requestId === key.requestId && detail.invocationId === key.invocationId
+        && detail.approvalId === key.approvalId && detail.version === key.version,
+    });
   }
   async health(options: CallOptions = {}) {
     return this.#call(routes.health, options);
