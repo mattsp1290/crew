@@ -212,7 +212,10 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each sco
       const tools = [...parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")
         .flatMap((row) => request.shape.tools.parse(row.tools))];
       const names = tools.map((tool) => tool.name ?? tool.type);
-      assert.ok(names.includes("mcp__birbcrew"), "The allowed MCP tool must be directly visible to the model");
+      const visibleMcp = z.object({ tools: z.array(z.object({ name: z.string() })) })
+        .parse(tools.find((tool) => tool.name === "mcp__birbcrew"));
+      assert.deepEqual(visibleMcp.tools.map((tool) => tool.name), ["record_work_item"],
+        "Only the allowed MCP tool must be directly visible to the model");
       shapes.push(names);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const id = "resp_" + randomUUID(), call_id = "call_" + operation;
