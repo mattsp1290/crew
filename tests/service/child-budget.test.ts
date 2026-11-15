@@ -54,6 +54,11 @@ const facts = async (key: ChildKey) => (await pool.query(`SELECT event_type AS t
   WHERE payload->>'childId'=$1 ORDER BY event_id`, [key.childId])).rows;
 const events = async (key: ChildKey) => (await pool.query(`SELECT event FROM birbcrew_ts.public_events
   WHERE conversation_id=$1 AND event->>'messageId'=$2 ORDER BY cursor`, [key.conversationId, key.childId + "/result"])).rows.map(row => row.event);
+async function publicState(key: ChildKey) {
+  const events = await pool.query("SELECT cursor,event FROM birbcrew_ts.public_events WHERE conversation_id=$1 ORDER BY cursor", [key.conversationId]);
+  const snapshot = await pool.query("SELECT * FROM birbcrew_ts.public_snapshots WHERE conversation_id=$1", [key.conversationId]);
+  return { events: events.rows, snapshot: snapshot.rows };
+}
 async function start(key: ChildKey, exec = execution()) {
   const result = await children.begin(key, exec);
   assert.equal(result.kind, "start");
@@ -166,6 +171,7 @@ test("begin waits for the parent lock and observes spend committed before it acq
 
 test("an audit insert failure rolls back the child mutation and observation", async () => {
   const p = await parent(), [key] = await p.delegate();
+  const before = await publicState(key);
   await pool.query(`CREATE FUNCTION birbcrew_ts.proof_child_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN IF NEW.payload->>'childId'='${key.childId}' THEN RAISE EXCEPTION 'fixture audit failure'; END IF; RETURN NEW; END $$`);
   await pool.query(`CREATE TRIGGER proof_child_audit_fail BEFORE INSERT ON birbcrew_ts.audit_events
@@ -173,17 +179,41 @@ test("an audit insert failure rolls back the child mutation and observation", as
   try {
     await assert.rejects(children.begin(key, execution()), /fixture audit failure/);
     assert.deepEqual([(await row(key)).phase, (await row(key)).generation], ["ready", null]);
-    assert.deepEqual(await events(key), []);
+    assert.deepEqual(await publicState(key), before);
     await usage.setBudget(p.ownerId, p.memberId, { tokenLimit: 1 });
     await p.spend();
     await assert.rejects(children.begin(key, execution()), /fixture audit failure/);
     assert.deepEqual([(await row(key)).phase, (await row(key)).outcome], ["ready", null]);
-    assert.deepEqual(await events(key), []);
+    assert.deepEqual(await publicState(key), before);
   } finally {
     await pool.query("DROP TRIGGER proof_child_audit_fail ON birbcrew_ts.audit_events");
     await pool.query("DROP FUNCTION birbcrew_ts.proof_child_audit_fail()");
   }
   assert.equal((await children.begin(key, execution())).kind, "settled");
+});
+
+test("a terminal audit failure preserves the waiting recorder and its pending approval", async () => {
+  const p = await parent(), [key] = await p.delegate(["recorder"]);
+  const admitted = await start(key), waiting = { ...checkpoint, state: { pending: true } };
+  await ledger.propose({ ownerId: key.ownerId, memberId: key.memberId, conversationId: key.conversationId,
+    requestId: key.requestId, token: admitted.generation, invocationId: key.childId, nativeCallId: "record_" + randomUUID(),
+    toolName: "record_work_item", arguments: { operation_id: key.requestId } }, waiting, { childGeneration: admitted.generation });
+  const scope = { ownerId: key.ownerId, memberId: key.memberId, conversationId: key.conversationId };
+  const before = { child: await row(key), pending: await ledger.pending(scope), public: await publicState(key), facts: await facts(key) };
+  assert.equal(before.pending.length, 1);
+  await pool.query(`CREATE FUNCTION birbcrew_ts.proof_child_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN IF NEW.payload->>'childId'='${key.childId}' THEN RAISE EXCEPTION 'fixture audit failure'; END IF; RETURN NEW; END $$`);
+  await pool.query(`CREATE TRIGGER proof_child_audit_fail BEFORE INSERT ON birbcrew_ts.audit_events
+    FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.proof_child_audit_fail()`);
+  try {
+    await assert.rejects(children.finish(key, admitted.generation, null, true), /fixture audit failure/);
+    assert.deepEqual({ child: await row(key), pending: await ledger.pending(scope), public: await publicState(key), facts: await facts(key) }, before);
+  } finally {
+    await pool.query("DROP TRIGGER proof_child_audit_fail ON birbcrew_ts.audit_events");
+    await pool.query("DROP FUNCTION birbcrew_ts.proof_child_audit_fail()");
+  }
+  assert.equal((await children.finish(key, admitted.generation, null, true)).kind, "failed");
+  assert.deepEqual(await ledger.pending(scope), []);
 });
 
 test("quarantine requests a stop without claiming a terminal child outcome", async () => {
