@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { z } from "zod";
-import { collectFiles, liveGroup, stopGroup } from "./member-service-diagnostics.mts";
+import { boundedCommand, collectFiles, liveGroup, now, stopGroup } from "./member-service-diagnostics.mts";
 import { run, until } from "./member-services.mts";
 
 const diagnostics = resolve("tests/proof/member-service-diagnostics.mts");
@@ -54,6 +54,90 @@ test("local capture drains oversized output and retains a finite log", async t =
   const report = JSON.parse(await readFile(log + ".result.json", "utf8"));
   assert.equal(report.truncated, true);
   assert.equal(report.received, 10 * 1024 * 1024);
+});
+
+test("local bounded command retains at most 128 KiB of multibyte output and drains the rest", { timeout: 8_000 }, async t => {
+  let pid: number | undefined;
+  t.after(async () => {
+    if (pid !== undefined) {
+      await stopGroup(pid);
+      assert.equal(await liveGroup(pid), false, `Owned output group ${pid} remains`);
+    }
+  });
+  const repetitions = 128 * 1024;
+  const source = `process.stdout.write('\u{1f600}'.repeat(${repetitions}))`;
+  const result = await boundedCommand(process.execPath, ["-e", source], now() + 4_000).catch((error: unknown) => {
+    if (error instanceof Error && "pid" in error && typeof error.pid === "number" && Number.isSafeInteger(error.pid) && error.pid > 0) {
+      pid = error.pid;
+      t.diagnostic(`Owned process group ${pid}`);
+    }
+    throw error;
+  });
+  pid = result.pid;
+  if (pid !== undefined) t.diagnostic(`Owned process group ${pid}`);
+  t.diagnostic(JSON.stringify({ receivedBytes: result.received, retainedUtf8Bytes: Buffer.byteLength(result.output, "utf8") }));
+  assert.equal(result.received, repetitions * 4, "Command output was not fully drained");
+  assert.ok(Buffer.byteLength(result.output, "utf8") <= 128 * 1024, "Retained output exceeds its byte limit");
+  assert.match(result.output, /^(?:\u{1f600})+$/u, "Retained output contains a split UTF-8 character");
+  if (pid !== undefined) assert.equal(await liveGroup(pid), false, `Owned output group ${pid} remains`);
+});
+
+test("local subprocess timeout lets its payload stop a detached descendant before returning", { timeout: 14_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "crew-helper-timeout-"));
+  const ready = join(dir, "ready.json"), receipt = join(dir, "cancel.txt");
+  const identity = z.object({ payload: z.number().int().positive(), descendant: z.number().int().positive() });
+  const groups = new Set<number>();
+  async function readReady() {
+    try { return identity.parse(JSON.parse(await readFile(ready, "utf8"))); }
+    catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+  function own(pids: z.infer<typeof identity>) {
+    for (const pid of [pids.payload, pids.descendant]) {
+      if (!groups.has(pid)) t.diagnostic(`Owned process group ${pid}`);
+      groups.add(pid);
+    }
+  }
+  const source = `import {spawn} from 'node:child_process';
+    import {writeFileSync,renameSync} from 'node:fs';
+    import {stopGroup} from ${JSON.stringify("file://" + diagnostics)};
+    const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});
+    process.on('SIGTERM',()=>{void stopGroup(child.pid).then(()=>{
+      writeFileSync(${JSON.stringify(receipt)},'SIGTERM');process.exit(143);
+    },error=>{console.error(error);process.exit(1)})});
+    writeFileSync(${JSON.stringify(ready + ".tmp")},JSON.stringify({payload:process.pid,descendant:child.pid}));
+    renameSync(${JSON.stringify(ready + ".tmp")},${JSON.stringify(ready)});
+    setInterval(()=>{},1000);`;
+  const pending = (async (): Promise<
+    { kind: "returned"; result: Awaited<ReturnType<typeof node>> } | { kind: "failed"; error: unknown }
+  > => {
+    try { return { kind: "returned", result: await node(["--input-type=module", "-e", source], process.env, 1_000) }; }
+    catch (error) { return { kind: "failed", error }; }
+  })();
+  t.after(async () => {
+    await pending;
+    const failures: unknown[] = [];
+    try { const pids = await readReady(); if (pids) own(pids); }
+    catch (error) { failures.push(error); }
+    const stopped = await Promise.allSettled([...groups].map(async pid => {
+      await stopGroup(pid);
+      assert.equal(await liveGroup(pid), false, `Owned timeout group ${pid} remains`);
+    }));
+    for (const outcome of stopped) if (outcome.status === "rejected") failures.push(outcome.reason);
+    try { await rm(dir, { recursive: true, force: true }); }
+    catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Timeout test process cleanup failed");
+  });
+  own(await until(readReady, "timeout payload and detached descendant readiness", 3_000));
+  const outcome = await pending;
+  if (outcome.kind === "failed") throw outcome.error;
+  t.diagnostic("Timeout return group liveness " + JSON.stringify(await Promise.all([...groups].map(async group => ({ group, live: await liveGroup(group) })))));
+  assert.notEqual(outcome.result.code, 0, outcome.result.output);
+  assert.notEqual(outcome.result.signal, "SIGKILL", "Timeout prevented catchable payload cancellation");
+  assert.equal(await readFile(receipt, "utf8"), "SIGTERM");
+  for (const group of groups) assert.equal(await liveGroup(group), false, `Owned timeout group ${group} remains at helper return`);
 });
 
 test("local diagnostic files reject secrets and symlinks and record bounds", async t => {
