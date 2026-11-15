@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$BIRBCREW_PROOF_ARTIFACTS"
           date -u +%FT%TZ > "$BIRBCREW_PROOF_ARTIFACTS/contracts-started-utc.txt"
-          node --test --test-name-pattern='^remote real fixture catchable timeout recovers PostgreSQL, Temporal and worker$' tests/proof/member-services.test.mts
+          node --test --test-name-pattern='^remote real fixture forced timeout recovers PostgreSQL, Temporal and worker$' tests/proof/member-services.test.mts
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: Recover exact cancellation probe fixture

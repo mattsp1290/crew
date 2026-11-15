@@ -46,7 +46,7 @@ const ownershipSchema = z.object({ label: z.literal('contract'), directory: z.st
     identity: z.object({ kind: z.literal('known'), group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/) }) })).min(2),
 });
 const readySchema = ownershipSchema.extend({ probe: z.object({ kind: z.literal('platform-cancellation-probe'),
-  mode: z.literal('catchable'), readyUTC: z.iso.datetime(), fixtureOwner: positiveGroupProcSchema, contractWorker: positiveGroupProcSchema }) });
+  mode: z.enum(['catchable', 'forced']), readyUTC: z.iso.datetime(), fixtureOwner: positiveGroupProcSchema, contractWorker: positiveGroupProcSchema }) });
 function identity(pid) {
   try {
     const text = readFileSync(`/proc/${pid}/stat`, 'utf8');

@@ -20,7 +20,7 @@ const ownershipSchema = z.object({ label: z.literal('contract'), directory: z.st
     identity: z.object({ kind: z.literal('known'), group: z.number().int().positive(), startTime: z.string().regex(/^\d+$/) }) })).min(2),
 });
 const readySchema = ownershipSchema.extend({ probe: z.object({ kind: z.literal('platform-cancellation-probe'),
-  mode: z.literal('catchable'), readyUTC: z.iso.datetime(), fixtureOwner: positiveGroupProcSchema, contractWorker: positiveGroupProcSchema }) });
+  mode: z.enum(['catchable', 'forced']), readyUTC: z.iso.datetime(), fixtureOwner: positiveGroupProcSchema, contractWorker: positiveGroupProcSchema }) });
 const recoverySchema = z.object({ qualified: z.boolean(), ownerStopped: z.boolean(), workerStopped: z.boolean(),
   contractsConclusion: z.string(), startedUTC: z.iso.datetime(), ownerStoppedUTC: z.iso.datetime(),
   observedOwnedProcesses: z.array(positiveGroupProcSchema).min(3) });
