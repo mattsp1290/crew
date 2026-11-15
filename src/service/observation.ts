@@ -427,9 +427,29 @@ export const readEventsIdleMs = 75;
 /** A committed public event and its cursor in the conversation's ledger. */
 export interface ObservedRow { cursor: number; event: Event }
 
+const eventStatementTimeoutMs = 2_000;
+const eventReplyTimeoutMs = 3_000;
+
 export async function readEvents(db: Pool, owner: string, id: string, cursor: number): Promise<ObservedRow[]> {
-  const { rows } = await db.query<ObservedRow>(
-    `SELECT e.cursor,e.event FROM birbcrew_ts.public_events e JOIN birbcrew_ts.conversations c USING (conversation_id)
-     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT $4`, [owner, id, cursor, readEventsLimit]);
-  return rows;
+  const client = await db.connect();
+  let committed = false;
+  const connectionError = () => {};
+  client.on("error", connectionError);
+  try {
+    const setup = { text: `BEGIN READ ONLY; SET LOCAL statement_timeout = '${eventStatementTimeoutMs}ms'`, query_timeout: eventReplyTimeoutMs };
+    await client.query(setup);
+    const query = {
+      text: `SELECT e.cursor,e.event FROM birbcrew_ts.public_events e JOIN birbcrew_ts.conversations c USING (conversation_id)
+     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT $4`,
+      values: [owner, id, cursor, readEventsLimit], query_timeout: eventReplyTimeoutMs,
+    };
+    const { rows } = await client.query<ObservedRow>(query);
+    const commit = { text: "COMMIT", query_timeout: eventReplyTimeoutMs };
+    await client.query(commit);
+    committed = true;
+    return rows;
+  } finally {
+    client.release(!committed);
+    client.off("error", connectionError);
+  }
 }
