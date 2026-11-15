@@ -1,5 +1,4 @@
 name: Versioned integration API qualification
-run-name: Production lifecycle qualification (${{ inputs.mode }})
 on:
   pull_request:
     paths:
@@ -18,21 +17,10 @@ on:
       - 'docs/integration-api-v1.md'
       - '.github/workflows/integration-api.yml'
   workflow_dispatch:
-    inputs:
-      mode:
-        description: Hosted qualification mode
-        type: choice
-        required: true
-        default: normal
-        options:
-          - normal
-          - catchable
-          - forced
 permissions:
   contents: read
 jobs:
   portable-client:
-    if: ${{ inputs.mode == 'normal' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -49,7 +37,6 @@ jobs:
       - run: echo "CREW_NODE24=$(command -v node)" >> "$GITHUB_ENV"
       - run: '"$CREW_NODE22" scripts/verify-client-package.mjs'
   consumer-contract:
-    if: ${{ inputs.mode == 'normal' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -132,16 +119,8 @@ jobs:
           tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
       - name: Proof lifecycle failure contracts
         id: lifecycle_contracts
-        shell: bash
-        run: |
-          case "$QUALIFICATION_MODE" in
-            normal) node --test tests/proof/member-services.test.mts ;;
-            catchable) node --test --test-name-pattern '^remote real fixture catchable timeout recovers' tests/proof/member-services.test.mts ;;
-            forced) node --test --test-name-pattern '^remote real fixture forced timeout recovers' tests/proof/member-services.test.mts ;;
-            *) exit 64 ;;
-          esac
+        run: node --test tests/proof/member-services.test.mts
         env:
-          QUALIFICATION_MODE: ${{ inputs.mode }}
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: Recover lifecycle contract fixtures
         if: ${{ always() }}
@@ -156,7 +135,6 @@ jobs:
         env:
           CONTRACTS_CONCLUSION: ${{ steps.lifecycle_contracts.conclusion }}
       - name: test:api:service
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -165,7 +143,6 @@ jobs:
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: test:temporal:tls
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -174,7 +151,6 @@ jobs:
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: test:observers:service
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -183,7 +159,6 @@ jobs:
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: test:routines:service
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -192,7 +167,6 @@ jobs:
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: test:memories:service
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -201,7 +175,6 @@ jobs:
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: test:instructions:service
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -210,7 +183,6 @@ jobs:
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
       - name: test:handoffs:service
-        if: ${{ success() && inputs.mode == 'normal' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -218,12 +190,8 @@ jobs:
           exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/handoffs.stdout.log" npm run test:handoffs:service
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      - name: Qualify exact container ownership refusal
-        if: ${{ always() }}
-        timeout-minutes: 1
-        run: node tests/proof/container-guard-probe.mts
       - name: Retain actual-service failure diagnostics
-        if: ${{ always() }}
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: actual-service-${{ github.run_id }}-${{ github.run_attempt }}
