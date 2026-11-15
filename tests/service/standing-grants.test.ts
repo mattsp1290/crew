@@ -1,3 +1,4 @@
+import { testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -5,6 +6,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { after, before, test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { HttpAgent } from "@ag-ui/client";
+import { fixedRoles } from "@birbcrew/pi-subagents";
 import { Pool, type PoolClient } from "pg";
 import { ApprovalStore, type Approval } from "../../src/service/approvals.ts";
 import { ChildStore } from "../../src/service/children.ts";
@@ -322,7 +324,7 @@ test("a request without an owner admission, a child call or a question never use
   const conversation = await store.getConversation({ ownerId: parent.ownerId, conversationId: parent.conversationId });
   const children = new ChildStore(pool);
   const [child] = await children.delegate(conversation, requestId, token, [{ nativeCallId: "delegate-1", task: "record it",
-    profile: { role: "recorder", version: 1, instructions: "Complete the assigned task.", model: "fixture", tools: ["record_work_item"] } }],
+    profile: { role: "recorder", version: 1, ...fixedRoles.recorder, model: "fixture" } }],
   { version: 1, engine: "pi", state: {} });
   const started = await children.begin(child, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 });
   assert.equal(started.kind, "start"); if (started.kind !== "start") return;
@@ -343,7 +345,7 @@ const sql = new URL("../../src/service/sql/", import.meta.url);
 async function databaseAt(t: TestContext, version: number) {
   const source = new URL(url!);
   const admin = new Pool({ connectionString: source.href });
-  const database = "grants_" + randomUUID().replaceAll("-", "");
+  const database = testDatabaseName("grants_");
   await admin.query("CREATE DATABASE " + database);
   source.pathname = "/" + database;
   const separate = new Pool({ connectionString: source.href });
