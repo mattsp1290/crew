@@ -70,14 +70,21 @@ export async function stopGroup(pid: number, deadline = now() + 3_000) {
 class CaptureFailure extends AggregateError {
   readonly pid: number | undefined;
   readonly received: number;
-  constructor(errors: unknown[], pid: number | undefined, received: number) {
+  readonly diagnostics: CapturedOutput;
+  constructor(errors: unknown[], pid: number | undefined, received: number, diagnostics: CapturedOutput) {
     super(errors, errors.map(describe).join("\n"));
-    this.pid = pid; this.received = received;
+    this.pid = pid; this.received = received; this.diagnostics = diagnostics;
   }
 }
-type CapturedStdout =
+type CapturedOutput =
   | { kind: "complete"; text: string; received: number; retained: number }
   | { kind: "truncated"; received: number; retained: number };
+export function completedCommandFailure(error: unknown) {
+  if (!(error instanceof CaptureFailure) || error.errors.length !== 1 || error.diagnostics.kind !== "complete") return undefined;
+  const failure: unknown = error.errors[0];
+  if (!(failure instanceof CommandFailure) || failure.result.kind !== "exited") return undefined;
+  return { code: failure.result.code, diagnostics: error.diagnostics.text };
+}
 export async function boundedCommand(program: string, args: string[], deadline: number,
   options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
   assert.ok(now() < deadline, `${program}: no operation budget remains`);
@@ -130,8 +137,9 @@ export async function boundedCommand(program: string, args: string[], deadline: 
   }
   const diagnostics = diagnosticBytes.toString("utf8", 0, retained);
   if (commandFailure) failures.unshift(new CommandFailure(program + " " + diagnostics, commandFailure));
-  if (failures.length) throw new CaptureFailure(failures, child.pid, received);
-  const stdout: CapturedStdout = stdoutReceived === stdoutRetained
+  if (failures.length) throw new CaptureFailure(failures, child.pid, received, received === retained
+    ? { kind: "complete", text: diagnostics, received, retained } : { kind: "truncated", received, retained });
+  const stdout: CapturedOutput = stdoutReceived === stdoutRetained
     ? { kind: "complete", text: stdoutBytes.toString("utf8", 0, stdoutRetained), received: stdoutReceived, retained: stdoutRetained }
     : { kind: "truncated", received: stdoutReceived, retained: stdoutRetained };
   return { pid: child.pid, diagnostics, stdout, received, retained };
