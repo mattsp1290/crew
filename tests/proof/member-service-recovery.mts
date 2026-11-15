@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { before, boundedCommand, describe, liveGroup, now } from "./member-service-diagnostics.mts";
+import { before, boundedCommand, completedCommandFailure, describe, liveGroup, now } from "./member-service-diagnostics.mts";
 import { ownedProcessMapSchema, parseProcess, positiveGroupProcessSchema, processKey, selectOwnedProcesses, type PositiveGroupProcess } from "./member-service-processes.mts";
 
 export function missingProcess(error: unknown) {
@@ -200,6 +200,9 @@ export async function regularFile(path: string) {
   }
   finally { await file.close(); }
 }
+export function isMissingDockerInspection(failure: ReturnType<typeof completedCommandFailure>, fullId: string) {
+  return failure?.code === 1 && failure.diagnostics.trim() === "Error: No such object: " + fullId;
+}
 export async function recoverFixture(directory: string, observed: readonly PositiveGroupProcess[], deadline: number) {
   const observedProcesses = z.array(positiveGroupProcessSchema).parse(observed);
   const recovery: Recovery = { failures: [], container: "unknown", directory: "unknown", processes: "unknown" };
@@ -232,14 +235,27 @@ export async function recoverFixture(directory: string, observed: readonly Posit
           Math.min(deadline - 500, now() + 1_500))));
         return results.flatMap(result => {
           assert.ok(result.stdout.kind === "complete", "Docker recovery query stdout was truncated");
-          return result.stdout.text.trim() ? result.stdout.text.trim().split(/\s+/) : [];
+          const ids = result.stdout.text.trim() ? result.stdout.text.trim().split(/\s+/) : [];
+          for (const id of ids) assert.match(id, /^[a-f0-9]{64}$/, "Docker query returned an invalid identity");
+          return ids;
         });
       };
       const found = new Set(await query());
+      if (evidence.allocation.kind === "settled") for (const foundId of found)
+        assert.equal(foundId, evidence.allocation.container, "Allocated container identity changed");
       for (const foundId of found) {
-        assert.match(foundId, /^[a-f0-9]{64}$/, "Docker query returned an invalid identity");
-        const inspected = await boundedCommand("docker", ["inspect", "--format",
-          '{{.Id}} {{.Name}} {{index .Config.Labels "birb-proof-owner"}}', foundId], Math.min(deadline - 500, now() + 1_500));
+        let inspected: Awaited<ReturnType<typeof boundedCommand>>;
+        try {
+          inspected = await boundedCommand("docker", ["inspect", "--format",
+            '{{.Id}} {{.Name}} {{index .Config.Labels "birb-proof-owner"}}', foundId], Math.min(deadline - 500, now() + 1_500));
+        } catch (error) {
+          if (evidence.allocation.kind !== "settled" || !isMissingDockerInspection(completedCommandFailure(error), foundId)) throw error;
+          try { assert.deepEqual(await query(), [], "Exact owned container remains after missing inspection"); }
+          catch (observationError) { throw new AggregateError([error, observationError],
+            "Docker absence unproven after missing inspection\n" + [error, observationError].map(describe).join("\n")); }
+          console.error(`Docker inspection target ${foundId} disappeared; exact-name and settled-ID queries are empty`);
+          continue;
+        }
         assert.ok(inspected.stdout.kind === "complete", "Docker recovery inspection stdout was truncated");
         const [id, name, marker] = inspected.stdout.text.trim().split(/\s+/);
         assert.ok(id && /^[a-f0-9]{64}$/.test(id), "Container identity missing");
