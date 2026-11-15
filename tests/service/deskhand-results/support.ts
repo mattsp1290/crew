@@ -172,4 +172,3 @@ export function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap
     default: throw new Error('unknown-test-tool');
   }
 }
-
