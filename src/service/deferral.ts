@@ -8,6 +8,10 @@ export const recordWorkItemArguments = z.strictObject({
 });
 export const toolNameSchema = z.enum(["record_work_item", "choose_next_step"]);
 export type DeferredTool = z.infer<typeof toolNameSchema>;
+
+export function publicToolArguments(tool: DeferredTool, requestId: string) {
+  return tool === "choose_next_step" ? {} : { operation_id: requestId };
+}
 export { nextStep, standingChoice };
 export const toolChoices = {
   record_work_item: ["approve", "deny"],

@@ -288,3 +288,14 @@ test("a standing grant approves a Codex live call at its first poll; the deadlin
   assert.ok(calls.every(call=>call.grantId));
   await assert.rejects(proposeLive(pool,open[2].launch,open[2].proposal()),{code:"input_limit"});
 });
+
+for (const note of [undefined, "", "private note"]) {
+  test(`live protected call completeness requires no hidden note (${note === undefined ? "absent" : note === "" ? "empty" : "present"})`, async () => {
+    const {scope,launch,proposal,view}=await conversation(await member("record_work_item"));
+    const body={...proposal(),args:{operation_id:scope.requestId,...(note === undefined ? {} : {note})}};
+    await proposeLive(pool,launch,body);
+    const snapshot=await view();
+    assert.equal(snapshot.state.pendingApprovals[0].argumentsComplete,note === undefined ? true : undefined);
+    assert.ok(!JSON.stringify(snapshot).includes("private note"));
+  });
+}
