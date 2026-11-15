@@ -43,7 +43,7 @@ test("Codex resumes the pinned rollout, rejects damaged or untrusted native stor
   assert.equal(provider.requests.length, 2);
 });
 
-const request = z.object({ tools: z.array(z.looseObject({ type: z.string(), name: z.string().optional() })),
+const request = z.object({ tools: z.array(z.looseObject({ type: z.string(), name: z.string().optional() })).default([]),
   input: z.array(z.looseObject({ type: z.string(), call_id: z.string().optional(), output: z.unknown().optional() })) });
 function send(res: ServerResponse, type: string, value: object) {
   res.write("event: " + type + "\ndata: " + JSON.stringify({ type, ...value }) + "\n\n");
@@ -177,7 +177,7 @@ test("actual Codex image reads are confined to the conversation on first invocat
   assert.ok(auth.every((header) => header === undefined));
 });
 
-test("Codex receives each scoped MCP response on its original live call", { timeout: 45_000 }, async t => {
+for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each scoped MCP response on its original live call`, { timeout: 45_000 }, async t => {
   const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-mcp-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   const token = randomUUID(), receipt = randomUUID(), denied = "denied-" + randomUUID();
@@ -196,7 +196,7 @@ test("Codex receives each scoped MCP response on its original live call", { time
       else if (rpc.method === "tools/call") {
         if (rpc.params.name !== "record_work_item") forbiddenCalls++;
         assert.equal(rpc.params.name, "record_work_item");
-        assert.equal(rpc.params.arguments.operation_id, operation);
+        assert.deepEqual(rpc.params.arguments, { operation_id: operation });
         calls.push({ id: rpc.params._meta.callId, thread: rpc.params._meta.threadId });
         result = { content: [{ type: "text", text: outcome }], isError: outcome === denied };
       } else result = {};
@@ -209,7 +209,11 @@ test("Codex receives each scoped MCP response on its original live call", { time
       const parsed = request.parse(await json(req));
       const surface = JSON.stringify([parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")]);
       assert.ok(!surface.includes(token) && !surface.includes("undeclared_private_tool"));
-      shapes.push(parsed.tools.map((tool) => tool.name ?? tool.type));
+      const tools = [...parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")
+        .flatMap((row) => request.shape.tools.parse(row.tools))];
+      const names = tools.map((tool) => tool.name ?? tool.type);
+      assert.ok(names.includes("mcp__birbcrew"), "The allowed MCP tool must be directly visible to the model");
+      shapes.push(names);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const id = "resp_" + randomUUID(), call_id = "call_" + operation;
       send(res, "response.created", { response: { id } });
@@ -234,7 +238,7 @@ test("Codex receives each scoped MCP response on its original live call", { time
     assert.ok(addr && typeof addr === "object");
     ports.push("http://127.0.0.1:" + addr.port);
   }
-  const profile = { ownerId: randomUUID(), memberId: randomUUID(), stateDir, model: "gpt-5.4", baseUrl: ports[1] };
+  const profile = { ownerId: randomUUID(), memberId: randomUUID(), stateDir, model, baseUrl: ports[1] };
   const threadId = randomUUID(), confirmation: string[] = [];
   let checkpoint = null;
   for (const value of [receipt, denied]) {
