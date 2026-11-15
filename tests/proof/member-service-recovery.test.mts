@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { now } from "./member-service-diagnostics.mts";
 import { positiveGroupProcessSchema } from "./member-service-processes.mts";
 import { atomicReceipt, contractRunSchema, fixtureOwnerSchema, isolatedOwnerSchema, ownershipSchema,
-  readContractFixture, readContractRoots } from "./member-service-recovery.mts";
+  readContractFixture, readContractRoots, recoverFixture } from "./member-service-recovery.mts";
 
 const worker = positiveGroupProcessSchema.parse({ pid: 401, parent: 399, group: 400, startTime: "1001", state: "S" });
 const owner = fixtureOwnerSchema.parse({ version: 1,
@@ -256,4 +256,24 @@ test("local atomic launch publication replaces the complete record and leaves no
   assert.deepEqual(contractRunSchema.parse(JSON.parse(await readFile(path, "utf8"))), run);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.deepEqual(await readdir(root), ["contract-run.json"]);
+});
+
+
+test("local fixture fallback refuses a private directory with a changed owner marker", async t => {
+  const root = await temporaryRoot(t), directory = join(root, "crew-contract-marker"), artifacts = join(directory, "contract-marker");
+  await mkdir(artifacts, { recursive: true });
+  const privateDirectory = await mkdtemp(join(tmpdir(), "birb-members-"));
+  t.after(() => rm(privateDirectory, { recursive: true, force: true }));
+  const wrongMarker = "changed-owner-marker", canary = "preserve-private-data";
+  await writeFile(join(privateDirectory, ".fixture-owner"), wrongMarker);
+  await writeFile(join(privateDirectory, "canary.txt"), canary);
+  atomicReceipt(join(artifacts, "ownership.json"), { ...ownership, directory: privateDirectory });
+  const result = await recoverFixture(directory, [], now() + 2_000);
+  assert.equal(result.processes, "absent");
+  assert.equal(result.container, "absent");
+  assert.equal(result.directory, "unknown");
+  assert.match(result.failures.join("\n"), /marker disagrees with ownership/);
+  assert.ok((await lstat(privateDirectory)).isDirectory());
+  assert.equal(await readFile(join(privateDirectory, ".fixture-owner"), "utf8"), wrongMarker);
+  assert.equal(await readFile(join(privateDirectory, "canary.txt"), "utf8"), canary);
 });
