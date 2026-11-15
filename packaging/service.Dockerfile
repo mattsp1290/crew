@@ -24,7 +24,7 @@ COPY src/service src/service
 
 FROM ${NODE_IMAGE}
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini \
+    && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
     && tini --version | grep -q '^tini version 0\.19\.0' \
     && groupadd --gid 10001 crew \
