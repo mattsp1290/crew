@@ -480,7 +480,6 @@ async function main() {
   try {
     const store = new MemberStore(pool);
     await store.migrate();
-    // Off unless exactly "1": plain http and loopback or private addresses, for local testing only.
     const webhookTargets = { allowInsecure: process.env.BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS === "1" };
     const server = createGateway(store, new MemberClient(store, new Client({ connection, namespace: temporal.namespace })), config.tokenHashes,
       { webhookTargets, fanout });
