@@ -104,7 +104,7 @@ audit version may switch to a keyed per-owner digest.
 
 The registry is the `auditEvents` object in `src/service/audit.ts`.
 `audit_events_type_check` in `src/service/sql/021-audit.sql`, widened by
-`024-standing-grants.sql`, `025-routines.sql`, `026-memories.sql`, `027-handoffs.sql`, `028-approval-expiry.sql`, `029-member-instructions.sql`, `031-usage.sql`, `032-webhooks.sql` and then `033-instruction-packs.sql`, lists the same types.
+`024-standing-grants.sql`, `025-routines.sql`, `026-memories.sql`, `027-handoffs.sql`, `028-approval-expiry.sql`, `029-member-instructions.sql`, `031-usage.sql`, `032-webhooks.sql`, `033-instruction-packs.sql` and `036-delegation-audit.sql`, lists the same types.
 Each widening replaces the whole constraint, so the last widening lists every type.
 A test checks that the two lists match. `GET /v1/capabilities` lists them under
 `audit.eventTypes`.
@@ -122,6 +122,8 @@ A test checks that the two lists match. `GET /v1/capabilities` lists them under
 | `work_item.committed` | system | `settleLocked` inserts the work-item receipt, including Codex live dispatch | `receiptId` | `receiptId`, `approvalId` |
 | `request.cancellation_requested` | owner | First durable cancellation fact: the v1 intent, or the cancellation marker written by the legacy cancel route | conversation + request | `receiptId` when the v1 intent came first; `policy: "fail_closed"` when a routine's policy requested it |
 | `request.finished` | system | `commitTurn` (`completed`), `rejectAccepted` (`cancelled`/`failed`), `rejectUnstartedAdmission` (`failed`), final `reconcileTurn` or delegation quarantine (`uncertain`) | conversation + request | `status`, optional `reason` |
+| `delegation.started` | system | `ChildStore.begin` admits the first child segment | child | `childId`, `role`, `engine`, `profile` |
+| `delegation.finished` | system | A child settles as completed, failed, or cancelled | child | `childId`, `outcome`, and `code` for failure |
 | `trusted_effect.completed` | system | The trusted-context lane records that an `effect` tool completed | `operationId` | `operationId`, `toolName` |
 | `routine.created` | owner | a routine is created | routine + revision | `routineId`, `revision`, `schedule`, `approvalPolicy`, `promptDigest`, optional `approvalDeadlineSeconds` |
 | `routine.enabled` | owner | a routine is enabled | routine + revision | `routineId`, `revision` |
@@ -522,8 +524,14 @@ the dump's highest ID.
 - If a workflow is terminated externally before `reconcileTurn` runs, its started
   turn has no `request.finished` row.
 - Reads are not audited: status, snapshots, observation and audit reads.
-  Previews, text deltas, native launches and stops, and child launches are not
-  audited either.
+  Previews, text deltas, native process launches and stops are not audited either.
+- `delegation.started` records first-segment admission, before native process launch.
+  It does not prove that a provider received a request. Approval resumes add no second
+  start fact. A budget refusal has only `delegation.finished` with `budget_exhausted`.
+  Both facts inherit the parent request's initiator and omit task text and digests.
+- Child admissions and outcomes from before migration 036 are not backfilled.
+  A child already running at upgrade may finish without a start fact. Quarantine
+  does not claim a child finished while its native stop remains unconfirmed.
 - Only the first cancellation fact is kept. If the legacy route cancels first, a
   later v1 intent's `receiptId` is not added to the trail. The request status still
   returns that receipt.

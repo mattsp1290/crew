@@ -22,6 +22,7 @@ import { registerProfiles } from "../../src/service/deployment.ts";
 import { createGateway } from "../../src/service/gateway.ts";
 import { activityQueue, memberTaskQueue } from "../../src/service/queues.ts";
 import { MemberStore } from "../../src/service/store.ts";
+import { recordSegmentUsage, UsageApi } from "../../src/service/usage.ts";
 import { startSupervisor } from "../../src/service/supervisor.ts";
 import { memberQueueActivities } from "../../src/service/worker.ts";
 
@@ -170,6 +171,22 @@ async function delegated(task: string, childTarget?: ChildTarget, role: "analyst
   return { key, memberId, conversationId, requestId: request.requestId };
 }
 
+async function exhaustParentBudget(key: ChildKey) {
+  const { rows: [turn] } = await pool.query<{ token: string; workflow_run_id: string; activity_id: string; attempt: number }>(
+    "SELECT token,workflow_run_id,activity_id,attempt FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",
+    [key.conversationId, key.requestId]);
+  const execution = { workflowRunId: turn.workflow_run_id, activityId: turn.activity_id, attempt: turn.attempt };
+  await pool.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
+    VALUES ($1,$2,$3,$4,$5,$6)`, [key.conversationId, key.requestId, turn.token, execution.workflowRunId, execution.activityId, execution.attempt]);
+  await recordSegmentUsage(pool, { ownerId: key.ownerId, conversationId: key.conversationId, requestId: key.requestId,
+    token: turn.token, execution, text: "delegate" }, { state: "reported", model, inputTokens: 9, outputTokens: 1,
+    cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null, costUsd: null });
+  const budget = await new UsageApi(store).setBudget(key.ownerId, key.memberId, { tokenLimit: 10 });
+  assert.equal(budget.admitting, false);
+}
+const childAudit = async (key: ChildKey) => (await pool.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE payload->>'childId'=$1 ORDER BY event_id",
+  [key.childId])).rows;
+
 /** Starts the child's workflow, as its parent's executeChild would. */
 async function startChild(key: ChildKey) {
   const workflowId = `birbcrew-ts/child/${key.childId}`;
@@ -237,7 +254,24 @@ test("a workflow worker from before targets schedules a targeted child on its pa
   } finally { await worker.stop(); }
 });
 
-test("a targeted recorder's card is settled, and its resume runs, on the target's queue", { timeout: 180_000 }, async () => {
+test("an exhausted child finishes its actual workflow without a native launch or provider request", { timeout: 180_000 }, async () => {
+  const worker = await workflowWorker();
+  try {
+    const task = "remember " + randomUUID();
+    const { key } = await delegated(task, target);
+    await exhaustParentBudget(key);
+    const workflowId = await runChild(key);
+    const row = await childRow(key);
+    assert.deepEqual(row.outcome, { kind: "failed", nativeCallId: row.native_call_id, code: "budget_exhausted" });
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1", [key.childId])).rowCount, 0);
+    for (const log of Object.values(logs)) assert.ok(!(await prompts(log)).includes(task));
+    assert.deepEqual(await childAudit(key), [{ event_type: "delegation.finished",
+      payload: { childId: key.childId, outcome: "failed", code: "budget_exhausted" } }]);
+    await replay(workflowId);
+  } finally { await worker.stop(); }
+});
+
+test("a targeted recorder resumes over budget on its target queue with one start and finish audit", { timeout: 180_000 }, async () => {
   const worker = await workflowWorker();
   try {
     const task = "record assigned " + randomUUID();
@@ -245,6 +279,7 @@ test("a targeted recorder's card is settled, and its resume runs, on the target'
     const { workflowId, handle } = await startChild(key);
     const card = await until(async () => (await ledger.pending({ ownerId, memberId, conversationId }))
       .find(approval => approval.invocationId === key.childId), "the child's card");
+    await exhaustParentBudget(key);
     const { approvalId, invocationId, nativeCallId, argumentDigest, version } = card;
     assert.equal(await ledger.decide({ ownerId, memberId, conversationId, requestId, invocationId, nativeCallId, approvalId,
       argumentDigest, version, choice: "approve" }), "approve");
@@ -255,6 +290,7 @@ test("a targeted recorder's card is settled, and its resume runs, on the target'
     const outcome = row.outcome as { kind: string; text: string };
     assert.equal(outcome.kind, "completed");
     assert.equal(JSON.parse(outcome.text.slice("settled ".length)).kind, "recorded");
+    assert.deepEqual((await childAudit(key)).map(fact => fact.event_type), ["delegation.started", "delegation.finished"]);
     // Both segments, the proposal and the resume after the card, ran on the target's driver.
     assert.equal((await prompts(logs.target)).filter(prompt => prompt === task).length, 2);
     assert.equal((await prompts(logs.parent)).filter(prompt => prompt === task).length, 0);
