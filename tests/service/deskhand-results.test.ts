@@ -105,12 +105,13 @@ function wireLeaseOutcome(outcome: LeaseOutcome) {
     outcome: outcome.kind === 'held' ? outcome.outcome : outcome.kind === 'not-held' ? 'not_held' : outcome.kind,
     ...(outcome.kind === 'refused' ? { code: outcome.refusal.code, ...(outcome.refusal.code === 'lease_held_by_other' ? { expires_in_ms: outcome.refusal.otherExpiresInMs } : {}) } : {}) } };
 }
-function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap(tool, wire), requestId = 17, owner = boundary }: {
+function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap(tool, wire), requestId = 17, owner = boundary, expectedAction }: {
   tool: string;
   expectationSeed: Record<string, unknown>;
   receivedReply?: unknown;
   requestId?: string | number;
   owner?: ResultBoundary;
+  expectedAction?: ExpectedPointer['action'];
 }) {
   const expected = { requestId };
   switch (tool) {
@@ -137,7 +138,7 @@ function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap(tool, 
       return { result, reconstructed: result.kind === 'ok' ? wireLeaseOutcome(result.value) : result.kind === 'tool-error' ? wireError(result.error) : undefined };
     }
     case 'pointer': {
-      const result = owner.pointer(raw, { ...expected, ...expectedInput(wire), action: wire.measured && Object.hasOwn(object(wire.measured), 'drag_end') ? 'drag' : 'target' });
+      const result = owner.pointer(raw, { ...expected, ...expectedInput(wire), action: expectedAction ?? (wire.measured && Object.hasOwn(object(wire.measured), 'drag_end') ? 'drag' : 'target') });
       return { result, reconstructed: result.kind === 'ok' ? wireCompletion(result.value) : result.kind === 'tool-error' ? wireError(result.error) : undefined };
     }
     case 'keyboard': {
@@ -151,7 +152,7 @@ function observe({ tool, expectationSeed: wire, receivedReply: raw = wrap(tool, 
 for (const name of readdirSync(examples).filter((name) => /^[a-z]+\.output\./.test(name))) {
   test(`preserves every known fact in ${name}`, () => {
     const wire = fixture(name);
-    const observed = observe({ tool: name.split('.')[0], expectationSeed: wire });
+    const observed = observe({ tool: name.split('.')[0], expectationSeed: wire, expectedAction: name.includes('drag') ? 'drag' : undefined });
     assert.notEqual(observed.result.kind, 'rejected');
     assert.deepEqual(observed.reconstructed, wire);
   });
@@ -636,10 +637,14 @@ test('early refusals retain prior records while admitted and replayed aborts ret
   const lease = fixture('pointer.output.error-paused-aborted.json');
   lease.code = 'lease_expired';
   lease.state = 'ok';
-  for (const seed of [fixture('pointer.output.error-denied-app-drag-aborted.json'), fixture('pointer.output.error-user-active-aborted.json'), lease]) {
+  for (const { seed, expectedAction } of [
+    { seed: fixture('pointer.output.error-denied-app-drag-aborted.json'), expectedAction: 'drag' },
+    { seed: fixture('pointer.output.error-user-active-aborted.json'), expectedAction: 'drag' },
+    { seed: lease, expectedAction: 'target' },
+  ] satisfies ReadonlyArray<{ seed: Record<string, unknown>; expectedAction: ExpectedPointer['action'] }>) {
     for (const replayed of [false, true]) {
       const wire = { ...seed, replayed, ...(replayed ? { current_state: 'ok' } : {}) };
-      const observed = observe({ tool: 'pointer', expectationSeed: wire });
+      const observed = observe({ tool: 'pointer', expectationSeed: wire, expectedAction });
       assert.equal(observed.result.kind, 'tool-error');
       assert.deepEqual(observed.reconstructed, wire);
     }
