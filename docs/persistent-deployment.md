@@ -73,8 +73,11 @@ Gateways also send [outbound webhooks](webhooks.md): once an owner registers an
 endpoint, every gateway replica connects out to it. Give gateways egress to DNS (the
 servers in the container's `/etc/resolv.conf`, queried directly; the hosts file is
 not read) and to the HTTPS hosts and ports owners register, which may be any public
-address and port. Crew refuses private, loopback and metadata addresses itself, but
-an egress policy (a Kubernetes `NetworkPolicy` or a firewall) is the place to narrow
+address and port. Crew refuses private and loopback addresses by default, and
+always refuses the listed metadata addresses. The explicit
+[insecure-target setting](webhooks.md#network-safety)
+also permits HTTP and private or loopback destinations. An egress policy
+(a Kubernetes `NetworkPolicy` or a firewall) is the place to narrow
 it further, for example to an allow-list of receivers. Webhook requests ignore
 `HTTP_PROXY`, `HTTPS_PROXY` and `NODE_USE_ENV_PROXY`, so an installation whose only
 way out is a proxy cannot deliver them. Add a private certificate authority with

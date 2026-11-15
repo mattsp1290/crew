@@ -627,7 +627,8 @@ endpoints before you run an earlier release.
   Adding a kind means adding it to `webhookKinds` and to the two CHECKs in a
   migration.
 - Inbound webhooks that start a request (row 24 of the comparison).
-- Delivery to anything but an HTTPS endpoint. Crew sends no email or SMS and runs
+- Delivery through protocols other than HTTPS, or HTTP under the explicit
+  [insecure-target setting](#network-safety). Crew sends no email or SMS and runs
   no push service or chat app of its own; a `slack` or `ntfy` endpoint posts to a
   URL the owner supplies, and that service does the rest.
 - A message template an owner writes, another layout (Microsoft Teams cards,
