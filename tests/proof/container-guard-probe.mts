@@ -99,7 +99,7 @@ async function createContainer(root: string, labelMatches: boolean) {
   report.acquisitions.push(acquisition);
   persist();
   const output = await docker(["create", "--pull", "never", "--name", name, "--label", "birb-proof-owner=" + label,
-    "--tmpfs", "/var/lib/postgresql/data", "postgres:17"], workDeadline, 3_000);
+    "--tmpfs", "/var/lib/postgresql/data", "postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"], workDeadline, 3_000);
   acquisition.allocation = { kind: "returned", id: fullId.parse(output) };
   atomicReceipt(join(root, `acquisition-${report.acquisitions.length}.json`), acquisition, { immutable: true });
   persist();
