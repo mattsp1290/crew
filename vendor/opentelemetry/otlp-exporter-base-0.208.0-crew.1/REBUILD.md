@@ -1,6 +1,6 @@
 # Rebuild the archive
 
-Use Node 24.22.3, npm 11.19.1, and Python 3. The reviewed Node executable hash is in `pins.json`. This recipe was qualified on macOS arm64. The application consumes the resulting JavaScript archive on Linux.
+Use Node 24.22.3 and npm 11.19.1. The byte-identical rebuild was qualified with Python 3.14.5 and zlib 1.2.12 on macOS arm64. The reviewed Node executable hash is in `pins.json`. Other Python or zlib versions must reproduce the existing pinned archive before their output can be accepted. The application consumes the resulting JavaScript archive on Linux.
 
 The builder makes no network requests and runs no package manager. It accepts an authenticated registry archive and a clean toolchain materialized from the included npm lock. Application installation does not run the builder.
 

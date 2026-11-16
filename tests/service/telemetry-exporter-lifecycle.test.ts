@@ -69,6 +69,29 @@ test("shutdown settles an active response and rejects later exports without a re
   assert.equal(endpoint.requests(), 1);
 });
 
+test("shutdown cancels an already-scheduled Retry-After delay", { timeout: 10_000 }, async (t) => {
+  const endpoint = await collector(t, (response) => response.writeHead(503, { "Retry-After": "2" }).end("{}"));
+  const { Agent } = await import("node:http");
+  const agent = new Agent({ keepAlive: true });
+  const consumed = Promise.withResolvers<void>();
+  agent.once("free", () => consumed.resolve());
+  const exporter = new OTLPTraceExporter({
+    url: endpoint.url, timeoutMillis: 5_000, concurrencyLimit: 1, httpAgentOptions: () => agent,
+  });
+  t.after(() => agent.destroy());
+  t.after(() => within(exporter.shutdown()));
+  const active = send(t, exporter);
+  await within(consumed.promise);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const started = performance.now();
+  await within(exporter.shutdown());
+  assert.equal((await active).code, 1);
+  assert.ok(performance.now() - started < 1_500, "shutdown clears the pending retry timer");
+  await within(exporter.forceFlush());
+  await delay(2_100);
+  assert.equal(endpoint.requests(), 1, "the canceled retry never reaches the collector");
+});
+
 test("an expired export cannot send after its async agent factory resolves", { timeout: 10_000 }, async (t) => {
   const endpoint = await collector(t, (response) => response.writeHead(200).end("{}"));
   const { Agent } = await import("node:http");
