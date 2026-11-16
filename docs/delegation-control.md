@@ -226,8 +226,8 @@ transaction. Restored parent observations belong to the previous instance and
 cannot establish observation for the new instance. Matching workers must observe
 the parent histories again. Old enable commands cannot return a valid receipt
 for that instance. Keep ingress disabled while workers reconcile those children.
-Re-enable only future work after reconciliation. Named roles removed by restore activation also
-require a new parent profile name, as described in
+Re-enable only future work after reconciliation. Named roles removed by restore
+activation also require a new parent profile name, as described in
 [named child destinations](member-profiles.md#configure-named-child-destinations).
 
 ## Upgrade or roll back with retained state
@@ -263,6 +263,13 @@ Do not use the older release to activate a restored snapshot while relying on
 delegation control. Its restore activation lacks the new global disable and
 retirement policy. Perform that recovery with the matching new release.
 
-Qualification of the retained-state rollback procedure and actual coordinated
-restore with this control policy is pending. SQL race checks alone do not qualify
-native teardown, parent workflow observation, or a whole-installation restore.
+The retained-state rollback fixture exercises Pi against the exact accepted
+older commit with delegation globally disabled. It retains the database and
+Temporal persistence, verifies Pi checkpoint continuation, and replays six
+histories with the older workflow code. It does not qualify Claude or Codex
+native filesystem rollback, arbitrary older releases, or restore activation.
+
+The selected PostgreSQL dump-and-restore case checks delegation retirement and
+instance authority. Whole-installation coordinated restore with native teardown
+and workflow recovery remains unqualified. SQL race checks alone do not establish
+those behaviors.

@@ -419,9 +419,10 @@ The existing proxy restart proof uses Temporal CLI 1.10.0 development SQLite
 persistence. That is **development fixture evidence only**, not support for using
 `start-dev` as production persistence, nor an in-flight multi-store restore proof.
 
-Actual coordinated restore qualification for the new delegation-control
-activation policy is pending. The SQL activation checks do not establish native
-teardown or workflow recovery across a restored installation. The accepted
+The selected PostgreSQL dump-and-restore case checks the new delegation-control
+activation policy. Whole-installation coordinated restore remains unqualified
+for this policy. The database case does not establish native teardown or workflow
+recovery across a restored installation. The accepted
 [application rollback](delegation-control.md#upgrade-or-roll-back-with-retained-state)
 uses retained state with delegation globally disabled. It does not authorize
 restore activation under the older application, which lacks this policy.
