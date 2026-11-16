@@ -110,12 +110,12 @@ try {
   save('database-before',(await admin.query('SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname')).rows);
   await must('public',process.execPath,[join(controller,'tests/proof/pr76-current-public.mjs'),source,label,output],{BIRBCREW_TEST_DATABASE_URL:await database('public')});
   if(label==='head') {
-    const suites=[['sql','tests/service/child-targets.test.ts',12],['races','tests/service/child-target-races.test.ts',2],['budget','tests/service/child-budget.test.ts',15],['workflow','tests/service/child-target-workflow.test.ts',8],['approvals','tests/service/approvals.test.ts',31]];
+    const suites=[['sql',['tests/service/child-targets.test.ts'],12],['races',['tests/service/child-target-races.test.ts'],2],['budget',['tests/service/child-budget.test.ts'],15],['workflow',['tests/service/child-target-workflow.test.ts'],8],['approvals',['tests/service/approvals.test.ts','tests/service/codex-calls.test.ts','tests/service/codex-registration.test.ts'],31]];
     assert.ok(process.env.TEMPORAL_CLI); await must('temporal-version',process.env.TEMPORAL_CLI,['--version']);
     assert.match(readFileSync(join(output,'temporal-version.log'),'utf8'),/1\.10\.0\b/); save('temporal-binary',{sha256:sha256(readFileSync(process.env.TEMPORAL_CLI))});
-    for(const [suite,path,count] of suites) {
+    for(const [suite,paths,count] of suites) {
       const url=await database(suite);
-      await must(suite,process.execPath,['--test','--test-reporter=tap',path],{BIRBCREW_TEST_DATABASE_URL:url,BIRBCREW_TEST_DATABASE_PREFIX:'pr76_nested_'});
+      await must(suite,process.execPath,['--test','--test-reporter=tap',...paths],{BIRBCREW_TEST_DATABASE_URL:url,BIRBCREW_TEST_DATABASE_PREFIX:'pr76_nested_'});
       assertTap(suite,count);
       const rows=await childState(url); save(suite+'-state',rows);
       if(suite==='workflow') {
