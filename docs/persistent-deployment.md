@@ -406,16 +406,18 @@ livenessProbe:
 
 Set `BIRBCREW_WORKER_HEARTBEAT_FILE` to an absolute path, for example
 `/tmp/crew-worker.heartbeat`. The worker refuses to start if the path is
-relative or its directory is not writable. It touches the file when it starts
-its Temporal workers, then every 5 seconds while all workers report `RUNNING`
-and delegation-control reconciliation is healthy, until shutdown begins. A touch
-creates the file if needed and never truncates it. If a touch fails, the worker
+relative or its directory is not writable. It touches the file every 5 seconds
+while all Temporal workers report `RUNNING` and a healthy delegation-control pass
+completed within the last 60 seconds, until shutdown begins. The first touch
+waits for a successful pass. A touch creates the file if needed and never
+truncates it. If a touch fails, the worker
 logs `Cannot update BIRBCREW_WORKER_HEARTBEAT_FILE` once and keeps running.
 
 A recent modification time proves that:
 
 - the worker's main event loop is running;
 - the worker started its Temporal workers;
+- delegation-control reconciliation completed successfully within the last 60 seconds;
 - shutdown has not begun.
 
 It does not prove that the workers can reach Temporal or are polling. The SDK
@@ -428,12 +430,16 @@ The worker logs `delegation_control_pending` when retirement settlement remains
 pending or a workflow wake is unavailable. It logs `delegation_control_failed`
 when the reconciliation pass fails. A failed pass or unavailable wake suppresses
 heartbeat touches until a healthy pass. Pending native teardown alone does not
-suppress them, and the initial touch can precede the first pass result. Use the
-private [delegation drain](delegation-control.md#observe-the-drain) to confirm
+suppress them. Historical parent discovery also runs independently of child
+retirement. Missing or unknown parent histories keep drain completion blocked
+without failing worker health. Database failures and unavailable parent-history
+reads fail the pass. The controller uses its own pool with connection and query
+timeouts, leaving native execution settings unchanged. Use the private
+[delegation drain](delegation-control.md#observe-the-drain) to confirm
 child closure, parent delivery, and native stops.
 
-Startup runs migrations, connects to Temporal and bundles workflow code before
-the first touch, so give it a startup probe:
+Startup runs migrations, connects to Temporal, bundles workflow code, and
+completes a healthy control pass before the first touch. Give it a startup probe:
 
 ```yaml
 startupProbe:
