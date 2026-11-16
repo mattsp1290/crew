@@ -18,7 +18,7 @@ import { memberActivities } from "../../src/service/activities.ts";
 import { ApprovalStore } from "../../src/service/approvals.ts";
 import { type ChildKey } from "../../src/service/children.ts";
 import { MemberClient } from "../../src/service/client.ts";
-import { DelegationControl, type ControlCommand, type ControlReceipt } from "../../src/service/delegation-control.ts";
+import { DelegationControl, parentResultKeySchema, type ControlCommand, type ControlReceipt } from "../../src/service/delegation-control.ts";
 import { TemporalDelegationWorkflows } from "../../src/service/delegation-control-workflows.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
 import { activityQueue, memberTaskQueue } from "../../src/service/queues.ts";
@@ -631,4 +631,97 @@ test("a real restarted worker reconciles a pre-target waiting history after miss
     await recordCase("legacy-restart-missed-wake", value, command); await replay(value);
     await restarted.stop(); restarted = undefined;
   } finally { await restarted?.stop(); await activities?.stop(); await workflow?.stop(); }
+});
+
+test("disable retains a SQL-settled delegation until its actual parent workflow observes the completed follow-up", { timeout: 300_000 }, async () => {
+  await enable(); let workflow: RunningWorker | undefined = await workflowWorker();
+  const activities = await activityWorkers();
+  const tasks = [{ role: "analyst" as const, task: "remember " + randomUUID() }];
+  const parentPrompt = "delegate " + JSON.stringify(tasks), holdKey = "parent/" + digest(parentPrompt);
+  const observer = new TemporalDelegationWorkflows(temporal);
+  let parentKey: z.infer<typeof parentResultKeySchema> | undefined;
+  let command: ControlReceipt | undefined;
+  parentHolds.add(digest(parentPrompt));
+  try {
+    const baselinePids = new Set((await runnerLoads()).map(row => row.pid));
+    const value = await delegation(tasks);
+    const barrier = await until(async () => held.get(holdKey), "actual parent follow-up provider hold");
+    const requests = wire.filter(row => [digest(parentPrompt), digest(tasks[0].task)].includes(row.promptDigest));
+    assert.equal(requests.filter(row => row.model === "control-parent" && row.continuation).length, 1);
+    assert.equal(requests.filter(row => row.model === "control-analyst").length, 1);
+    const admission = z.strictObject({ approvalDeadlineSeconds: z.number().nullable() }).parse((await pool.query(
+      'SELECT approval_deadline_seconds AS "approvalDeadlineSeconds" FROM birbcrew_ts.request_admissions WHERE request_id=$1',
+      [value.request.requestId])).rows[0]);
+    assert.equal(admission.approvalDeadlineSeconds, null, "The actual request admission has no owner deadline");
+    assert.equal((await ledger.pending(value.conversation)).length, 0, "The analyst delegation needs no owner answer or deadline");
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.deferred_calls WHERE request_id=$1", [value.request.requestId])).rowCount, 0);
+    const runners = (await runnerLoads()).filter(row => row.loadedBy === "supervisor-runner.ts" && !baselinePids.has(row.pid));
+    assert.ok(runners.some(row => !absent(row.pid)), "The provider hold owns a live actual parent runner");
+    await workflow.stop(); workflow = undefined;
+    barrier.release(); parentHolds.delete(digest(parentPrompt));
+    await before(barrier.closed, now() + 10_000, "released actual parent provider response closes");
+    await committed(value);
+    const launches = await until(async () => {
+      const rows = z.array(z.looseObject({ token: z.uuid(), stopped: z.boolean() })).parse((await pool.query(
+        "SELECT * FROM birbcrew_ts.native_launches WHERE request_id=$1 ORDER BY child_id NULLS FIRST,token", [value.request.requestId])).rows);
+      return rows.length > 0 && rows.every(row => row.stopped) ? rows : undefined;
+    }, "all actual request native launches confirm stopped while the workflow worker is offline");
+    const knownRunners = await until(async () => {
+      const rows = runners.map(row => ({ pid: row.pid, absent: absent(row.pid) }));
+      return rows.every(row => row.absent) ? rows : undefined;
+    }, "all observed request runners exit while the workflow worker is offline");
+    const parent = parentResultKeySchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
+      t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
+      d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
+      JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
+      WHERE t.request_id=$1`, [value.request.requestId])).rows[0]);
+    const { phase, ...key } = parent; parentKey = key;
+    assert.equal(phase, "committed"); assert.ok(key.workflowRunId); assert.ok(key.resumeActivityId); assert.ok(key.reply);
+    const history = await until(async () => {
+      const history = await temporal.workflow.getHandle(value.workflowId, key.workflowRunId ?? undefined).fetchHistory();
+      const events = history.events ?? [];
+      const scheduled = events.find(event => event.activityTaskScheduledEventAttributes?.activityId === key.resumeActivityId
+        && event.activityTaskScheduledEventAttributes.activityType?.name === "executeTurn");
+      if (!scheduled?.eventId) return undefined;
+      const completedIndex = events.findIndex(event => event.activityTaskCompletedEventAttributes?.scheduledEventId?.toString() === scheduled.eventId?.toString());
+      return completedIndex < 0 ? undefined : { raw: history, scheduledEventId: scheduled.eventId.toString(),
+        completedEventId: events[completedIndex].eventId?.toString(),
+        postCompletionWorkflowTasks: events.slice(completedIndex + 1).filter(event => event.workflowTaskCompletedEventAttributes) };
+    }, "actual Temporal executeTurn completion without a workflow worker to process it");
+    const children = await childRows(value.request.requestId);
+    const observation = await observer.observeParentResult(key);
+    assert.ok(requests.every(request => request.responseFinished && request.responseClosed), "Every actual provider response finished and closed");
+    await evidence("sql-settled-parent-unobserved-history", history.raw);
+    await evidence("sql-settled-parent-unobserved-before-disable", { parent, children, launches, knownRunners, admission,
+      providerRequests: requests, scheduledEventId: history.scheduledEventId, completedEventId: history.completedEventId,
+      postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, workflowWorker: "stopped", activityWorkers: "running" });
+    assert.ok(children.every(child => child.phase === "complete" && child.outcome?.kind === "completed"));
+    assert.equal(history.postCompletionWorkflowTasks.length, 0, "No workflow task completed after the actual follow-up activity completion");
+    assert.deepEqual(observation, { kind: "pending" }, "Actual Temporal history still lacks parent workflow observation");
+    command = await change(false);
+    const cohort = (await pool.query("SELECT * FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id", [command.commandId])).rows;
+    const report = await control.drain(command.commandId);
+    await evidence("sql-settled-parent-unobserved-disable", { requestId: value.request.requestId, childId: value.rows[0].childId,
+      command, cohort, report, observation, workflowWorker: "stopped", activityWorkers: "running" });
+    assert.equal(report.complete, false, "Disable must wait for the actual parent workflow to observe its already committed follow-up");
+    assert.ok(report.children.some(child => child.childId === value.rows[0].childId), "The disable cohort retains this terminal child");
+    assert.ok(report.parents.some(parent => parent.requestId === value.request.requestId && parent.workflow.kind === "pending"));
+    assert.ok(report.blockers.some(blocker => blocker.kind === "parent_workflow" && blocker.requestId === value.request.requestId
+      && blocker.observation.kind === "pending"), "The report names this unobserved parent workflow as a blocker");
+  } finally {
+    held.get(holdKey)?.release(); parentHolds.delete(digest(parentPrompt));
+    try {
+      workflow ??= await workflowWorker();
+      if (parentKey) {
+        const key = parentKey;
+        const observation = await until(async () => {
+          const result = await observer.observeParentResult(key); return result.kind === "observed" ? result : undefined;
+        }, "restarted workflow worker observes the completed actual parent activity");
+        const report = command ? await flushUntilComplete(command) : null;
+        await evidence("sql-settled-parent-unobserved-recovered", { parentKey: key, observation, report });
+        assert.equal(observation.kind, "observed");
+        if (report) assert.equal(report.complete, true, "Drain completes after the parent workflow actually observes its result");
+      }
+    } finally { try { await activities.stop(); } finally { await workflow?.stop(); } }
+  }
 });
