@@ -8,7 +8,7 @@ import { Pool, type PoolClient } from "pg";
 import { z } from "zod";
 import { fixedRoles } from "@birbcrew/pi-subagents";
 import { MemberStore } from "../../src/service/store.ts";
-import { lockChildAdmission } from "../../src/service/supervisor-child.ts";
+import { freshChildAdmission, lockChildAdmission } from "../../src/service/supervisor-child.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL 17 database.");
@@ -24,6 +24,7 @@ const receiptSchema = z.object({ commandId: z.uuid(), installationId: z.uuid(), 
 type Db = Pool | PoolClient;
 type Scope = z.infer<typeof scopeSchema>;
 type ProofObservation =
+  | { kind: "native_isolation"; isolation: string; oldAdmissionRows: number | null; freshAdmissionRows: number | null }
   | { kind: "lock_wait"; case: string; waiter: number; holder: number; wait_event_type: string | null; wait_event: string | null; blockers: number[] }
   | { kind: "admission"; case: string; oldAdmissionRows: number | null; freshAdmissionRows: number | null; reservations: number | null }
   | { kind: "command_return"; receipt: z.infer<typeof receiptSchema> }
@@ -528,4 +529,18 @@ test("an enable command from an old recovery instance cannot return a current en
   assert.equal((await pool.query("SELECT global_enabled FROM birbcrew_ts.delegation_control WHERE singleton")).rows[0].global_enabled, false);
   assert.deepEqual((await pool.query("SELECT receipt FROM birbcrew_ts.delegation_control_changes WHERE command_id=$1", [command])).rows[0].receipt, old);
   await change({ kind: "global" }, true);
+});
+
+test("fresh native admission refuses unsupported transaction isolation instead of trusting a retained snapshot", async () => {
+  const f = await fixture(); await f.start(); await f.reserve();
+  await sessions(async db => {
+    for (const isolation of ["repeatable read", "read committed"]) {
+      await db.query(isolation === "repeatable read" ? "BEGIN ISOLATION LEVEL REPEATABLE READ" : "BEGIN ISOLATION LEVEL READ COMMITTED");
+      const old = await lockChildAdmission(db, f.launch), fresh = await freshChildAdmission(db, f.launch);
+      assert.equal(old.rowCount, 1);
+      assert.equal(fresh.rowCount, isolation === "read committed" ? 1 : 0);
+      record({ kind: "native_isolation", isolation, oldAdmissionRows: old.rowCount, freshAdmissionRows: fresh.rowCount });
+      await db.query("ROLLBACK");
+    }
+  });
 });

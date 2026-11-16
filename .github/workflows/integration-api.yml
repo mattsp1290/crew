@@ -1,12 +1,22 @@
-name: Delegation control SQL boundary proof
+name: Delegation control full feature qualification
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact immutable feature commit to qualify
+        required: true
+        default: 2aa1efaa4b41a29686ffebee2159320541d279ac
+        type: string
 permissions:
   contents: read
 jobs:
-  sql-boundaries:
+  qualification:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [sql, store, workflow, restore]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 55
     services:
       postgres:
         image: postgres:17
@@ -24,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e2fd5ca90f029b8558f97562205c044b1ed52f0c
+          ref: ${{ inputs.source_sha }}
           path: source
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -37,20 +47,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-      - name: Verify exact source and SQL boundaries
-        timeout-minutes: 15
+      - name: Qualify exact source in an independent fresh environment
+        timeout-minutes: 45
         working-directory: source
         env:
-          CONTROL_SQL_SOURCE: e2fd5ca90f029b8558f97562205c044b1ed52f0c
+          CONTROL_SQL_SOURCE: ${{ inputs.source_sha }}
           CONTROL_SQL_CONTROLLER: ${{ github.sha }}
+          CONTROL_SQL_SUITE: ${{ matrix.suite }}
           CONTROL_SQL_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/postgres
+          CONTROL_SQL_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: exec node ../controller/tests/proof/control-sql-boundaries.mjs
       - name: Retain raw proof on every outcome
         if: ${{ always() }}
-        timeout-minutes: 2
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
-          name: control-sql-${{ github.run_id }}-${{ github.run_attempt }}
+          name: control-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/
           if-no-files-found: error
           retention-days: 7

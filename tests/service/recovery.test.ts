@@ -788,7 +788,7 @@ test('bundle directory fsync failure cannot record a successful or transferable 
  await assert.rejects(t.fence.transfer(manifest.installation,manifest.sourceInstance,randomUUID(),manifest.generation),/overlap/);
 });
 
-test('restoring an older snapshot retires named roles atomically after reconciliation and preserves recorded child identity',async context=>{
+test('restoring an older snapshot atomically retires named roles and delegation while preserving recorded child identity',async context=>{
  const t=await setup(context);
  const {ChildStore}=await import('../../src/service/children.ts');
  const {withNativeAdmission}=await import('../../src/service/native-admission.ts');
@@ -806,29 +806,57 @@ test('restoring an older snapshot retires named roles atomically after reconcili
   nativeCallId:'restore-call',task:'private child',profile:{role:'analyst',version:1,...fixedRoles.analyst,model:'parent-model'},
  }],{version:1,engine:'pi',state:{}});
  const identity=(await t.pool.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile;
+ const controlSql='SELECT birbcrew_ts.change_delegation_control($1,$2,$3,$4,$5,$6) AS receipt';
+ const oldCommand=randomUUID(),oldRevision=(await t.pool.query('SELECT revision::text FROM birbcrew_ts.delegation_control')).rows[0].revision;
+ const oldArgs=[oldCommand,oldRevision,{kind:'global'},true,'restore-fixture','command before backup'];
+ const oldReceipt=(await t.pool.query(controlSql,oldArgs)).rows[0].receipt;
+ assert.equal(oldReceipt.enabled,true);
  await dumpToBundle(t);
  const manifest=await readRecoveryManifest(t.bundle);
  await t.recovery.resume(t.hooks);
  await t.pool.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE name='parent'");
+ await t.pool.query(controlSql,[randomUUID(),oldReceipt.revision,{kind:'global'},false,'restore-fixture','disable after backup']);
  await t.recovery.holdForRestore(manifest.generation,t.hooks);
  const restored=await restoreBundle(t),recovery=new InstallationRecovery(restored,t.fence);
  await recovery.acceptRestore(t.bundle,pins,randomUUID());
  const active=async()=>(await restored.query("SELECT child_target_active FROM birbcrew_ts.profiles WHERE name='parent'")).rows[0].child_target_active;
  assert.deepEqual(await active(),['analyst'],'the backup cannot retain an unknown later removal');
- let providerCalls=0;
+ let admittedCallbacks=0;
  const launch={...child,text:'private child',token:randomUUID(),execution:{workflowRunId:randomUUID(),activityId:'child',attempt:1}};
- await assert.rejects(withNativeAdmission(restored,launch,context.signal,async()=>{providerCalls++;}),/held for recovery/);
- assert.equal(providerCalls,0);
+ await assert.rejects(withNativeAdmission(restored,launch,context.signal,async()=>{admittedCallbacks++;}),/held for recovery/);
+ assert.equal(admittedCallbacks,0);
  await assert.rejects(recovery.resume({reconcile:async()=>{throw Error('reconcile first');}},manifest),/reconcile first/);
  assert.deepEqual(await active(),['analyst']);
  assert.equal((await recovery.status()).control.phase,'restored');
+ assert.equal((await restored.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows[0].global_enabled,true);
+ assert.equal((await restored.query('SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE child_id=$1',[child.childId])).rowCount,0);
  await recovery.resume(t.hooks,manifest);
  assert.deepEqual(await active(),[]);
+ const control=(await restored.query('SELECT revision::text,global_enabled FROM birbcrew_ts.delegation_control')).rows[0];
+ assert.equal(control.global_enabled,false);
+ const cohort=(await restored.query(`SELECT c.retire,h.instance_id,h.receipt FROM birbcrew_ts.delegation_control_children c
+  JOIN birbcrew_ts.delegation_control_changes h USING(command_id) WHERE c.child_id=$1`,[child.childId])).rows;
+ assert.equal(cohort.length,1);assert.equal(cohort[0].retire,true);
+ assert.equal(cohort[0].instance_id,(await recovery.status()).control.instance);
+ assert.equal(cohort[0].receipt.revision,control.revision);
+ await assert.rejects(restored.query(controlSql,oldArgs),{code:'55000'});
+ assert.equal((await restored.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows[0].global_enabled,false);
  assert.deepEqual((await restored.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile,identity);
  const replay=await new MemberStore(restored).spawn(request);
  assert.equal(replay.subagents.targets[0].availability,'removed');
  assert.deepEqual((await new MemberStore(restored).spawn({...request,requestId:randomUUID()})).subagents,{mode:'named',targets:[]});
- const started=await new ChildStore(restored).begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1});
- assert.equal(started.kind,'start','recorded child still follows normal post-reconciliation admission');
+ const children=new ChildStore(restored);
+ await assert.rejects(children.begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1}),{code:'55000'});
+ await children.closeExitedChild(child,false);
+ const failed=await children.begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1});
+ assert.deepEqual(failed,{kind:'settled',outcome:{kind:'failed',nativeCallId:'restore-call',code:'child_failed'}});
+ await restored.query(controlSql,[randomUUID(),control.revision,{kind:'global'},true,'restore-fixture','enable future delegation']);
+ assert.deepEqual(await children.begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1}),failed);
+ assert.deepEqual((await restored.query('SELECT generation,phase,role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0],
+  {generation:null,phase:'failed',role_profile:identity});
+ assert.equal((await restored.query('SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1',[child.childId])).rowCount,0);
+ assert.deepEqual((await restored.query(`SELECT event_type,count(*)::int AS count FROM birbcrew_ts.audit_events
+  WHERE payload->>'childId'=$1 AND event_type IN ('delegation.started','delegation.finished') GROUP BY event_type`,[child.childId])).rows,
+  [{event_type:'delegation.finished',count:1}]);
  await assert.rejects(restored.query("UPDATE birbcrew_ts.profiles SET child_target_active=ARRAY['analyst'] WHERE name='parent'"),{code:'23514'});
 });

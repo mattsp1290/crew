@@ -48,10 +48,14 @@ type ChildStart =
   | { kind: "settled"; outcome: ChildOutcome }
   | { kind: "waiting"; approval: Approval };
 
-async function transaction<T>(pool: Pool, body: (db: PoolClient) => Promise<T>) {
+async function transaction<T>(pool: Pool, body: (db: PoolClient) => Promise<T>, bounded = false) {
   const db = await pool.connect();
   try {
     await db.query("BEGIN");
+    if (bounded) {
+      await db.query("SET LOCAL lock_timeout='8s'");
+      await db.query("SET LOCAL statement_timeout='10s'");
+    }
     const result = await body(db);
     await db.query("COMMIT");
     return result;
@@ -212,7 +216,8 @@ export class ChildStore {
       const row = await childRow(db,key);
       if (row.workflow_run_id && row.workflow_run_id !== runId) throw new MemberStoreError("stale");
       if (row.outcome) return {kind:"complete"} as const;
-      if (!resuming && row.phase === "waiting" && row.approval_id) {
+      const retired = await db.query("SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE child_id=$1 AND retire LIMIT 1", [key.childId]);
+      if (!retired.rowCount && !resuming && row.phase === "waiting" && row.approval_id) {
         const approval = await confirmedApproval(db,{...key,invocationId:key.childId,approvalId:row.approval_id});
         return {kind:"pending",approval} as const;
       }
@@ -231,7 +236,7 @@ export class ChildStore {
       const row = await childRow(db, key);
       await retireChild(db, key, row);
       return row.generation;
-    });
+    }, true);
     if (generation) await this.waitStopped(key, generation);
     if (cancelled) await this.cancel(key);
     else await this.finish(key, generation, null, true);
@@ -271,7 +276,7 @@ export class ChildStore {
       const row = await childRow(db, key);
       if (row.outcome) return row.outcome;
       return this.settleLocked(db, key, row, { kind: "cancelled" });
-    });
+    }, true);
   }
 
   async finish(key: ChildKey, generation: string | null, result: { text: string; checkpoint: unknown } | null, reconciled = false) {
@@ -296,7 +301,7 @@ export class ChildStore {
       if (checkpoint && checkpoint.engine !== "pi") throw new MemberStoreError("conflict");
       return this.settleLocked(db, key, row, result && checkpoint
         ? { kind: "completed", text: result.text, checkpoint } : { kind: "failed", code: "child_failed" });
-    });
+    }, reconciled);
   }
 
   private async settleLocked(db: PoolClient, key: ChildKey, row: ChildRow, settlement: ChildSettlement): Promise<ChildOutcome> {
