@@ -250,8 +250,11 @@ snapshot or copied from another fence, and never deleted. See
    disable command for the new recovery instance in the activation transaction.
    It permanently retires unfinished restored children without changing their
    sealed destinations or identities. It also removes all active named roles
-   under restored profile names. A held source that resumes without a restore
-   keeps its delegation-control settings and named roles.
+   under restored profile names. Recorded parent observations retain their old
+   instance identity, so matching workers must observe parent histories again
+   before those observations can establish drain completion. A held source that
+   resumes without a restore keeps its delegation-control settings, parent
+   observations, and named roles.
 
    Keep consumer ingress disabled while matching workers reconcile retired
    children as failed, or cancelled when request cancellation already applies.

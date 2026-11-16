@@ -172,8 +172,22 @@ new cohort. Do not reuse an old result as a lasting certificate of quiescence.
 
 The worker starts a reconciliation pass immediately and retries every two
 seconds, without overlapping passes. Each pass examines at most four retired
-children and advances a cursor so later children receive attention. Retirement
-survives worker restart and later enable commands.
+children and, independently, four historical delegation requests. Separate
+cursors advance past pending and already-observed requests so later requests
+receive attention. Retirement survives worker restart and later enable commands.
+
+The worker records parent observation only after Temporal confirms the exact
+committed reply for the recorded workflow run and resume activity. The database
+accepts that evidence only for the current active installation and recovery
+instance. A completed child, a committed reply, and stopped native processes do
+not establish parent observation. Disable commands include matching children
+whose parents lack this evidence, including children that already finished.
+Missing or unreadable historical workflows remain conservative blockers.
+
+A drain can use recorded parent evidence when the exact reply, workflow run,
+resume activity, and recovery instance still match. The drain remains read-only.
+It independently checks child workflows and native stops. Recording parent
+observation never removes children from an existing receipt's cohort.
 
 Inspect stderr for `delegation_control_pending`, which includes child settlement
 and wake results, or `delegation_control_failed`, which records a failed pass.
@@ -183,9 +197,16 @@ while the heartbeat continues. A missing workflow wake also does not suppress
 the heartbeat. Use `drain` to check completion.
 
 The heartbeat advances every five seconds only while all Temporal workers report
-`RUNNING` and control reconciliation is healthy. Its initial touch can precede
-the first reconciliation result. Follow the
+`RUNNING` and a healthy reconciliation pass completed within the last 60 seconds.
+The first touch waits for a successful pass. A long-running pass cannot keep an
+old success healthy indefinitely. Follow the
 [worker health instructions](persistent-deployment.md#worker) for probe setup.
+
+The controller uses a separate database pool with two connections. Connection
+acquisition times out after five seconds, SQL statements after ten seconds, and
+client queries after twelve seconds. These limits apply to individual operations,
+not the whole pass or native SDK execution. Shutdown waits for the current pass
+and closes its pool. Native work keeps its existing database settings.
 
 ## Re-enable future delegation
 
@@ -201,9 +222,11 @@ apply.
 
 After a restore, activation creates a new global disable command for the new
 instance and permanently retires unfinished restored children in the same
-transaction. Old enable commands cannot return a valid receipt for that instance.
-Keep ingress disabled while workers reconcile those children. Re-enable only
-future work after reconciliation. Named roles removed by restore activation also
+transaction. Restored parent observations belong to the previous instance and
+cannot establish observation for the new instance. Matching workers must observe
+the parent histories again. Old enable commands cannot return a valid receipt
+for that instance. Keep ingress disabled while workers reconcile those children.
+Re-enable only future work after reconciliation. Named roles removed by restore activation also
 require a new parent profile name, as described in
 [named child destinations](member-profiles.md#configure-named-child-destinations).
 
