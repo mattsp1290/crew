@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure, Client, Connection } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
-import { temporal as protocol } from "@temporalio/proto";
+import proto from "@temporalio/proto";
 import { Pool } from "pg";
 import { z } from "zod";
 import { memberActivities, type MemberActivities } from "../../src/service/activities.ts";
@@ -31,6 +31,7 @@ import { memberQueueActivities } from "../../src/service/worker.ts";
 import { before, boundedCommand, durableLog, now, signalOwnedChild } from "../proof/member-service-diagnostics.mts";
 import { workingState } from "../proof/member-services.mts";
 
+const { temporal: protocol } = proto;
 const configuredDatabase = process.env.BIRBCREW_TEST_DATABASE_URL;
 assert.ok(configuredDatabase, "Use this suite's own fresh disposable PostgreSQL 17 database");
 const database = configuredDatabase;
