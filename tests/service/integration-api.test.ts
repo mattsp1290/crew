@@ -797,7 +797,15 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     arguments: { operation_id: requestId, note: "OpenAPI decision" } });
   await check("approvalDetail", conversationPath + `/requests/${requestId}/approvals/${approval.approvalId}?memberId=${conversation.memberId}&invocationId=${requestId}&version=1`);
   await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
-    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "deny" });
+    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "allow_conversation" });
+  const grantsPath = `/v1/members/${conversation.memberId}/grants`;
+  const listed = await check("listGrants", grantsPath);
+  assert.equal(listed.active.length, 1);
+  const [grant] = listed.active;
+  assert.equal(grant.approvalId, approval.approvalId);
+  const revoked = await check("revokeGrant", grantsPath + `/${grant.grantId}/revoke`, {});
+  assert.equal(revoked.grant.grantId, grant.grantId);
+  assert.equal(revoked.grant.status, "revoked");
   await check("cancel", conversationPath + "/requests/" + requestId + "/cancel", {});
   assert.deepEqual([...checked].sort(), Object.keys(routes).sort());
 
@@ -811,6 +819,7 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     openConversation: { conversationId: randomUUID(), memberId: member.memberId },
     submit: { requestId, text: input.text },
     cancel: {},
+    revokeGrant: {},
     decide: { requestId, memberId: conversation.memberId, invocationId: requestId,
       approvalId: approval.approvalId, version: approval.version, choice: "deny" },
   };
