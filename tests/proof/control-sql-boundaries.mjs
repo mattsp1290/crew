@@ -87,9 +87,11 @@ const suites={
       "target disable names the unaffected waiting recorder and global disable later retires it",
       "a real restarted worker reconciles a pre-target waiting history after missed wake and re-enable",
       "disable retains a SQL-settled delegation until its actual parent workflow observes the completed follow-up",
-      "an actual worker stops healthy heartbeats on blocked control discovery, recovers, and shuts down with discovery still blocked"
+      "an actual worker stops healthy heartbeats on blocked control discovery, recovers, and shuts down with discovery still blocked",
+      "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails"
     ],
-    "count": 8
+    "count": 1,
+    "pattern": "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails"
   },
   "restore": {
     "file": "tests/service/recovery.test.ts",
