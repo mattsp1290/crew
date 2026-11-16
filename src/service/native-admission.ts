@@ -1,5 +1,5 @@
 import {acquireRecoveryNativeLease,requireRecoveryActive} from "./recovery-admission.ts";
-import { lockChildAdmission } from "./supervisor-child.ts";
+import { freshChildAdmission, lockChildAdmission } from "./supervisor-child.ts";
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { TurnRequest } from "./domain.ts";
@@ -73,7 +73,9 @@ export async function withNativeAdmission<T>(
         AND NOT n.stopped AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_stop_requests s
           WHERE (s.conversation_id,s.request_id,s.token)=(n.conversation_id,n.request_id,n.token))
       FOR SHARE OF ${lease}`, [...ids, launch.ownerId, execution.workflowRunId, execution.activityId, execution.attempt, createHash("sha256").update(launch.text).digest()]);
-    if (!admitted.rowCount) throw new Error("Native admission revoked");
+    if (!admitted.rowCount || launch.childId && !(await freshChildAdmission(db, launch)).rowCount) {
+      throw new Error("Native admission revoked");
+    }
     // A backend disconnect also releases its locks. Stop this SDK if that happens.
     const disconnected = () => controller.abort();
     db.once("error", disconnected);
