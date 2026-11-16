@@ -1,0 +1,21 @@
+{
+  "code": "log_unavailable",
+  "message": "The action log could not record the intent. Nothing was typed.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R5",
+  "measured": {
+    "frontmost_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "target_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "window_title": "notes.txt",
+    "global_point": null,
+    "measured_at": "2026-11-14T15:02:24.105Z"
+  }
+}

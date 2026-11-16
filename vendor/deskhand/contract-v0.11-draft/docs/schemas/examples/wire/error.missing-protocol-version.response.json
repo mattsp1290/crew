@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "error": {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": {
+      "detail": "params._meta[\"io.modelcontextprotocol/protocolVersion\"] is required."
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "resultType": "complete",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"lease_result\":{\"op\":\"acquire\",\"outcome\":\"refused\",\"code\":\"lease_held_by_other\",\"expires_in_ms\":21500},\"lease\":{\"held_by_caller\":false}}"
+      }
+    ],
+    "structuredContent": {
+      "lease_result": {
+        "op": "acquire",
+        "outcome": "refused",
+        "code": "lease_held_by_other",
+        "expires_in_ms": 21500
+      },
+      "lease": {
+        "held_by_caller": false
+      }
+    },
+    "isError": false
+  }
+}

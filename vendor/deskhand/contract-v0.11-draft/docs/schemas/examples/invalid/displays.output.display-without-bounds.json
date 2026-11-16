@@ -1,0 +1,9 @@
+{
+  "display_config_generation": 3,
+  "displays": [
+    {
+      "display_id": 1,
+      "name": "Built-in Retina Display"
+    }
+  ]
+}

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { Pool } from "pg";
 import { ApprovalStore, type Approval } from "../../src/service/approvals.ts";
+import { ChildStore } from "../../src/service/children.ts";
+import { publishObservation, readSnapshot } from "../../src/service/observation.ts";
 import { MemberStore } from "../../src/service/store.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
@@ -151,4 +153,65 @@ test("ordinary answers race cancellation under the conversation lock and cannot 
   await assert.rejects(pool.query(`INSERT INTO birbcrew_ts.work_items (conversation_id,request_id,approval_id)
     VALUES ($1,$2,$3)`, [key.conversationId, key.requestId, key.approvalId]), { code: "23503" });
   assert.equal((await writes(scope.conversationId)).length, 0);
+});
+
+for (const child of [false, true]) {
+  for (const variant of ["no-note", "empty-note", "private-note", "question"] as const) {
+    if (child && variant === "question") continue;
+    test(`${child ? "child" : "parent"} ${variant} publishes only proven public arguments across reopen`, async () => {
+      const { scope, proposal } = await input("pi");
+      let invocationId: string = scope.requestId, token = proposal.token;
+      const checkpoint = { version: 1, engine: "pi", state: {} } as const;
+      if (child) {
+        const children = new ChildStore(pool);
+        const conversation = await members.getConversation({ ownerId: scope.ownerId, conversationId: scope.conversationId });
+        const [key] = await children.delegate(conversation, scope.requestId, token, [{ nativeCallId: "delegate", task: "record",
+          profile: { role: "recorder", version: 1, instructions: "Record the work item.", model: "fixture", tools: ["record_work_item"] } }], checkpoint);
+        const started = await children.begin(key, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 });
+        assert.equal(started.kind, "start");
+        invocationId = key.childId;
+        token = started.generation;
+      }
+      const toolName = variant === "question" ? "choose_next_step" : "record_work_item";
+      const args = variant === "question" ? {} : { operation_id: scope.requestId,
+        ...(variant === "empty-note" ? { note: "" } : variant === "private-note" ? { note: "private-fixture-note" } : {}) };
+      const proposed = { ...proposal, token, invocationId, toolName, arguments: args } satisfies Parameters<ApprovalStore["propose"]>[0];
+      const mode = child ? { childGeneration: token } : undefined;
+      const call = await approvals.propose(proposed, child ? checkpoint : undefined, mode);
+      const complete = variant === "no-note" || variant === "question";
+      const snapshot = await readSnapshot(pool, scope.ownerId, scope.conversationId);
+      const card = (variant === "question" ? snapshot.state.pendingQuestions : snapshot.state.pendingApprovals)?.[0];
+      assert.ok(card);
+      assert.equal(card.argumentsComplete, complete ? true : undefined);
+      assert.equal(Object.hasOwn(card, "argumentsComplete"), complete);
+      const message = snapshot.messages.find(m => m.role === "assistant" && m.toolCalls?.some(c => c.id === call.approvalId));
+      assert.ok(message?.role === "assistant");
+      assert.equal(message.subagentRunId, child ? invocationId : undefined);
+      assert.equal(message.toolCalls?.[0].function.arguments, JSON.stringify(variant === "question" ? {} : { operation_id: scope.requestId }));
+      const events = await pool.query("SELECT event FROM birbcrew_ts.public_events WHERE conversation_id=$1 ORDER BY cursor", [scope.conversationId]);
+      assert.deepEqual(events.rows.at(-1).event.snapshot, snapshot.state);
+      assert.ok(!JSON.stringify([snapshot, events.rows]).includes("private-fixture-note"));
+      assert.ok(!JSON.stringify([snapshot, events.rows]).includes('\"note\"'));
+      const reopened = new Pool({ connectionString: url });
+      try {
+        assert.deepEqual(await readSnapshot(reopened, scope.ownerId, scope.conversationId), snapshot);
+        assert.deepEqual(await new ApprovalStore(reopened).propose(proposed, child ? checkpoint : undefined, mode), call);
+        assert.deepEqual(await readSnapshot(reopened, scope.ownerId, scope.conversationId), snapshot);
+      } finally { await reopened.end(); }
+    });
+  }
+}
+
+test("legacy call changes and persisted cards remain unproven", async () => {
+  const original = await input("pi");
+  const approval = await approvals.propose(original.proposal);
+  const { scope } = await input("pi");
+  await approvals.transaction(db => publishObservation(db, scope.conversationId, {
+    kind: "call", approval: { ...approval, ...scope, invocationId: scope.requestId },
+  }));
+  const snapshot = await readSnapshot(pool, scope.ownerId, scope.conversationId);
+  assert.equal(Object.hasOwn(snapshot.state.pendingApprovals[0], "argumentsComplete"), false);
+  const reopened = new Pool({ connectionString: url });
+  try { assert.deepEqual(await readSnapshot(reopened, scope.ownerId, scope.conversationId), snapshot); }
+  finally { await reopened.end(); }
 });

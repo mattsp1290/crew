@@ -79,6 +79,54 @@ export const openConversationSchema = conversationIdentitySchema.extend({
 export const requestIdentitySchema = conversationIdentitySchema.extend({
   requestId: uuid,
 });
+export const createHandoffBodySchema = z.strictObject({
+  requestId: uuid,
+  memberId: uuid,
+});
+export const createHandoffSchema = createHandoffBodySchema.extend({
+  conversationId: uuid,
+});
+const handoffEndpointSchema = z.object({
+  conversationId: uuid,
+  memberId: uuid,
+  engine: engineSchema,
+});
+export const handoffRecordSchema = z.object({
+  handoffId: uuid,
+  requestId: uuid,
+  source: handoffEndpointSchema,
+  target: handoffEndpointSchema,
+  firstRequestId: uuid,
+  firstRequestAdmitted: z.boolean(),
+  carriedTurns: z.int().min(1).max(128),
+  omittedTurns: z.int().min(0).max(127),
+  uncertainTurns: z.int().min(0).max(128),
+  transcriptBytes: z.int().min(1).max(65_536),
+  transcriptDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  createdAt: z.iso.datetime(),
+}).refine((record) => record.source.conversationId !== record.target.conversationId, {
+  message: "Handoff source and target conversations must differ",
+}).refine((record) => record.carriedTurns + record.omittedTurns + record.uncertainTurns <= 128, {
+  message: "Handoff turn counts must total at most 128",
+}).meta({
+  description: "Source and target conversations must differ. The sum of carriedTurns, omittedTurns and uncertainTurns must be at most 128.",
+});
+export const createHandoffResponseSchema = handoffRecordSchema.safeExtend({
+  apiVersion: z.literal("1"),
+});
+export const conversationHandoffSchema = z.object({
+  apiVersion: z.literal("1"),
+  conversationId: uuid,
+  incoming: handoffRecordSchema.nullable(),
+  outgoing: handoffRecordSchema.nullable(),
+}).refine((chain) => chain.incoming !== null || chain.outgoing !== null, {
+  message: "A handoff read must contain an incoming or outgoing record",
+}).refine((chain) => (chain.incoming === null || chain.incoming.target.conversationId === chain.conversationId)
+  && (chain.outgoing === null || chain.outgoing.source.conversationId === chain.conversationId), {
+  message: "Handoff directions must match the envelope conversation",
+}).meta({
+  description: "At least one of incoming and outgoing is non-null. Incoming targets and outgoing sources must match conversationId.",
+});
 export const submitRequestSchema = requestIdentitySchema.extend({
   text: boundedText(promptBytes),
   approvalDeadlineSeconds: approvalDeadlineSeconds.optional(),
@@ -106,6 +154,121 @@ export const decideSchema = requestIdentitySchema.extend({
   approvalId: uuid,
   version: z.int(),
   choice: decisionChoice,
+});
+/** Complete proposal arguments. An absent note and an empty note remain distinct. */
+export const recordWorkItemArgumentsSchema = z.strictObject({
+  operation_id: uuid,
+  note: z.string().refine(
+    (text) => text.isWellFormed() && !text.includes("\0") && new TextEncoder().encode(text).length <= 4096,
+    { message: "Expected valid UTF-8 text of at most 4096 bytes" },
+  ).meta({ "x-maxUtf8Bytes": 4096, "x-forbidden": "NUL; unpaired surrogates" }).optional(),
+});
+export const approvalDetailIdentitySchema = decideSchema.omit({ choice: true });
+export const approvalDetailQuerySchema = approvalDetailIdentitySchema.pick({
+  memberId: true, invocationId: true, version: true,
+});
+/** Immutable proposal material, without a claim about current actionability. */
+export const ownerApprovalDetailSchema = approvalDetailIdentitySchema.extend({
+  apiVersion: z.literal("1"),
+  version: z.literal(1),
+  policyVersion: z.literal(1),
+  toolName: z.literal("record_work_item"),
+  arguments: recordWorkItemArgumentsSchema,
+}).refine((detail) => detail.arguments.operation_id === detail.requestId, {
+  message: "Proposal operation must match requestId",
+});
+export const approvalDetailsCapabilitySchema = z.looseObject({
+  version: z.int().positive(),
+  tools: z.array(z.string().min(1)),
+});
+/** Version 1 metadata for the existing owner-only standing-grant routes. */
+export const standingGrantsCapabilityV1Schema = z.looseObject({
+  version: z.literal(1),
+  choices: z.array(standingChoice),
+  cardField: z.literal("standingChoices"),
+  stateField: z.literal("grantedCalls"),
+  tools: z.array(z.string().min(1)),
+  policyVersion: z.literal(1),
+  initiatorKinds: z.array(z.string().min(1)),
+  route: z.literal("/v1/members/{memberId}/grants"),
+  inactiveListLimit: z.literal(20),
+  revocation: z.literal("later-proposals-only"),
+});
+/** Unknown versions remain opaque metadata, never a supported v1 contract. */
+export const standingGrantsCapabilitySchema = z.union([
+  standingGrantsCapabilityV1Schema,
+  z.looseObject({
+    version: z.int().positive().refine((version) => version !== 1)
+      .meta({ not: { const: 1 } }),
+  }),
+]);
+export const handoffsCapabilityV1Schema = z.looseObject({
+  version: z.literal(1),
+  route: z.literal("/v1/conversations/{conversationId}/handoffs"),
+  readRoute: z.literal("/v1/conversations/{conversationId}/handoff"),
+  delivery: z.literal("reserved-first-request"),
+  initiatorKind: z.literal("handoff"),
+  transcriptBytes: z.literal(65_536),
+  promptBytes: z.literal(promptBytes),
+  carried: z.literal("newest-whole-committed-turns"),
+  source: z.literal("sealed-readable"),
+});
+export const handoffsCapabilitySchema = z.union([
+  handoffsCapabilityV1Schema,
+  z.looseObject({
+    version: z.int().positive().refine((version) => version !== 1)
+      .meta({ not: { const: 1 } }),
+  }),
+]);
+export const listGrantsSchema = z.strictObject({ memberId: uuid });
+export const revokeGrantSchema = listGrantsSchema.extend({ grantId: uuid });
+const grantBase = {
+  grantId: uuid,
+  memberId: uuid,
+  toolName: z.literal("record_work_item"),
+  policyVersion: z.literal(1),
+  approvalId: uuid,
+  createdAt: z.iso.datetime(),
+};
+const grantScopeSchema = z.discriminatedUnion("scope", [
+  z.object({ ...grantBase, scope: z.literal("conversation"),
+    conversationId: uuid, choice: z.literal("allow_conversation") }),
+  z.object({ ...grantBase, scope: z.literal("member"),
+    conversationId: z.null(), choice: z.literal("allow_always") }),
+]);
+const unrevokedFields = {
+  revokedAt: z.never().optional(),
+  revocationReason: z.never().optional(),
+};
+export const activeGrantSchema = z.intersection(grantScopeSchema, z.object({
+  status: z.literal("active"), ...unrevokedFields,
+}));
+export const revokedGrantSchema = z.intersection(grantScopeSchema, z.object({
+  status: z.literal("revoked"),
+  revokedAt: z.iso.datetime(),
+  revocationReason: z.enum(["owner", "recovery_restore"]),
+}));
+const closedGrantSchema = z.object({
+  ...grantBase, scope: z.literal("conversation"), conversationId: uuid,
+  choice: z.literal("allow_conversation"), status: z.literal("conversation_closed"),
+  ...unrevokedFields,
+});
+export const publicGrantSchema = z.union([
+  activeGrantSchema, revokedGrantSchema, closedGrantSchema,
+]);
+/** All active grants, with at most twenty inactive historical rows. */
+export const grantListResponseSchema = z.object({
+  apiVersion: z.literal("1"),
+  memberId: uuid,
+  active: z.array(activeGrantSchema),
+  inactive: z.array(z.union([revokedGrantSchema, closedGrantSchema])).max(20),
+}).refine((list) => {
+  const grants = [...list.active, ...list.inactive];
+  return grants.every((grant) => grant.memberId === list.memberId)
+    && new Set(grants.map((grant) => grant.grantId)).size === grants.length;
+}, { message: "Grant identities must be unique and belong to the listed member" });
+export const revokeGrantResponseSchema = z.object({
+  apiVersion: z.literal("1"), grant: revokedGrantSchema,
 });
 export const decisionReceiptSchema = z.object({
   approvalId: z.uuid(),
@@ -235,6 +398,9 @@ export const capabilitiesSchema = z.looseObject({
     mode: z.literal("snapshot-and-bounded-tail"),
   }),
   initiatorKinds: z.array(z.string().min(1)),
+  approvalDetails: approvalDetailsCapabilitySchema.optional(),
+  standingGrants: standingGrantsCapabilitySchema.optional(),
+  handoffs: handoffsCapabilitySchema.optional(),
 });
 const dependencyStatus = z.enum(["ready", "unavailable"]);
 export const healthSchema = z.object({
@@ -257,6 +423,12 @@ export const errorSchema = z.object({
 });
 export type Engine = z.infer<typeof engineSchema>;
 export type CreateMember = z.input<typeof createMemberSchema>;
+export type CreateHandoff = z.input<typeof createHandoffSchema>;
+export type HandoffRecord = z.output<typeof handoffRecordSchema>;
+export type CreateHandoffResponse = z.output<typeof createHandoffResponseSchema>;
+export type ConversationHandoff = z.output<typeof conversationHandoffSchema>;
+export type HandoffsCapability = z.output<typeof handoffsCapabilitySchema>;
+export type HandoffsCapabilityV1 = z.output<typeof handoffsCapabilityV1Schema>;
 export type OpenConversation = z.input<typeof openConversationSchema>;
 export type SubmitRequest = z.input<typeof submitRequestSchema>;
 export type RequestIdentity = z.infer<typeof requestIdentitySchema>;
@@ -272,6 +444,16 @@ export type ServerRequestReceipt = z.infer<typeof serverRequestReceiptSchema>;
 export type InstructionsSummary = z.infer<typeof instructionsSummarySchema>;
 export type Member = z.infer<typeof memberSchema>;
 export type MemberPage = z.infer<typeof memberPageSchema>;
+export type RecordWorkItemArguments = z.infer<typeof recordWorkItemArgumentsSchema>;
+export type ApprovalDetailIdentity = z.infer<typeof approvalDetailIdentitySchema>;
+export type OwnerApprovalDetail = z.infer<typeof ownerApprovalDetailSchema>;
+export type StandingGrantsCapability = z.infer<typeof standingGrantsCapabilitySchema>;
+export type StandingGrantsCapabilityV1 = z.infer<typeof standingGrantsCapabilityV1Schema>;
+export type PublicGrant = z.infer<typeof publicGrantSchema>;
+export type GrantList = z.infer<typeof grantListResponseSchema>;
+export type ListGrants = z.input<typeof listGrantsSchema>;
+export type RevokeGrant = z.input<typeof revokeGrantSchema>;
+export type RevokeGrantResponse = z.infer<typeof revokeGrantResponseSchema>;
 export type Decide = z.input<typeof decideSchema>;
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
@@ -300,6 +482,21 @@ export const routes = {
     statuses: [200],
     command: false,
   },
+  listGrants: {
+    method: "GET",
+    path: "/v1/members/{memberId}/grants",
+    response: grantListResponseSchema,
+    statuses: [200],
+    command: false,
+  },
+  revokeGrant: {
+    method: "POST",
+    path: "/v1/members/{memberId}/grants/{grantId}/revoke",
+    body: z.strictObject({}),
+    response: revokeGrantResponseSchema,
+    statuses: [200],
+    command: true,
+  },
   createMember: {
     method: "POST",
     path: "/v1/members",
@@ -320,6 +517,22 @@ export const routes = {
     method: "GET",
     path: "/v1/conversations/{conversationId}",
     response: snapshotWireSchema,
+    statuses: [200],
+    command: false,
+  },
+  createHandoff: {
+    method: "POST",
+    path: handoffsCapabilityV1Schema.shape.route.value,
+    body: createHandoffBodySchema,
+    response: createHandoffResponseSchema,
+    statuses: [201],
+    command: true,
+    unknownOutcomeErrors: [{ status: 409, code: "update_rejected" }],
+  },
+  handoff: {
+    method: "GET",
+    path: handoffsCapabilityV1Schema.shape.readRoute.value,
+    response: conversationHandoffSchema,
     statuses: [200],
     command: false,
   },
@@ -345,6 +558,14 @@ export const routes = {
     response: requestReceiptResponseSchema,
     statuses: [202],
     command: true,
+  },
+  approvalDetail: {
+    method: "GET",
+    path: "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}",
+    query: approvalDetailQuerySchema,
+    response: ownerApprovalDetailSchema,
+    statuses: [200],
+    command: false,
   },
   decide: {
     method: "POST",

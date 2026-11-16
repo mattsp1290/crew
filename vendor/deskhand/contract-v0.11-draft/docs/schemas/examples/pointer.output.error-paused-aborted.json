@@ -1,0 +1,29 @@
+{
+  "code": "paused",
+  "message": "The kill switch was used during the drag. The button was released.",
+  "state": "paused",
+  "operation_id": "call_01HZX3M9Q5",
+  "operation": {
+    "status": "aborted",
+    "events_posted": 5
+  },
+  "replayed": false,
+  "measured": {
+    "frontmost_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "target_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "window_title": "notes.txt",
+    "global_point": {
+      "x": 883.8114649681529,
+      "y": 571.3432982917215
+    },
+    "measured_at": "2026-11-14T15:02:19.730Z"
+  }
+}

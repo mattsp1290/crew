@@ -1,0 +1,45 @@
+{
+  "code": "denied_app",
+  "message": "The drag was about to cross a window of an app that is not allowed. It was stopped and the button released.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9Q5",
+  "operation": {
+    "status": "aborted",
+    "events_posted": 19
+  },
+  "replayed": false,
+  "measured": {
+    "frontmost_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "target_app": {
+      "bundle_id": "com.apple.mail",
+      "team_id": null,
+      "name": "Mail"
+    },
+    "window_title": null,
+    "global_point": {
+      "x": 381.92101910828023,
+      "y": 402.54566360052564
+    },
+    "drag_end": {
+      "target_app": {
+        "bundle_id": "com.apple.mail",
+        "team_id": null,
+        "name": "Mail"
+      },
+      "window_title": null,
+      "global_point": {
+        "x": 381.92101910828023,
+        "y": 470.06471747700397
+      }
+    },
+    "measured_at": "2026-11-14T15:02:20.214Z"
+  },
+  "details": {
+    "denied_by": "policy",
+    "point_index": 2
+  }
+}

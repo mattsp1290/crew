@@ -1,0 +1,8 @@
+{
+  "code": "denied_app",
+  "message": "x",
+  "state": "ok",
+  "details": {
+    "denied_by": "policy"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "lease_result": {
+    "op": "acquire",
+    "outcome": "refused",
+    "code": "lease_held_by_other",
+    "expires_in_ms": 21500
+  },
+  "lease": {
+    "held_by_caller": false
+  }
+}

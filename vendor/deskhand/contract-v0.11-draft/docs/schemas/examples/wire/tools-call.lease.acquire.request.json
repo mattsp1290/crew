@@ -1,0 +1,16 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "lease",
+    "arguments": {
+      "op": "acquire",
+      "holder_id": "crew:inst-7f3a:desk-lunus",
+      "ttl_ms": 30000
+    },
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+    }
+  }
+}

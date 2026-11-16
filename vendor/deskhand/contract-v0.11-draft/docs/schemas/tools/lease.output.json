@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/lease.output.json",
+  "title": "lease structuredContent",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/lease_tool_result" },
+    { "$ref": "#/$defs/lease_error" }
+  ],
+  "$defs": {
+    "lease_tool_result": {
+      "description": "The outcome of the lease operation and the lease as the named holder now sees it. A refused operation is reported here, in lease_result, and is not a tool error.",
+      "type": "object",
+      "properties": {
+        "lease_result": { "$ref": "#/$defs/lease_result" },
+        "lease": { "$ref": "../defs.json#/$defs/lease_view" }
+      },
+      "required": ["lease_result", "lease"],
+      "not": {
+        "$comment": "No result carries a holder_id.",
+        "anyOf": [{ "required": ["code"] }, { "required": ["holder_id"] }]
+      },
+      "if": {
+        "properties": {
+          "lease_result": {
+            "properties": { "outcome": { "enum": ["acquired", "renewed"] } },
+            "required": ["outcome"]
+          }
+        },
+        "required": ["lease_result"]
+      },
+      "then": {
+        "properties": {
+          "lease": { "properties": { "held_by_caller": { "const": true } } }
+        }
+      },
+      "else": {
+        "properties": {
+          "lease": { "properties": { "held_by_caller": { "const": false } } }
+        }
+      }
+    },
+    "lease_result": {
+      "type": "object",
+      "properties": {
+        "op": { "type": "string", "enum": ["acquire", "renew", "release"] },
+        "outcome": {
+          "type": "string",
+          "enum": ["acquired", "renewed", "released", "not_held", "refused"]
+        },
+        "code": {
+          "description": "Why the operation was refused. Present exactly when outcome is refused.",
+          "type": "string",
+          "enum": [
+            "gated",
+            "paused",
+            "disarmed",
+            "lease_not_held",
+            "lease_held_by_other",
+            "lease_expired"
+          ]
+        },
+        "expires_in_ms": {
+          "description": "Present exactly when code is lease_held_by_other: milliseconds until the other holder's lease runs out if it is not renewed.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["op", "outcome"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "outcome": { "const": "refused" } },
+            "required": ["outcome"]
+          },
+          "then": { "required": ["code"] },
+          "else": { "not": { "required": ["code"] } }
+        },
+        {
+          "if": {
+            "properties": { "code": { "const": "lease_held_by_other" } },
+            "required": ["code"]
+          },
+          "then": { "required": ["expires_in_ms"] },
+          "else": { "not": { "required": ["expires_in_ms"] } }
+        },
+        {
+          "if": {
+            "properties": { "op": { "const": "acquire" } },
+            "required": ["op"]
+          },
+          "then": {
+            "properties": {
+              "outcome": { "enum": ["acquired", "renewed", "refused"] },
+              "code": {
+                "enum": ["gated", "paused", "disarmed", "lease_held_by_other"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "op": { "const": "renew" } },
+            "required": ["op"]
+          },
+          "then": {
+            "properties": { "outcome": { "enum": ["renewed", "refused"] } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "op": { "const": "release" } },
+            "required": ["op"]
+          },
+          "then": {
+            "properties": {
+              "outcome": { "enum": ["released", "not_held", "refused"] },
+              "code": { "enum": ["lease_held_by_other"] }
+            }
+          }
+        }
+      ]
+    },
+    "lease_error": {
+      "description": "A tool_error with one of the codes that lease can return (docs/contract.md section 9.3).",
+      "allOf": [
+        { "$ref": "../defs.json#/$defs/tool_error" },
+        {
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_argument",
+                "internal_error"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

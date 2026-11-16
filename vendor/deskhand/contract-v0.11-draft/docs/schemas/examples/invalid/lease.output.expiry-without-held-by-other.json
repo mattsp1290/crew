@@ -1,0 +1,11 @@
+{
+  "lease_result": {
+    "op": "acquire",
+    "outcome": "refused",
+    "code": "disarmed",
+    "expires_in_ms": 5
+  },
+  "lease": {
+    "held_by_caller": false
+  }
+}

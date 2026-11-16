@@ -1,0 +1,9 @@
+{
+  "lease_result": {
+    "op": "renew",
+    "outcome": "refused"
+  },
+  "lease": {
+    "held_by_caller": false
+  }
+}

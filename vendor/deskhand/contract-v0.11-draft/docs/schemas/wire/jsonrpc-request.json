@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/wire/jsonrpc-request.json",
+  "title": "JSON-RPC request",
+  "description": "A request body as a caller sends it (docs/contract.md sections 2.3 and 3). Every request carries params._meta[\"io.modelcontextprotocol/protocolVersion\"]. The method is any string here; deskhand answers a method other than server/discover, tools/list and tools/call with -32601.",
+  "type": "object",
+  "properties": {
+    "jsonrpc": { "const": "2.0" },
+    "id": { "type": ["string", "integer"] },
+    "method": { "type": "string" },
+    "params": {
+      "type": "object",
+      "properties": {
+        "_meta": {
+          "description": "deskhand reads only the protocol version and ignores every other member.",
+          "type": "object",
+          "properties": {
+            "io.modelcontextprotocol/protocolVersion": { "type": "string" }
+          },
+          "required": ["io.modelcontextprotocol/protocolVersion"]
+        }
+      },
+      "required": ["_meta"]
+    }
+  },
+  "required": ["jsonrpc", "id", "method", "params"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "method": { "const": "tools/call" } }, "required": ["method"] },
+      "then": {
+        "properties": {
+          "params": {
+            "properties": {
+              "name": { "type": "string" },
+              "arguments": {
+                "description": "May be omitted for a tool with no required argument, and is then {}.",
+                "type": "object"
+              }
+            },
+            "required": ["name"],
+            "propertyNames": { "enum": ["_meta", "name", "arguments"] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "method": { "const": "server/discover" } }, "required": ["method"] },
+      "then": { "properties": { "params": { "propertyNames": { "const": "_meta" } } } }
+    },
+    {
+      "if": { "properties": { "method": { "const": "tools/list" } }, "required": ["method"] },
+      "then": {
+        "properties": {
+          "params": {
+            "properties": { "cursor": { "type": "string" } },
+            "propertyNames": { "enum": ["_meta", "cursor"] }
+          }
+        }
+      }
+    }
+  ]
+}

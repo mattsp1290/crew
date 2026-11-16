@@ -1,0 +1,8 @@
+{
+  "code": "invalid_argument",
+  "message": "operation needs both holder_id and operation_id.",
+  "state": "ok",
+  "details": {
+    "argument": "/operation"
+  }
+}

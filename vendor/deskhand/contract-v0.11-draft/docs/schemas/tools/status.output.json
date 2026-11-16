@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/status.output.json",
+  "title": "status structuredContent",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/status_result" },
+    { "$ref": "#/$defs/status_error" }
+  ],
+  "$defs": {
+    "status_result": {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "description": "Version of docs/contract.md this build implements. These schemas describe 0.11-draft.",
+          "const": "0.11-draft"
+        },
+        "mcp_protocol_version": { "const": "2026-07-28" },
+        "server_version": { "type": "string" },
+        "mac": {
+          "description": "This Mac's configured name, for example lunus-macbook-pro.",
+          "type": "string"
+        },
+        "time": { "$ref": "../defs.json#/$defs/timestamp" },
+        "started_at": {
+          "description": "When this deskhand process started. A change means every frame and the lease were dropped.",
+          "$ref": "../defs.json#/$defs/timestamp"
+        },
+        "state": { "$ref": "../defs.json#/$defs/state" },
+        "active_states": {
+          "description": "Every state other than ok whose condition holds now, in precedence order. Empty exactly when state is ok; otherwise its first item equals state.",
+          "type": "array",
+          "items": { "$ref": "../defs.json#/$defs/blocking_state" },
+          "uniqueItems": true
+        },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "../defs.json#/$defs/condition" },
+          "uniqueItems": true
+        },
+        "armed_until": {
+          "description": "When arming expires, or null when not armed.",
+          "anyOf": [
+            { "$ref": "../defs.json#/$defs/timestamp" },
+            { "type": "null" }
+          ]
+        },
+        "lease": {
+          "description": "The lease as seen from the holder_id the call named. Null exactly when the call named no holder_id.",
+          "anyOf": [
+            { "$ref": "../defs.json#/$defs/lease_view" },
+            { "type": "null" }
+          ]
+        },
+        "operation": {
+          "description": "Present exactly when the call had an operation argument: the record for that (principal, holder_id, operation_id), or null when there is none.",
+          "anyOf": [
+            { "$ref": "../defs.json#/$defs/operation_view" },
+            { "type": "null" }
+          ]
+        },
+        "display_config_generation": {
+          "$ref": "../defs.json#/$defs/display_config_generation"
+        },
+        "limits": { "$ref": "#/$defs/limits" }
+      },
+      "required": [
+        "contract_version",
+        "mcp_protocol_version",
+        "server_version",
+        "mac",
+        "time",
+        "started_at",
+        "state",
+        "active_states",
+        "conditions",
+        "armed_until",
+        "lease",
+        "display_config_generation",
+        "limits"
+      ],
+      "not": {
+        "$comment": "status no longer performs lease operations (amendment 4), so it never carries lease_result. No result carries a holder_id.",
+        "anyOf": [
+          { "required": ["code"] },
+          { "required": ["lease_result"] },
+          { "required": ["holder_id"] }
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "ok" } },
+            "required": ["state"]
+          },
+          "then": { "properties": { "active_states": { "maxItems": 0 } } }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "gated" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "gated" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "paused" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "paused" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "disarmed" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "disarmed" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "not_console" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "not_console" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "locked" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "locked" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "display_asleep" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "display_asleep" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "permission_missing" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "permission_missing" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "permission_stale" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "permission_stale" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "secure_input" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_states": {
+                "minItems": 1,
+                "prefixItems": [{ "const": "secure_input" }]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "status_error": {
+      "description": "A tool_error with one of the codes that status can return (docs/contract.md section 9.3).",
+      "allOf": [
+        { "$ref": "../defs.json#/$defs/tool_error" },
+        {
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_argument",
+                "internal_error"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "limits": {
+      "description": "The limits in force on this Mac. Contract constants are repeated so a caller can check them; configured values are authoritative here.",
+      "type": "object",
+      "properties": {
+        "max_long_edge": { "const": 2576 },
+        "min_long_edge": { "const": 256 },
+        "max_pixels": { "const": 3588000 },
+        "max_image_bytes": {
+          "description": "Largest encoded image in bytes, before base64.",
+          "const": 3750000
+        },
+        "frame_max_age_ms": {
+          "type": "integer",
+          "minimum": 5000,
+          "maximum": 600000
+        },
+        "user_activity_lookback_ms": { "const": 3000 },
+        "actions_per_minute": { "type": "integer", "minimum": 1 },
+        "lease_ttl_min_ms": { "const": 5000 },
+        "lease_ttl_max_ms": { "const": 120000 },
+        "keyboard_max_text_length": { "const": 1024 },
+        "operation_retention_ms": {
+          "description": "How long an operation record is kept. A caller must not repeat an operation_id after this.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "operation_max_records": {
+          "description": "Most operation records kept per principal inside the retention window.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "operation_retention_ms",
+        "operation_max_records",
+        "max_long_edge",
+        "min_long_edge",
+        "max_pixels",
+        "max_image_bytes",
+        "frame_max_age_ms",
+        "user_activity_lookback_ms",
+        "actions_per_minute",
+        "lease_ttl_min_ms",
+        "lease_ttl_max_ms",
+        "keyboard_max_text_length"
+      ]
+    }
+  }
+}

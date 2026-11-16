@@ -1,0 +1,30 @@
+{
+  "contract_version": "0.11-draft",
+  "mcp_protocol_version": "2026-07-28",
+  "server_version": "0.1.0",
+  "mac": "lunus-macbook-pro",
+  "time": "2026-11-14T15:02:11.482Z",
+  "started_at": "2026-11-14T13:40:02Z",
+  "state": "ok",
+  "active_states": [
+    "locked"
+  ],
+  "conditions": [],
+  "armed_until": "2026-11-14T16:00:00Z",
+  "lease": null,
+  "display_config_generation": 3,
+  "limits": {
+    "max_long_edge": 2576,
+    "min_long_edge": 256,
+    "max_pixels": 3588000,
+    "max_image_bytes": 3750000,
+    "frame_max_age_ms": 60000,
+    "user_activity_lookback_ms": 3000,
+    "actions_per_minute": 60,
+    "lease_ttl_min_ms": 5000,
+    "lease_ttl_max_ms": 120000,
+    "keyboard_max_text_length": 1024,
+    "operation_retention_ms": 86400000,
+    "operation_max_records": 10000
+  }
+}

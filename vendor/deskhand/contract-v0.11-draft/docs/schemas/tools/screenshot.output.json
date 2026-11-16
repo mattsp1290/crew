@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/screenshot.output.json",
+  "title": "screenshot structuredContent",
+  "description": "Frame metadata. The image itself is the image content block of the same result.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/screenshot_result" },
+    { "$ref": "#/$defs/screenshot_error" }
+  ],
+  "$defs": {
+    "screenshot_error": {
+      "description": "A tool_error with one of the codes that screenshot can return (docs/contract.md section 9.3).",
+      "allOf": [
+        { "$ref": "../defs.json#/$defs/tool_error" },
+        {
+          "properties": {
+            "code": {
+              "enum": [
+                "gated",
+                "paused",
+                "disarmed",
+                "not_console",
+                "locked",
+                "display_asleep",
+                "permission_missing",
+                "permission_stale",
+                "secure_input",
+                "invalid_argument",
+                "image_too_large",
+                "internal_error"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "screenshot_result": {
+      "type": "object",
+      "properties": {
+        "frame_id": { "$ref": "../defs.json#/$defs/frame_id" },
+        "sha256": {
+          "description": "SHA-256 of the encoded image bytes, that is, of the image content block's data after base64 decoding.",
+          "$ref": "../defs.json#/$defs/sha256"
+        },
+        "display_id": { "$ref": "../defs.json#/$defs/display_id" },
+        "display_config_generation": {
+          "$ref": "../defs.json#/$defs/display_config_generation"
+        },
+        "capture_rect": {
+          "description": "The rectangle actually captured, in global points.",
+          "$ref": "../defs.json#/$defs/rect"
+        },
+        "source_pixel_size": {
+          "description": "Size of capture_rect in native pixels.",
+          "$ref": "../defs.json#/$defs/pixel_size"
+        },
+        "output_pixel_size": {
+          "description": "Size of the returned image. Pointer targets are expressed in this pixel space. Neither edge is over 2576, and width times height is at most 3,588,000, which a schema cannot state.",
+          "$ref": "../defs.json#/$defs/pixel_size",
+          "properties": {
+            "width": { "maximum": 2576 },
+            "height": { "maximum": 2576 }
+          }
+        },
+        "point_pixel_scale": {
+          "description": "Native pixels per point for this display.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "downscale": {
+          "description": "The scale applied to the source pixels, in (0, 1]. 1 means not downscaled.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "format": { "type": "string", "enum": ["jpeg", "png"] },
+        "mime_type": {
+          "type": "string",
+          "enum": ["image/jpeg", "image/png"]
+        },
+        "jpeg_quality": {
+          "description": "The JPEG quality used. Present exactly when format is jpeg.",
+          "enum": [85, 75, 65, 60]
+        },
+        "image_bytes": {
+          "description": "Size of the encoded image before base64. At most 3,750,000, so the base64 text is at most 5,000,000 characters.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3750000
+        },
+        "captured_at": { "$ref": "../defs.json#/$defs/timestamp" },
+        "max_age_ms": {
+          "description": "The frame is refused as too_old once this many milliseconds have passed since captured_at.",
+          "type": "integer",
+          "minimum": 5000,
+          "maximum": 600000
+        },
+        "pointer_position": {
+          "description": "Where the pointer was at capture, in output pixels, or null when it was outside capture_rect. The pointer is never drawn into the image.",
+          "anyOf": [
+            { "$ref": "../defs.json#/$defs/frame_point" },
+            { "type": "null" }
+          ]
+        },
+        "frontmost_app": {
+          "description": "The frontmost app at capture. When deskhand could not determine one: bundle_id and team_id null and name empty.",
+          "$ref": "../defs.json#/$defs/app_ref"
+        }
+      },
+      "required": [
+        "frame_id",
+        "sha256",
+        "display_id",
+        "display_config_generation",
+        "capture_rect",
+        "source_pixel_size",
+        "output_pixel_size",
+        "point_pixel_scale",
+        "downscale",
+        "format",
+        "mime_type",
+        "image_bytes",
+        "captured_at",
+        "max_age_ms",
+        "pointer_position",
+        "frontmost_app"
+      ],
+      "not": { "required": ["code"] },
+      "if": {
+        "properties": { "format": { "const": "jpeg" } },
+        "required": ["format"]
+      },
+      "then": {
+        "required": ["jpeg_quality"],
+        "properties": { "mime_type": { "const": "image/jpeg" } }
+      },
+      "else": {
+        "not": { "required": ["jpeg_quality"] },
+        "properties": { "mime_type": { "const": "image/png" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "code": "cancelled",
+  "message": "x",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R1",
+  "operation": {
+    "status": "aborted",
+    "events_posted": 20
+  },
+  "replayed": false
+}

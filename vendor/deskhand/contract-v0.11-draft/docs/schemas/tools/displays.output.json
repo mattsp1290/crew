@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/displays.output.json",
+  "title": "displays structuredContent",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/displays_result" },
+    { "$ref": "#/$defs/displays_error" }
+  ],
+  "$defs": {
+    "displays_error": {
+      "description": "A tool_error with one of the codes that displays can return (docs/contract.md section 9.3).",
+      "allOf": [
+        { "$ref": "../defs.json#/$defs/tool_error" },
+        {
+          "properties": {
+            "code": {
+              "enum": [
+                "gated",
+                "paused",
+                "disarmed",
+                "not_console",
+                "locked",
+                "display_asleep",
+                "permission_missing",
+                "permission_stale",
+                "secure_input",
+                "invalid_argument",
+                "internal_error"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "displays_result": {
+      "type": "object",
+      "properties": {
+        "display_config_generation": {
+          "$ref": "../defs.json#/$defs/display_config_generation"
+        },
+        "displays": {
+          "description": "One entry per active display. In a mirror set only the primary display appears.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/display" }
+        }
+      },
+      "required": ["display_config_generation", "displays"],
+      "not": { "required": ["code"] }
+    },
+    "display": {
+      "type": "object",
+      "properties": {
+        "display_id": { "$ref": "../defs.json#/$defs/display_id" },
+        "uuid": {
+          "description": "Stable display UUID. Survives reconfiguration, unlike display_id.",
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36,
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+        },
+        "name": { "type": "string" },
+        "is_main": { "type": "boolean" },
+        "is_builtin": { "type": "boolean" },
+        "asleep": { "type": "boolean" },
+        "bounds": {
+          "description": "The display's bounds in global points.",
+          "$ref": "../defs.json#/$defs/rect"
+        },
+        "pixel_size": {
+          "description": "The display's size in native pixels.",
+          "$ref": "../defs.json#/$defs/pixel_size"
+        },
+        "point_pixel_scale": {
+          "description": "Native pixels per point.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "display_id",
+        "uuid",
+        "name",
+        "is_main",
+        "is_builtin",
+        "asleep",
+        "bounds",
+        "pixel_size",
+        "point_pixel_scale"
+      ]
+    }
+  }
+}

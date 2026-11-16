@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/wire/jsonrpc-response.json",
+  "title": "JSON-RPC success response",
+  "description": "The envelope of every successful response. The result is checked against the schema of its method: server-discover-result.json, tools-list-result.json or tools-call-result.json.",
+  "type": "object",
+  "properties": {
+    "jsonrpc": { "const": "2.0" },
+    "id": { "type": ["string", "integer"] },
+    "result": { "type": "object" }
+  },
+  "required": ["jsonrpc", "id", "result"],
+  "additionalProperties": false
+}
