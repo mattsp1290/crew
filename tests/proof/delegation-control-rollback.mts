@@ -354,7 +354,7 @@ try {
   const historyBefore = await Promise.all(workflowIds.map(async workflowId => {
     const handle = temporal.workflow.getHandle(workflowId), description = await handle.describe(), history = await handle.fetchHistory();
     assert.ok(history.events?.length);
-    return { workflowId, runId: description.runId, events: history.events.map(event => JSON.stringify(event)) };
+    return { workflowId, runId: description.runId, events: history.events.map((event): unknown => JSON.parse(JSON.stringify(event))) };
   }));
   await evidence("retained-before", { sql: retained, native: nativeBefore, stateDirectory: { dev: stateIdentity.dev, ino: stateIdentity.ino },
     histories: historyBefore.map(history => ({ workflowId: history.workflowId, runId: history.runId, eventCount: history.events.length, sha256: digest(JSON.stringify(history.events)) })) });
@@ -394,7 +394,7 @@ try {
   for (const previous of historyBefore) {
     const handle = temporal.workflow.getHandle(previous.workflowId, previous.runId);
     const history = await handle.fetchHistory();
-    assert.deepEqual(history.events?.slice(0, previous.events.length).map(event => JSON.stringify(event)), previous.events, "Retained Temporal history prefix must remain exact");
+    assert.deepEqual(history.events?.slice(0, previous.events.length).map((event): unknown => JSON.parse(JSON.stringify(event))), previous.events, "Retained Temporal history prefix must remain exact");
     await before(Worker.runReplayHistory({ workflowsPath: join(oldRoot, "src/service/workflow.ts") }, history, previous.workflowId), now() + 45_000, "Old workflow replay");
     histories.push({ workflowId: previous.workflowId, runId: previous.runId, events: history.events?.length, replayedWith: "f3327346d979270a18c9f46b9cfe6a075b1cb157" });
   }
