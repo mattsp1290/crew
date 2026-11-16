@@ -138,7 +138,7 @@ jobs:
         run: |
           mkdir -p "$BIRBCREW_PROOF_ARTIFACTS" .proof/bin
           printf 'fixture setup started\n' > "$BIRBCREW_PROOF_ARTIFACTS/setup-phase.txt"
-          node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
+          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
             npm ci
             npm ci --prefix clients --ignore-scripts --no-audit --no-fund
             npm run build
@@ -153,7 +153,7 @@ jobs:
         env:
           PROOF_ENTRY: ${{ matrix.entry }}
           PROOF_MODE: ${{ matrix.mode }}
-        run: node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node "$PROOF_ENTRY" "$PROOF_MODE"
+        run: exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node "$PROOF_ENTRY" "$PROOF_MODE"
       - name: Collect bounded retained diagnostics
         if: ${{ always() }}
         timeout-minutes: 1
