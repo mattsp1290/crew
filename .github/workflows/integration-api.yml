@@ -1,53 +1,28 @@
-name: Versioned integration API qualification
+name: NEVERMERGE PR74 current-parent delivery probe
 on:
-  pull_request:
-    paths:
-      - 'src/service/**'
-      - 'native/**'
-      - 'clients/**'
-      - 'vendor/**'
-      - 'packages/pi-subagents/**'
-      - 'scripts/build-native'
-      - 'scripts/setup'
-      - '.node-version'
-      - 'tsconfig.json'
-      - 'packages/client/**'
-      - 'scripts/generate-openapi.mjs'
-      - 'scripts/verify-client-package.mjs'
-      - 'tests/**'
-      - 'package*.json'
-      - 'docs/integration-api-v1.md'
-      - '.github/workflows/integration-api.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  portable-client:
+  qualify:
+    name: PR74 delivery (${{ matrix.label }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.3'
-          cache: npm
-      - run: npm ci
-      - run: echo "CREW_NODE22=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.3'
-      - run: echo "CREW_NODE24=$(command -v node)" >> "$GITHUB_ENV"
-      - run: '"$CREW_NODE22" scripts/verify-client-package.mjs'
-  consumer-contract:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: baseline
+            revision: 3a05af6ae85715a8be5d2bfbe70fbee787fb3a39
+          - label: head
+            revision: 267309a1ece9bb15ff778c459b528d58ca8b207d
     services:
       postgres:
         image: postgres:17
         env:
           POSTGRES_USER: birbcrew
           POSTGRES_PASSWORD: fixture-only
-          POSTGRES_DB: integration_test
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
@@ -56,124 +31,53 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      BIRBCREW_TEST_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/integration_test
+      PR74_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision }}
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+          sparse-checkout: |
+            tests/proof/pr74-current-qualification.mjs
+            tests/service/child-budget.test.ts
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Isolated CI diagnostic contracts
-        run: node --test tests/proof/isolated-ci.test.mts
-      - run: npm run test:client
-      - run: npm run check:openapi
-      - run: npm run test:api
-      - run: npm run test:observers
-      - run: npm run test:audit
-      - run: npm run test:routines
-      - run: npm run test:memories
-      - run: npm run test:instructions
-      - run: npm run test:packs
-      - run: npm run test:grants
-      - run: npm run test:handoffs
-      - run: npm run test:expiry
-      - run: npm run test:usage
-      - run: npm run test:usage:capture
-      - run: npm run test:webhooks
-      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts
-      - run: node --test tests/service/approvals.test.ts tests/service/codex-calls.test.ts tests/service/codex-registration.test.ts
-      - name: Turn failure diagnostics
-        run: node --test tests/service/native-diagnostics.test.ts
-      - name: Install pinned Temporal CLI
+      - name: Install pinned Temporal CLI for head only
+        timeout-minutes: 5
+        if: matrix.label == 'head'
+        shell: bash
         run: |
-          mkdir -p .proof/bin
+          set -euo pipefail
+          mkdir -p artifacts/head tools
           archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
-      - run: npm run test:child-targets
+          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o "tools/$archive"
+          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o tools/checksums.txt
+          (cd tools && grep " $archive$" checksums.txt | sha256sum -c -) | tee artifacts/head/temporal-checksum.log
+          cp tools/checksums.txt artifacts/head/temporal-official-checksums.txt
+          tar -xzf "tools/$archive" -C tools temporal
+          echo "TEMPORAL_CLI=$GITHUB_WORKSPACE/tools/temporal" >> "$GITHUB_ENV"
+      - name: Run exact source and retain raw proof
+        timeout-minutes: 20
+        working-directory: source
         env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-  native-service:
-    name: native-service (${{ matrix.suite }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suite: api
-            entry: tests/proof/integration-api.mts
-          - suite: tls
-            entry: tests/proof/temporal-tls.mts
-          - suite: observer-processes
-            entry: tests/proof/native-observers.mts
-            mode: processes
-          - suite: observation-file
-            entry: tests/proof/native-observers.mts
-            mode: file
-          - suite: routines
-            entry: tests/proof/routines.mts
-          - suite: memories
-            entry: tests/proof/memories.mts
-          - suite: instructions
-            entry: tests/proof/member-instructions.mts
-          - suite: handoffs
-            entry: tests/proof/handoffs.mts
-    env:
-      TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      BIRBCREW_PROOF_ARTIFACTS: ${{ github.workspace }}/.proof/artifacts/${{ matrix.suite }}
-      BIRBCREW_PROOF_WORKING_STATE: github-hosted-vm
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.3'
-          cache: npm
-      - name: Install and build pinned fixtures
-        timeout-minutes: 6
-        run: |
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS" .proof/bin
-          printf 'fixture setup started\n' > "$BIRBCREW_PROOF_ARTIFACTS/setup-phase.txt"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
-            npm ci
-            npm ci --prefix clients --ignore-scripts --no-audit --no-fund
-            npm run build
-            archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-            curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-            curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-            (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-            tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
-          '
-      - name: Run actual native suite
-        timeout-minutes: 21
-        env:
-          PROOF_ENTRY: ${{ matrix.entry }}
-          PROOF_MODE: ${{ matrix.mode }}
-        run: exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node "$PROOF_ENTRY" "$PROOF_MODE"
-      - name: Collect bounded retained diagnostics
+          PR74_LABEL: ${{ matrix.label }}
+          PR74_REVISION: ${{ matrix.revision }}
+          PR74_PROBE_SHA: ${{ github.sha }}
+        run: exec node ../controller/tests/proof/pr74-current-qualification.mjs
+      - name: Upload proof even on failure
+        timeout-minutes: 2
         if: ${{ always() }}
-        timeout-minutes: 1
-        run: node tests/proof/member-service-diagnostics.mts --collect "$BIRBCREW_PROOF_ARTIFACTS"
-      - name: Upload native suite evidence
-        if: ${{ always() }}
-        timeout-minutes: 1
         uses: actions/upload-artifact@v4
         with:
-          name: native-service-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .proof/artifacts/${{ matrix.suite }}/
+          name: pr74-current-${{ matrix.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/${{ matrix.label }}/
           if-no-files-found: error
           retention-days: 7
-  actual-service:
-    if: ${{ always() }}
-    needs: native-service
-    runs-on: ubuntu-24.04
-    timeout-minutes: 1
-    steps:
-      - name: Require every native suite
-        env:
-          NATIVE_RESULT: ${{ needs.native-service.result }}
-        run: test "$NATIVE_RESULT" = success
