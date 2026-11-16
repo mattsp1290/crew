@@ -792,6 +792,7 @@ test('restoring an older snapshot atomically retires named roles and delegation 
  const t=await setup(context);
  const {ChildStore}=await import('../../src/service/children.ts');
  const {withNativeAdmission}=await import('../../src/service/native-admission.ts');
+ const {DelegationControl}=await import('../../src/service/delegation-control.ts');
  const {fixedRoles}=await import('@birbcrew/pi-subagents');
  const account='a'.repeat(64),destination={engine:'pi',profile:'target',model:'fixture',providerHost:'fixture.invalid',accountDigest:account};
  await t.pool.query("INSERT INTO birbcrew_ts.profiles(name,engine,account_digest) VALUES('target','pi',decode($1,'hex'))",[account]);
@@ -806,6 +807,37 @@ test('restoring an older snapshot atomically retires named roles and delegation 
   nativeCallId:'restore-call',task:'private child',profile:{role:'analyst',version:1,...fixedRoles.analyst,model:'parent-model'},
  }],{version:1,engine:'pi',state:{}});
  const identity=(await t.pool.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile;
+ const history={ownerId:'owner',conversationId:randomUUID(),requestId:randomUUID(),text:'completed delegation before backup'};
+ const historyExecution={workflowRunId:randomUUID(),activityId:'parent',attempt:1};
+ const checkpoint={version:1,engine:'pi',state:{}};
+ await t.store.openConversation({ownerId:history.ownerId,conversationId:history.conversationId,memberId:member.memberId});
+ const historyTurn=await t.store.beginTurn(history,historyExecution);
+ if(historyTurn.kind!=='start') throw Error('Expected started historical parent');
+ const sourceChildren=new ChildStore(t.pool);
+ const [historicalChild]=await sourceChildren.delegate(historyTurn.conversation,history.requestId,historyTurn.token,[{
+  nativeCallId:'restore-history-call',task:'completed private child',profile:{role:'analyst',version:1,...fixedRoles.analyst,model:'parent-model'},
+ }],checkpoint);
+ const historicalStart=await sourceChildren.begin(historicalChild,{workflowRunId:randomUUID(),activityId:'child',attempt:1});
+ if(historicalStart.kind!=='start') throw Error('Expected started historical child');
+ await sourceChildren.finish(historicalChild,historicalStart.generation,{text:'historical child result',checkpoint});
+ const historyResume={...historyExecution,activityId:'parent-followup'};
+ const resumed=await t.store.beginResume(history,null,historyResume);
+ if(resumed.kind!=='start') throw Error('Expected resumed historical parent');
+ const historicalReply='historical parent result';
+ await t.store.commitTurn({ownerId:history.ownerId,conversationId:history.conversationId,requestId:history.requestId,
+  token:resumed.token,checkpoint,reply:historicalReply});
+ const historicalIdentity=(await t.pool.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[historicalChild.childId])).rows[0].role_profile;
+ const sourceAuthority=(await t.recovery.status()).control;
+ const observationSql='SELECT birbcrew_ts.record_delegation_parent_observation($1,$2,$3,$4,$5,$6,$7) AS accepted';
+ const observationArgs=[sourceAuthority.installation,sourceAuthority.instance,history.conversationId,history.requestId,
+  historyResume.workflowRunId,historyResume.activityId,historicalReply];
+ assert.deepEqual((await t.pool.query(observationSql,observationArgs)).rows,[{accepted:true}],
+  'SQL-seeded positive exercises the database boundary without Temporal evidence');
+ const observationRows=(await t.pool.query('SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1',[history.conversationId])).rows;
+ assert.equal(observationRows.length,1);
+ const applicableSql='SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed';
+ assert.deepEqual((await t.pool.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:true}]);
+ assert.equal((await t.pool.query('SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1',[history.conversationId])).rowCount,0);
  const controlSql='SELECT birbcrew_ts.change_delegation_control($1,$2,$3,$4,$5,$6) AS receipt';
  const oldCommand=randomUUID(),oldRevision=(await t.pool.query('SELECT revision::text FROM birbcrew_ts.delegation_control')).rows[0].revision;
  const oldArgs=[oldCommand,oldRevision,{kind:'global'},true,'restore-fixture','command before backup'];
@@ -818,7 +850,20 @@ test('restoring an older snapshot atomically retires named roles and delegation 
  await t.pool.query(controlSql,[randomUUID(),oldReceipt.revision,{kind:'global'},false,'restore-fixture','disable after backup']);
  await t.recovery.holdForRestore(manifest.generation,t.hooks);
  const restored=await restoreBundle(t),recovery=new InstallationRecovery(restored,t.fence);
- await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ const targetInstance=randomUUID();
+ await recovery.acceptRestore(t.bundle,pins,targetInstance);
+ const restoredAuthority=(await recovery.status()).control;
+ assert.equal(restoredAuthority.instance,targetInstance);
+ assert.notEqual(restoredAuthority.instance,sourceAuthority.instance);
+ const archivedObservations=async()=>(await restored.query('SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1 AND instance_id=$2',
+  [history.conversationId,sourceAuthority.instance])).rows;
+ const currentObservations=async()=>(await restored.query('SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1 AND instance_id=$2',
+  [history.conversationId,targetInstance])).rows;
+ assert.deepEqual(await archivedObservations(),observationRows,'the real PostgreSQL archive preserves the source observation');
+ assert.deepEqual(await currentObservations(),[]);
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
+ const currentObservationArgs=[restoredAuthority.installation,targetInstance,...observationArgs.slice(2)];
+ assert.deepEqual((await restored.query(observationSql,currentObservationArgs)).rows,[{accepted:false}],'held authority cannot record a positive observation');
  const active=async()=>(await restored.query("SELECT child_target_active FROM birbcrew_ts.profiles WHERE name='parent'")).rows[0].child_target_active;
  assert.deepEqual(await active(),['analyst'],'the backup cannot retain an unknown later removal');
  let admittedCallbacks=0;
@@ -827,6 +872,10 @@ test('restoring an older snapshot atomically retires named roles and delegation 
  assert.equal(admittedCallbacks,0);
  await assert.rejects(recovery.resume({reconcile:async()=>{throw Error('reconcile first');}},manifest),/reconcile first/);
  assert.deepEqual(await active(),['analyst']);
+ assert.deepEqual((await recovery.status()).control,restoredAuthority,'failed reconciliation cannot activate the restored instance');
+ assert.deepEqual(await archivedObservations(),observationRows);
+ assert.deepEqual(await currentObservations(),[],'failed reconciliation cannot create current-instance evidence');
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
  assert.equal((await recovery.status()).control.phase,'restored');
  assert.equal((await restored.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows[0].global_enabled,true);
  assert.equal((await restored.query('SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE child_id=$1',[child.childId])).rowCount,0);
@@ -839,6 +888,35 @@ test('restoring an older snapshot atomically retires named roles and delegation 
  assert.equal(cohort.length,1);assert.equal(cohort[0].retire,true);
  assert.equal(cohort[0].instance_id,(await recovery.status()).control.instance);
  assert.equal(cohort[0].receipt.revision,control.revision);
+ assert.deepEqual((await restored.query(`SELECT retire FROM birbcrew_ts.delegation_control_children
+  WHERE command_id=$1 AND child_id=$2`,[cohort[0].receipt.commandId,historicalChild.childId])).rows,[{retire:false}],
+  'activation includes completed history whose archived positive belongs to the old instance');
+ assert.deepEqual(await archivedObservations(),observationRows);
+ assert.deepEqual(await currentObservations(),[]);
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
+ const controller=new DelegationControl({pool:restored,workflows:{
+  signalDecision:async()=>({kind:'accepted'}),
+  observe:async()=>({kind:'closed',runId:'restore-fixture-child',status:'COMPLETED'}),
+  observeParentResult:async()=>({kind:'pending'}),
+ }});
+ const drain=await controller.drain(cohort[0].receipt.commandId);
+ assert.equal(drain.valid,true);assert.equal(drain.admissionClosed,true);assert.equal(drain.complete,false);
+ assert.deepEqual(drain.blockers.filter(blocker=>blocker.kind==='parent_workflow'&&blocker.requestId===history.requestId),
+  [{kind:'parent_workflow',requestId:history.requestId,observation:{kind:'pending'}}],
+  'a pending workflow observation cannot borrow archived source-instance evidence');
+ assert.deepEqual(await currentObservations(),[],'drain does not persist a positive observation');
+ const restoredStore=new MemberStore(restored);
+ await assert.rejects(restoredStore.beginResume(history,null,{...historyResume,workflowRunId:randomUUID()}),{code:'stale'});
+ assert.deepEqual(await restoredStore.beginResume(history,null,historyResume),{kind:'replay',reply:historicalReply},
+  'the restored committed turn replays its recorded run instead of acquiring a new run');
+ assert.deepEqual((await restored.query(observationSql,observationArgs)).rows,[{accepted:false}],'source-instance evidence remains stale after activation');
+ assert.deepEqual((await restored.query(observationSql,currentObservationArgs)).rows,[{accepted:true}],
+  'a fresh SQL-seeded positive may record the existing exact result under current authority');
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:true}]);
+ assert.equal((await currentObservations()).length,1);
+ assert.deepEqual(await archivedObservations(),observationRows);
+ assert.deepEqual((await restored.query('SELECT phase,role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[historicalChild.childId])).rows,
+  [{phase:'complete',role_profile:historicalIdentity}]);
  await assert.rejects(restored.query(controlSql,oldArgs),{code:'55000'});
  assert.equal((await restored.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows[0].global_enabled,false);
  assert.deepEqual((await restored.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile,identity);
