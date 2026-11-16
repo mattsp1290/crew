@@ -1,179 +1,98 @@
-name: Versioned integration API qualification
+name: NEVER MERGE final archive install and actual worker qualification
 on:
-  pull_request:
-    paths:
-      - 'src/service/**'
-      - 'native/**'
-      - 'clients/**'
-      - 'vendor/**'
-      - 'packages/pi-subagents/**'
-      - 'scripts/build-native'
-      - 'scripts/setup'
-      - '.node-version'
-      - 'tsconfig.json'
-      - 'packages/client/**'
-      - 'scripts/generate-openapi.mjs'
-      - 'scripts/verify-client-package.mjs'
-      - 'tests/**'
-      - 'package*.json'
-      - 'docs/integration-api-v1.md'
-      - '.github/workflows/integration-api.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  portable-client:
+  final-install:
+    if: startsWith(github.ref_name, 'probe/otlp-worker-')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.3'
-          cache: npm
-      - run: npm ci
-      - run: echo "CREW_NODE22=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.3'
-      - run: echo "CREW_NODE24=$(command -v node)" >> "$GITHUB_ENV"
-      - run: '"$CREW_NODE22" scripts/verify-client-package.mjs'
-  consumer-contract:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: birbcrew
-          POSTGRES_PASSWORD: fixture-only
-          POSTGRES_DB: integration_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      BIRBCREW_TEST_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/integration_test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.3'
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Isolated CI diagnostic contracts
-        run: node --test tests/proof/isolated-ci.test.mts
-      - run: npm run test:client
-      - run: npm run check:openapi
-      - run: npm run test:api
-      - run: npm run test:observers
-      - run: npm run test:audit
-      - run: npm run test:routines
-      - run: npm run test:memories
-      - run: npm run test:instructions
-      - run: npm run test:packs
-      - run: npm run test:grants
-      - run: npm run test:handoffs
-      - run: npm run test:expiry
-      - run: npm run test:usage
-      - run: npm run test:usage:capture
-      - run: npm run test:webhooks
-      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts
-      - run: node --test tests/service/approvals.test.ts tests/service/codex-calls.test.ts tests/service/codex-registration.test.ts
-      - name: Turn failure diagnostics
-        run: node --test tests/service/native-diagnostics.test.ts
-      - name: Install pinned Temporal CLI
-        run: |
-          mkdir -p .proof/bin
-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
-      - run: npm run test:child-targets
-        env:
-          TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-  native-service:
-    name: native-service (${{ matrix.suite }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suite: api
-            entry: tests/proof/integration-api.mts
-          - suite: tls
-            entry: tests/proof/temporal-tls.mts
-          - suite: observer-processes
-            entry: tests/proof/native-observers.mts
-            mode: processes
-          - suite: observation-file
-            entry: tests/proof/native-observers.mts
-            mode: file
-          - suite: routines
-            entry: tests/proof/routines.mts
-          - suite: memories
-            entry: tests/proof/memories.mts
-          - suite: instructions
-            entry: tests/proof/member-instructions.mts
-          - suite: handoffs
-            entry: tests/proof/handoffs.mts
+        install-scripts: [enabled, disabled]
     env:
+      OTLP_PROBE_ONLY: NEVER_MERGE
+      OTLP_INSTALL_VARIANT: ${{ matrix.install-scripts }}
       TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
-      BIRBCREW_PROOF_ARTIFACTS: ${{ github.workspace }}/.proof/artifacts/${{ matrix.suite }}
+      BIRBCREW_PROOF_ARTIFACTS: ${{ github.workspace }}/.proof/artifacts/otlp-worker
       BIRBCREW_PROOF_WORKING_STATE: github-hosted-vm
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
-          cache: npm
-      - name: Install and build pinned fixtures
+      - name: Pin complete source and local archive and prepare fresh physical install
+        run: node tests/proof/otlp-worker-qualification/inspector.mjs --prepare
+      - name: Install the authentic candidate graph directly from its lock
+        timeout-minutes: 7
+        run: |
+          exec timeout --signal=TERM --kill-after=8s 400s node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/install.log" bash -euo pipefail -c '
+            cd "$OTLP_INSTALL_ROOT"
+            node --version
+            npm --version
+            if [ "$OTLP_INSTALL_VARIANT" = enabled ]; then
+              npm ci --no-audit --no-fund
+            else
+              npm ci --ignore-scripts --no-audit --no-fund
+            fi
+          '
+      - name: Verify all 327 installed bytes and exact direct and transitive identity
+        run: node tests/proof/otlp-worker-qualification/inspector.mjs --installed
+      - name: Build unchanged Crew native fixtures and pin Temporal CLI
+        if: matrix.install-scripts == 'enabled'
         timeout-minutes: 6
         run: |
-          mkdir -p "$BIRBCREW_PROOF_ARTIFACTS" .proof/bin
-          printf 'fixture setup started\n' > "$BIRBCREW_PROOF_ARTIFACTS/setup-phase.txt"
-          exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
-            npm ci
+          mkdir -p .proof/bin
+          exec timeout --signal=TERM --kill-after=8s 340s node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/setup.log" bash -euo pipefail -c '
             npm ci --prefix clients --ignore-scripts --no-audit --no-fund
             npm run build
             archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-            curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-            curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
+            curl --retry 2 --connect-timeout 10 --max-time 60 -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
+            curl --retry 2 --connect-timeout 10 --max-time 60 -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
             (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
             tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+            sha256sum ".proof/bin/$archive" .proof/bin/temporal > "$BIRBCREW_PROOF_ARTIFACTS/temporal-identity.txt"
           '
-      - name: Run actual native suite
-        timeout-minutes: 21
-        env:
-          PROOF_ENTRY: ${{ matrix.entry }}
-          PROOF_MODE: ${{ matrix.mode }}
-        run: exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node "$PROOF_ENTRY" "$PROOF_MODE"
-      - name: Collect bounded retained diagnostics
+      - name: Run all 13 unchanged Crew telemetry tests and retain complete TAP
+        timeout-minutes: 3
+        run: |
+          exec timeout --signal=TERM --kill-after=8s 150s node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/telemetry.tap" bash -euo pipefail -c '
+            cd "$OTLP_INSTALL_ROOT"
+            exec node --test --test-reporter=tap tests/service/telemetry-otlp.test.ts
+          '
+      - name: Retain maintained exporter regressions and artifact selection
+        timeout-minutes: 3
+        run: |
+          exec timeout --signal=TERM --kill-after=8s 150s node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/exporter-regressions.tap" bash -euo pipefail -c '
+            cd "$OTLP_INSTALL_ROOT"
+            node --test --test-reporter=tap tests/service/telemetry-exporter-*.test.ts
+            node --test --test-reporter=tap --test-name-pattern="bounded OTLP archive" tests/fixtures/engines/artifacts.test.ts
+          '
+      - name: Actual CLI worker healthy and endless response qualification
+        if: matrix.install-scripts == 'enabled'
+        timeout-minutes: 5
+        run: exec timeout --signal=TERM --kill-after=8s 260s node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/command.log" node tests/proof/otlp-worker-probe.mts
+      - name: Verify complete source and lock and installed bytes after qualification
+        if: ${{ always() }}
+        timeout-minutes: 1
+        run: node tests/proof/otlp-worker-qualification/inspector.mjs --verify
+      - name: Collect bounded allowlisted retained diagnostics
         if: ${{ always() }}
         timeout-minutes: 1
         run: node tests/proof/member-service-diagnostics.mts --collect "$BIRBCREW_PROOF_ARTIFACTS"
-      - name: Upload native suite evidence
+      - name: Require complete logs and final qualification receipts
+        run: node tests/proof/otlp-worker-qualification/inspector.mjs --final
+      - name: Upload bounded complete proof evidence
         if: ${{ always() }}
         timeout-minutes: 1
         uses: actions/upload-artifact@v4
         with:
-          name: native-service-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .proof/artifacts/${{ matrix.suite }}/
+          name: otlp-final-install-${{ matrix.install-scripts }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .proof/artifacts/otlp-worker/
           if-no-files-found: error
           retention-days: 7
-  actual-service:
-    if: ${{ always() }}
-    needs: native-service
-    runs-on: ubuntu-24.04
-    timeout-minutes: 1
-    steps:
-      - name: Require every native suite
-        env:
-          NATIVE_RESULT: ${{ needs.native-service.result }}
-        run: test "$NATIVE_RESULT" = success

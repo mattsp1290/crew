@@ -1,0 +1,2955 @@
+{
+  "adoptionGate": "not performed",
+  "archive": "crew-otlp-exporter-base-0.208.0-response-bound.tgz",
+  "archiveBytes": 114415,
+  "archiveSHA256": "816053c680b29cab95afada446be2593a05f34a16cd414759358ec8f8a54672e",
+  "changedFiles": 45,
+  "cleanInstallGate": "unrun",
+  "compileEvidencePreserved": true,
+  "declarationNoticesAdded": 9,
+  "files": [
+    {
+      "changed": false,
+      "finalSHA256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "path": "LICENSE"
+    },
+    {
+      "changed": false,
+      "finalSHA256": "55decf49f94bbc7546819725083e3af7415249401ffe43b8f5c4bf2a4d11acfc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "55decf49f94bbc7546819725083e3af7415249401ffe43b8f5c4bf2a4d11acfc",
+      "path": "README.md"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "finalSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "path": "build/esm/OTLPExporterBase.d.ts",
+      "qualifiedSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f",
+      "finalSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f",
+      "path": "build/esm/OTLPExporterBase.js",
+      "qualifiedSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69",
+      "finalSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69",
+      "noticeAddedByStager": false,
+      "originalSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69",
+      "path": "build/esm/OTLPExporterBase.js.map",
+      "qualifiedSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "finalSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "path": "build/esm/bounded-queue-export-promise-handler.d.ts",
+      "qualifiedSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9",
+      "finalSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9",
+      "noticeAddedByStager": false,
+      "originalSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9",
+      "path": "build/esm/bounded-queue-export-promise-handler.js",
+      "qualifiedSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd",
+      "finalSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd",
+      "path": "build/esm/bounded-queue-export-promise-handler.js.map",
+      "qualifiedSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "finalSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "path": "build/esm/configuration/convert-legacy-browser-http-options.d.ts",
+      "qualifiedSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b",
+      "finalSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b",
+      "path": "build/esm/configuration/convert-legacy-browser-http-options.js",
+      "qualifiedSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3",
+      "finalSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3",
+      "path": "build/esm/configuration/convert-legacy-browser-http-options.js.map",
+      "qualifiedSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "finalSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "noticeAddedByStager": false,
+      "originalSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "path": "build/esm/configuration/convert-legacy-http-options.d.ts",
+      "qualifiedSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554",
+      "finalSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554",
+      "path": "build/esm/configuration/convert-legacy-http-options.js",
+      "qualifiedSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd",
+      "finalSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd",
+      "path": "build/esm/configuration/convert-legacy-http-options.js.map",
+      "qualifiedSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "finalSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "path": "build/esm/configuration/convert-legacy-node-http-options.d.ts",
+      "qualifiedSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86",
+      "finalSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86",
+      "path": "build/esm/configuration/convert-legacy-node-http-options.js",
+      "qualifiedSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b",
+      "finalSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b",
+      "path": "build/esm/configuration/convert-legacy-node-http-options.js.map",
+      "qualifiedSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "finalSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "path": "build/esm/configuration/create-legacy-browser-delegate.d.ts",
+      "qualifiedSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8",
+      "finalSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8",
+      "path": "build/esm/configuration/create-legacy-browser-delegate.js",
+      "qualifiedSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d",
+      "finalSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d",
+      "path": "build/esm/configuration/create-legacy-browser-delegate.js.map",
+      "qualifiedSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "finalSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "path": "build/esm/configuration/legacy-base-configuration.d.ts",
+      "qualifiedSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6",
+      "finalSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6",
+      "path": "build/esm/configuration/legacy-base-configuration.js",
+      "qualifiedSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "finalSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "path": "build/esm/configuration/legacy-base-configuration.js.map",
+      "qualifiedSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "finalSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "path": "build/esm/configuration/legacy-node-configuration.d.ts",
+      "qualifiedSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530",
+      "finalSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530",
+      "noticeAddedByStager": false,
+      "originalSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530",
+      "path": "build/esm/configuration/legacy-node-configuration.js",
+      "qualifiedSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce",
+      "finalSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce",
+      "path": "build/esm/configuration/legacy-node-configuration.js.map",
+      "qualifiedSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "finalSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "path": "build/esm/configuration/otlp-http-configuration.d.ts",
+      "qualifiedSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830",
+      "finalSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830",
+      "path": "build/esm/configuration/otlp-http-configuration.js",
+      "qualifiedSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480",
+      "finalSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480",
+      "path": "build/esm/configuration/otlp-http-configuration.js.map",
+      "qualifiedSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "finalSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "path": "build/esm/configuration/otlp-node-http-configuration.d.ts",
+      "qualifiedSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf",
+      "finalSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf",
+      "path": "build/esm/configuration/otlp-node-http-configuration.js",
+      "qualifiedSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c",
+      "finalSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c",
+      "path": "build/esm/configuration/otlp-node-http-configuration.js.map",
+      "qualifiedSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "finalSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "path": "build/esm/configuration/otlp-node-http-env-configuration.d.ts",
+      "qualifiedSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364",
+      "finalSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364",
+      "path": "build/esm/configuration/otlp-node-http-env-configuration.js",
+      "qualifiedSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66",
+      "finalSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66",
+      "path": "build/esm/configuration/otlp-node-http-env-configuration.js.map",
+      "qualifiedSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "finalSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "path": "build/esm/configuration/shared-configuration.d.ts",
+      "qualifiedSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d",
+      "finalSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d",
+      "path": "build/esm/configuration/shared-configuration.js",
+      "qualifiedSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024",
+      "finalSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024",
+      "path": "build/esm/configuration/shared-configuration.js.map",
+      "qualifiedSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "finalSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "path": "build/esm/configuration/shared-env-configuration.d.ts",
+      "qualifiedSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b",
+      "finalSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b",
+      "path": "build/esm/configuration/shared-env-configuration.js",
+      "qualifiedSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd",
+      "finalSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd",
+      "path": "build/esm/configuration/shared-env-configuration.js.map",
+      "qualifiedSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "finalSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "noticeAddedByStager": false,
+      "originalSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "path": "build/esm/export-response.d.ts",
+      "qualifiedSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1",
+      "finalSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1",
+      "path": "build/esm/export-response.js",
+      "qualifiedSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01",
+      "finalSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01",
+      "path": "build/esm/export-response.js.map",
+      "qualifiedSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "6c3a0fa97e8da436e7f9d53b8c8bd08e60c3ca48b9a41577e14e444134452afb",
+      "finalSHA256": "2c322f6db94da39a9079a256162b768bae7108c1e86b5687177459eba3e095e9",
+      "noticeAddedByStager": true,
+      "originalSHA256": "ef06e439aad2c8b26c1930b581e83b6908ca2678f6300e3b32942437b97a31af",
+      "path": "build/esm/exporter-transport.d.ts",
+      "qualifiedSHA256": "6c3a0fa97e8da436e7f9d53b8c8bd08e60c3ca48b9a41577e14e444134452afb"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "c776e26e8290c68c9523427cde06c641879fcfea741079bb9f9ce0669a7ba9d5",
+      "finalSHA256": "c776e26e8290c68c9523427cde06c641879fcfea741079bb9f9ce0669a7ba9d5",
+      "noticeAddedByStager": false,
+      "originalSHA256": "255592b79f931d4a0bbc240943ffa07a8f012df0333d8f0ff4471f8b11dc1c62",
+      "path": "build/esm/exporter-transport.js",
+      "qualifiedSHA256": "255592b79f931d4a0bbc240943ffa07a8f012df0333d8f0ff4471f8b11dc1c62"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "3b37bc5b87a8ff7a2398370197e0f0d7a90f53aaf973fbb4a60ce9f8a354a715",
+      "finalSHA256": "99977066e47626d537b74c4cd916e076015374776a94b6d112af75ef08e3cff1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "a7a269ea85a3b7b5c692d2f0809cdd3df2e5ed17dd4c2072de1de46e9eba5b16",
+      "path": "build/esm/exporter-transport.js.map",
+      "qualifiedSHA256": "715fc47282867f55ce0111a9524e3214427b6263852b1057cf8605f93834958a"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "finalSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "path": "build/esm/index-browser-http.d.ts",
+      "qualifiedSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0",
+      "finalSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0",
+      "noticeAddedByStager": false,
+      "originalSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0",
+      "path": "build/esm/index-browser-http.js",
+      "qualifiedSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95",
+      "finalSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95",
+      "noticeAddedByStager": false,
+      "originalSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95",
+      "path": "build/esm/index-browser-http.js.map",
+      "qualifiedSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "finalSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "path": "build/esm/index-node-http.d.ts",
+      "qualifiedSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed",
+      "finalSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed",
+      "path": "build/esm/index-node-http.js",
+      "qualifiedSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede",
+      "finalSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede",
+      "path": "build/esm/index-node-http.js.map",
+      "qualifiedSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "finalSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "path": "build/esm/index.d.ts",
+      "qualifiedSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624",
+      "finalSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624",
+      "path": "build/esm/index.js",
+      "qualifiedSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f",
+      "finalSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f",
+      "path": "build/esm/index.js.map",
+      "qualifiedSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "finalSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "noticeAddedByStager": false,
+      "originalSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "path": "build/esm/is-export-retryable.d.ts",
+      "qualifiedSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102",
+      "finalSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102",
+      "noticeAddedByStager": false,
+      "originalSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102",
+      "path": "build/esm/is-export-retryable.js",
+      "qualifiedSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15",
+      "finalSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15",
+      "path": "build/esm/is-export-retryable.js.map",
+      "qualifiedSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "finalSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "path": "build/esm/logging-response-handler.d.ts",
+      "qualifiedSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75",
+      "finalSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75",
+      "noticeAddedByStager": false,
+      "originalSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75",
+      "path": "build/esm/logging-response-handler.js",
+      "qualifiedSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b",
+      "finalSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b",
+      "path": "build/esm/logging-response-handler.js.map",
+      "qualifiedSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "finalSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "path": "build/esm/otlp-browser-http-export-delegate.d.ts",
+      "qualifiedSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1",
+      "finalSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1",
+      "path": "build/esm/otlp-browser-http-export-delegate.js",
+      "qualifiedSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e",
+      "finalSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e",
+      "path": "build/esm/otlp-browser-http-export-delegate.js.map",
+      "qualifiedSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "1049f5a01c5fd42aba7d9aaf3e79bdcca22c4ba660b588113f576630e869f3ce",
+      "finalSHA256": "ec1f1b6f7b9ac78237be4b9445f94150fc8a3f2df82894fb6a78128124ddb88a",
+      "noticeAddedByStager": true,
+      "originalSHA256": "f84f6f4ed4ef7b9a5de9781ecda64f3cf189424ee708b00a6b11a1d848c03164",
+      "path": "build/esm/otlp-export-delegate.d.ts",
+      "qualifiedSHA256": "1049f5a01c5fd42aba7d9aaf3e79bdcca22c4ba660b588113f576630e869f3ce"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "d39687b346c10cc1b3e57b0596f76c3cd9f1bf6a1431ce24b5b294b4d1cb9816",
+      "finalSHA256": "d39687b346c10cc1b3e57b0596f76c3cd9f1bf6a1431ce24b5b294b4d1cb9816",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cee68506db42a124f118ad4b829769780fa9ba4a643ca4bf848415b2d962e418",
+      "path": "build/esm/otlp-export-delegate.js",
+      "qualifiedSHA256": "564d0117a60e40d21c05105469c977f46101a01f7db639409ffe58259a783843"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "99b92818f05e7a1feb16bdb7bb1da711b106eec69319169d74c25b711d130887",
+      "finalSHA256": "3614dd469980776b5e4c32dbd51f083a9c07f4476ff13df5c43b36434aedc778",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8e17d6b5101164e08094f9a75f4232591eb1592149271e9ce42407002b20eda4",
+      "path": "build/esm/otlp-export-delegate.js.map",
+      "qualifiedSHA256": "9d2d35f97506585a6b3daefc4175836e3ab2f964115d87ded9a44b7c8934469e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "finalSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "noticeAddedByStager": false,
+      "originalSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "path": "build/esm/otlp-http-export-delegate.d.ts",
+      "qualifiedSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "ded39dd6af537ab9ffdbe23df9f577b6b9d3aaa4a6fafb9f9d4edec2ee412768",
+      "finalSHA256": "ded39dd6af537ab9ffdbe23df9f577b6b9d3aaa4a6fafb9f9d4edec2ee412768",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1f790e3050b4b98e131d63e35c8738ee48d5709f2df1c30ca709977b03110b59",
+      "path": "build/esm/otlp-http-export-delegate.js",
+      "qualifiedSHA256": "7981b1cf690e07be8268ea1bb38fd18c09264f48565c639e3c449262806b8b6b"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "0e4bc4cc0c897d326981690cd95519f4e1a8474085dd648a8b7b6730dc3c49c2",
+      "finalSHA256": "93ff9074315bd57265c0dc8bb9d129f18a0e12aa3896237cffbb087da976fd59",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1851a84b711013821e0a9cf3bf3831222418114915e53b4ddab2282d591707c4",
+      "path": "build/esm/otlp-http-export-delegate.js.map",
+      "qualifiedSHA256": "b80612b0182cc6ab1a6c30844d4a0d4d12042ea7a45d48b46796e90c5e667013"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "finalSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "noticeAddedByStager": false,
+      "originalSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "path": "build/esm/otlp-network-export-delegate.d.ts",
+      "qualifiedSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b",
+      "finalSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b",
+      "path": "build/esm/otlp-network-export-delegate.js",
+      "qualifiedSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb",
+      "finalSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb",
+      "path": "build/esm/otlp-network-export-delegate.js.map",
+      "qualifiedSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "finalSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "path": "build/esm/response-handler.d.ts",
+      "qualifiedSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c",
+      "finalSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c",
+      "path": "build/esm/response-handler.js",
+      "qualifiedSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b",
+      "finalSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b",
+      "path": "build/esm/response-handler.js.map",
+      "qualifiedSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "finalSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "path": "build/esm/retrying-transport.d.ts",
+      "qualifiedSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "021935d1f20a896220f32e88ee591882b3e9d1beee13d19c92fd31b194c3b136",
+      "finalSHA256": "021935d1f20a896220f32e88ee591882b3e9d1beee13d19c92fd31b194c3b136",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6d4d4a1a1a17d3a261b06f7f954d0c74a73c8e99449331a1fb9f8fde5ef9a8bb",
+      "path": "build/esm/retrying-transport.js",
+      "qualifiedSHA256": "ea40690cc2e3bc129d42515ce2ad9e550ed6430ef290ef96be7523be36e6536e"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "814376ba29a14eb361ba0dfd1b14a770ec27147a1d144705f32ed34e62d68158",
+      "finalSHA256": "9ac0981a24c9b1424df1464c406c01736ef6415be07580f80c1a52b4c98c8e8d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c2b40c3406ec8e0a352628043fe6ce87f51dfe2ce4d7f88bc076f280bbae504f",
+      "path": "build/esm/retrying-transport.js.map",
+      "qualifiedSHA256": "15d4f058fcc207c2536164b3e6adea13448ab64cba52da674dd9e05ab4c587e0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "finalSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "path": "build/esm/transport/fetch-transport.d.ts",
+      "qualifiedSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2",
+      "finalSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2",
+      "path": "build/esm/transport/fetch-transport.js",
+      "qualifiedSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6",
+      "finalSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6",
+      "path": "build/esm/transport/fetch-transport.js.map",
+      "qualifiedSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "finalSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "path": "build/esm/transport/http-exporter-transport.d.ts",
+      "qualifiedSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "d57fe612535649e7c9b33078dfe526260ce2ce20f53d39145bc7b78b164957fd",
+      "finalSHA256": "d57fe612535649e7c9b33078dfe526260ce2ce20f53d39145bc7b78b164957fd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "785206ddf55bfb3a8ba39e024ef7bfed8a9fb6f1c35c20548ea7b3c2e1ab818c",
+      "path": "build/esm/transport/http-exporter-transport.js",
+      "qualifiedSHA256": "933580cf52d0317a507b4c1bd7506b593d302c45d4f3a17b32da771aea2b9de9"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "eb3c80e814e1ce26500932102fba6427e95606bccf397113aa875b58b02869c9",
+      "finalSHA256": "6a8112ac7bf27ecf9df797623c4fe4764985d0938be0e1b81f4d170776585970",
+      "noticeAddedByStager": false,
+      "originalSHA256": "76a97b29824c8eb682cb1b50537e758954bd5a2758b589b9c7e1767a63867584",
+      "path": "build/esm/transport/http-exporter-transport.js.map",
+      "qualifiedSHA256": "b37255198baae7ba8e6ba7ae48847b4e5164d5b8e085dbafe40f19f61b40c6bd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "finalSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "path": "build/esm/transport/http-transport-types.d.ts",
+      "qualifiedSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd",
+      "finalSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd",
+      "path": "build/esm/transport/http-transport-types.js",
+      "qualifiedSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51",
+      "finalSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51",
+      "path": "build/esm/transport/http-transport-types.js.map",
+      "qualifiedSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "c9161d4bae2613e33bbb42599d5b4ee54e269320f6507477cd2342f6e10317a0",
+      "finalSHA256": "edb6c33afe793e29dd322e5329aae30a2731437d2bf04357cb51a14018105547",
+      "noticeAddedByStager": true,
+      "originalSHA256": "3d52e19921c1157174e5b00de08372747f26aace246abebf6e33979d32f4cc5c",
+      "path": "build/esm/transport/http-transport-utils.d.ts",
+      "qualifiedSHA256": "c9161d4bae2613e33bbb42599d5b4ee54e269320f6507477cd2342f6e10317a0"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "5669c107aaca0d3cfbe2519bacc7a8119c1176da16ae92d7124c356e6996f0a5",
+      "finalSHA256": "ab3aa78cb79876ad00b182e3e967017f647ba863d5d784e7a504faa7addddc05",
+      "noticeAddedByStager": true,
+      "originalSHA256": "88fd3f5e803f23110405b237d07eae990d6ed1be7d354e94efb5c51bbbffa0e4",
+      "path": "build/esm/transport/http-transport-utils.js",
+      "qualifiedSHA256": "5669c107aaca0d3cfbe2519bacc7a8119c1176da16ae92d7124c356e6996f0a5"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "9c6f7f83a867499b111089087a1d296cba64dff34e98d96f0745f5fa059ff93e",
+      "finalSHA256": "4a3ac6d5a006ef2bbfb8d3eede718fa0c818392bc6b4890ec38618222d076210",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cb1047e0ba34ba92d95494cf3ee64051683517a9566cbb56262a7d2c23186790",
+      "path": "build/esm/transport/http-transport-utils.js.map",
+      "qualifiedSHA256": "e06423c8b295472a05ee0d4f6e463543702fc9ff30ee9193f33dfcdac6337eb1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "finalSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "path": "build/esm/transport/node-http-transport-types.d.ts",
+      "qualifiedSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632",
+      "finalSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632",
+      "noticeAddedByStager": false,
+      "originalSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632",
+      "path": "build/esm/transport/node-http-transport-types.js",
+      "qualifiedSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e",
+      "finalSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e",
+      "path": "build/esm/transport/node-http-transport-types.js.map",
+      "qualifiedSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "finalSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "path": "build/esm/transport/send-beacon-transport.d.ts",
+      "qualifiedSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b",
+      "finalSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b",
+      "path": "build/esm/transport/send-beacon-transport.js",
+      "qualifiedSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0",
+      "finalSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0",
+      "path": "build/esm/transport/send-beacon-transport.js.map",
+      "qualifiedSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "finalSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "noticeAddedByStager": false,
+      "originalSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "path": "build/esm/transport/xhr-transport.d.ts",
+      "qualifiedSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb",
+      "finalSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb",
+      "path": "build/esm/transport/xhr-transport.js",
+      "qualifiedSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416",
+      "finalSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416",
+      "path": "build/esm/transport/xhr-transport.js.map",
+      "qualifiedSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "finalSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "path": "build/esm/types.d.ts",
+      "qualifiedSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1",
+      "finalSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1",
+      "path": "build/esm/types.js",
+      "qualifiedSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7",
+      "finalSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7",
+      "path": "build/esm/types.js.map",
+      "qualifiedSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "finalSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "path": "build/esm/util.d.ts",
+      "qualifiedSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4",
+      "finalSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4",
+      "path": "build/esm/util.js",
+      "qualifiedSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963",
+      "finalSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963",
+      "path": "build/esm/util.js.map",
+      "qualifiedSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "finalSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "path": "build/esm/version.d.ts",
+      "qualifiedSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982",
+      "finalSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982",
+      "path": "build/esm/version.js",
+      "qualifiedSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5",
+      "finalSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5",
+      "path": "build/esm/version.js.map",
+      "qualifiedSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "finalSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "path": "build/esnext/OTLPExporterBase.d.ts",
+      "qualifiedSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f",
+      "finalSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f",
+      "path": "build/esnext/OTLPExporterBase.js",
+      "qualifiedSHA256": "ba42446549c5cf350041afa3242bb48698d1ce573c8be8b56cd56ee212eef17f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69",
+      "finalSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69",
+      "noticeAddedByStager": false,
+      "originalSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69",
+      "path": "build/esnext/OTLPExporterBase.js.map",
+      "qualifiedSHA256": "70beb9873bc8447db9d2931918ba908a12585c125f825f1a2704dcef0b2c1b69"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "finalSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "path": "build/esnext/bounded-queue-export-promise-handler.d.ts",
+      "qualifiedSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9",
+      "finalSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9",
+      "noticeAddedByStager": false,
+      "originalSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9",
+      "path": "build/esnext/bounded-queue-export-promise-handler.js",
+      "qualifiedSHA256": "92c60dae3fc1da34b03bdaa93eed259b6b723453a49c662d5e32046d80a918c9"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd",
+      "finalSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd",
+      "path": "build/esnext/bounded-queue-export-promise-handler.js.map",
+      "qualifiedSHA256": "0123ed0a81cb12e6d34be8fc920fd93055afc2d1d3f60db4f22c02a4daac1dbd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "finalSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "path": "build/esnext/configuration/convert-legacy-browser-http-options.d.ts",
+      "qualifiedSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b",
+      "finalSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b",
+      "path": "build/esnext/configuration/convert-legacy-browser-http-options.js",
+      "qualifiedSHA256": "de0c79ad6c69910489e4185f0eff0e29f507498b93f317ce5b00cf7d63b02c4b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3",
+      "finalSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3",
+      "path": "build/esnext/configuration/convert-legacy-browser-http-options.js.map",
+      "qualifiedSHA256": "a031314cf61bf5a5504b8b46c67aa048061fcb5e237f955853140eed2841eef3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "finalSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "noticeAddedByStager": false,
+      "originalSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "path": "build/esnext/configuration/convert-legacy-http-options.d.ts",
+      "qualifiedSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554",
+      "finalSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554",
+      "path": "build/esnext/configuration/convert-legacy-http-options.js",
+      "qualifiedSHA256": "7251ce697ce77018598316af91e3db0b76332cc57c0ebd51c39904f12c787554"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd",
+      "finalSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd",
+      "path": "build/esnext/configuration/convert-legacy-http-options.js.map",
+      "qualifiedSHA256": "4d62dcf976f549b58135821a8589e90f8133695745fdc3a07b2bb73793a683cd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "finalSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "path": "build/esnext/configuration/convert-legacy-node-http-options.d.ts",
+      "qualifiedSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86",
+      "finalSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86",
+      "path": "build/esnext/configuration/convert-legacy-node-http-options.js",
+      "qualifiedSHA256": "cfc82ed27a3303542aec727cc1c8eef7d6968e99b44eab27f887b8aa5041ea86"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b",
+      "finalSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b",
+      "path": "build/esnext/configuration/convert-legacy-node-http-options.js.map",
+      "qualifiedSHA256": "e2e59bd7272769759539a6a6dcdecb881efb6952a276864a593fef5b64978d0b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "finalSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "path": "build/esnext/configuration/create-legacy-browser-delegate.d.ts",
+      "qualifiedSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8",
+      "finalSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8",
+      "path": "build/esnext/configuration/create-legacy-browser-delegate.js",
+      "qualifiedSHA256": "0a0ed6f8748bf75b650e36a886772aece7741ac39ba956306a2c5b81218221f8"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d",
+      "finalSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d",
+      "path": "build/esnext/configuration/create-legacy-browser-delegate.js.map",
+      "qualifiedSHA256": "e048ee032d11505f1aa5fb0408e82cd71966fcc7220c50bc7d2063ae864dfa0d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "finalSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "path": "build/esnext/configuration/legacy-base-configuration.d.ts",
+      "qualifiedSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6",
+      "finalSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6",
+      "path": "build/esnext/configuration/legacy-base-configuration.js",
+      "qualifiedSHA256": "2900f885cbb573b703a25e57c7ea97a13c41359d7a0a1db487eba28f590c9ff6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "finalSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "path": "build/esnext/configuration/legacy-base-configuration.js.map",
+      "qualifiedSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "finalSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "path": "build/esnext/configuration/legacy-node-configuration.d.ts",
+      "qualifiedSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530",
+      "finalSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530",
+      "noticeAddedByStager": false,
+      "originalSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530",
+      "path": "build/esnext/configuration/legacy-node-configuration.js",
+      "qualifiedSHA256": "494d125145379d9395e8cafa460cd6e2dff07c2224b55700e8ad3bfe20a9f530"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce",
+      "finalSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce",
+      "path": "build/esnext/configuration/legacy-node-configuration.js.map",
+      "qualifiedSHA256": "5eb9ddb1875ab80cd7bd53c5cc0bee3d3af7283e40b344c01f4db4234303dbce"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "finalSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "path": "build/esnext/configuration/otlp-http-configuration.d.ts",
+      "qualifiedSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830",
+      "finalSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830",
+      "path": "build/esnext/configuration/otlp-http-configuration.js",
+      "qualifiedSHA256": "3699074e2689ddaef7391233bfb79d0f63a27e19617e686a6160e314e3886830"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480",
+      "finalSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480",
+      "path": "build/esnext/configuration/otlp-http-configuration.js.map",
+      "qualifiedSHA256": "c0e1ca136a7dad55653691432014f34e0f72b43471947ccab668b4fff01cc480"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "finalSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "path": "build/esnext/configuration/otlp-node-http-configuration.d.ts",
+      "qualifiedSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf",
+      "finalSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf",
+      "path": "build/esnext/configuration/otlp-node-http-configuration.js",
+      "qualifiedSHA256": "9ba63cf4de0440472e2eb7b5cafb6c1cada15381a7836e0535309c35de03d9bf"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c",
+      "finalSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c",
+      "path": "build/esnext/configuration/otlp-node-http-configuration.js.map",
+      "qualifiedSHA256": "0aaeceb9cdb16b262ff1a60e763f6f419f7a8bf289bd68e1ae2e67acc337946c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "finalSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "path": "build/esnext/configuration/otlp-node-http-env-configuration.d.ts",
+      "qualifiedSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364",
+      "finalSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364",
+      "path": "build/esnext/configuration/otlp-node-http-env-configuration.js",
+      "qualifiedSHA256": "d4397f98b3cea799130dd26fee05ce2f27811e5643244e9d59264d218ac9f364"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66",
+      "finalSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66",
+      "path": "build/esnext/configuration/otlp-node-http-env-configuration.js.map",
+      "qualifiedSHA256": "f59e7da36eddcdbb60a81af610b0210e8684db2302f13befc7ac1f1c8787cb66"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "finalSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "path": "build/esnext/configuration/shared-configuration.d.ts",
+      "qualifiedSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d",
+      "finalSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d",
+      "path": "build/esnext/configuration/shared-configuration.js",
+      "qualifiedSHA256": "8adb08fbdb2f50288c829ddd4bb9bd6dbad51d0d40fc31615a378fe48f39ef5d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024",
+      "finalSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024",
+      "path": "build/esnext/configuration/shared-configuration.js.map",
+      "qualifiedSHA256": "c8092e3378c5f3aaea2abd5d0bf7618169485595ca09b8952c95375203ec8024"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "finalSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "path": "build/esnext/configuration/shared-env-configuration.d.ts",
+      "qualifiedSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b",
+      "finalSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b",
+      "path": "build/esnext/configuration/shared-env-configuration.js",
+      "qualifiedSHA256": "cfa08acf99e64cbb1379fb6f29863471c1fa58e0c166c3dd971d22b652902f4b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd",
+      "finalSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd",
+      "path": "build/esnext/configuration/shared-env-configuration.js.map",
+      "qualifiedSHA256": "73bca31f6a8f69a83f7d28914dfd62cb9da3a5ddddd5946ab0afd459a79a5efd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "finalSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "noticeAddedByStager": false,
+      "originalSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "path": "build/esnext/export-response.d.ts",
+      "qualifiedSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1",
+      "finalSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1",
+      "path": "build/esnext/export-response.js",
+      "qualifiedSHA256": "de43442fecbab573bdedfd29195accf94a629c9434477317be910accb17cbde1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01",
+      "finalSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01",
+      "path": "build/esnext/export-response.js.map",
+      "qualifiedSHA256": "5ba028fa362a273e89839d947736113228292682f25d745d02c313bfc93b6d01"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "6c3a0fa97e8da436e7f9d53b8c8bd08e60c3ca48b9a41577e14e444134452afb",
+      "finalSHA256": "2c322f6db94da39a9079a256162b768bae7108c1e86b5687177459eba3e095e9",
+      "noticeAddedByStager": true,
+      "originalSHA256": "ef06e439aad2c8b26c1930b581e83b6908ca2678f6300e3b32942437b97a31af",
+      "path": "build/esnext/exporter-transport.d.ts",
+      "qualifiedSHA256": "6c3a0fa97e8da436e7f9d53b8c8bd08e60c3ca48b9a41577e14e444134452afb"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "c776e26e8290c68c9523427cde06c641879fcfea741079bb9f9ce0669a7ba9d5",
+      "finalSHA256": "c776e26e8290c68c9523427cde06c641879fcfea741079bb9f9ce0669a7ba9d5",
+      "noticeAddedByStager": false,
+      "originalSHA256": "255592b79f931d4a0bbc240943ffa07a8f012df0333d8f0ff4471f8b11dc1c62",
+      "path": "build/esnext/exporter-transport.js",
+      "qualifiedSHA256": "255592b79f931d4a0bbc240943ffa07a8f012df0333d8f0ff4471f8b11dc1c62"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "3b37bc5b87a8ff7a2398370197e0f0d7a90f53aaf973fbb4a60ce9f8a354a715",
+      "finalSHA256": "99977066e47626d537b74c4cd916e076015374776a94b6d112af75ef08e3cff1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "a7a269ea85a3b7b5c692d2f0809cdd3df2e5ed17dd4c2072de1de46e9eba5b16",
+      "path": "build/esnext/exporter-transport.js.map",
+      "qualifiedSHA256": "715fc47282867f55ce0111a9524e3214427b6263852b1057cf8605f93834958a"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "finalSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "path": "build/esnext/index-browser-http.d.ts",
+      "qualifiedSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0",
+      "finalSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0",
+      "noticeAddedByStager": false,
+      "originalSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0",
+      "path": "build/esnext/index-browser-http.js",
+      "qualifiedSHA256": "39a34c9421316dd64da0bf97fe3d0eaba38f1df990aa7b462c0c19df6f7de0a0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95",
+      "finalSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95",
+      "noticeAddedByStager": false,
+      "originalSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95",
+      "path": "build/esnext/index-browser-http.js.map",
+      "qualifiedSHA256": "26e23cea88b8c3fe23ae6df45525cc62441d83f7523c177753fe86eeaa0f9f95"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "finalSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "path": "build/esnext/index-node-http.d.ts",
+      "qualifiedSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed",
+      "finalSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed",
+      "path": "build/esnext/index-node-http.js",
+      "qualifiedSHA256": "9442e22f5f20622d8f116066f497d161902d5c9cfc05fe5be70a79093e549bed"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede",
+      "finalSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede",
+      "path": "build/esnext/index-node-http.js.map",
+      "qualifiedSHA256": "e51e6f64a40c37f02300d963ef0f6a93c1a84a6512a3623fd43a0a02c7389ede"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "finalSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "path": "build/esnext/index.d.ts",
+      "qualifiedSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624",
+      "finalSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624",
+      "path": "build/esnext/index.js",
+      "qualifiedSHA256": "b48e9211e2a0ace62c10aff8762b6a31bce97f3dc6bd07722fb1cdd31fcb8624"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f",
+      "finalSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f",
+      "path": "build/esnext/index.js.map",
+      "qualifiedSHA256": "990d9c4529ec3c3a46ad46515939abc741146832d85fdfd6cd4c61594e04a94f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "finalSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "noticeAddedByStager": false,
+      "originalSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "path": "build/esnext/is-export-retryable.d.ts",
+      "qualifiedSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102",
+      "finalSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102",
+      "noticeAddedByStager": false,
+      "originalSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102",
+      "path": "build/esnext/is-export-retryable.js",
+      "qualifiedSHA256": "719bbed519be1cc2da3465b88863acc5529cbe258c3cab9ac4af8948801af102"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15",
+      "finalSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15",
+      "path": "build/esnext/is-export-retryable.js.map",
+      "qualifiedSHA256": "e9f9af2651dd159e8a6fa5220f3d911182c05d4bbdfa9890f313d768cad0fb15"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "finalSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "path": "build/esnext/logging-response-handler.d.ts",
+      "qualifiedSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75",
+      "finalSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75",
+      "noticeAddedByStager": false,
+      "originalSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75",
+      "path": "build/esnext/logging-response-handler.js",
+      "qualifiedSHA256": "77bc67b9aa307623eb14d4b8fcb76fed6f0df18bf641c0a266737765a3e20b75"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b",
+      "finalSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b",
+      "path": "build/esnext/logging-response-handler.js.map",
+      "qualifiedSHA256": "03c746c888d9bae02fb7ee25cdc6493324b23d5e0ad0a9c617670ddbb7a9ba1b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "finalSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "path": "build/esnext/otlp-browser-http-export-delegate.d.ts",
+      "qualifiedSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1",
+      "finalSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1",
+      "path": "build/esnext/otlp-browser-http-export-delegate.js",
+      "qualifiedSHA256": "931102bbd7475bbcc61d53c9beec1e91a6fc2230a4246954818787604f0636e1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e",
+      "finalSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e",
+      "path": "build/esnext/otlp-browser-http-export-delegate.js.map",
+      "qualifiedSHA256": "307a99c0a9c4eb12bc3061a4b473e79a77c1e6bfcfc3841ffaea94fce521161e"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "1049f5a01c5fd42aba7d9aaf3e79bdcca22c4ba660b588113f576630e869f3ce",
+      "finalSHA256": "ec1f1b6f7b9ac78237be4b9445f94150fc8a3f2df82894fb6a78128124ddb88a",
+      "noticeAddedByStager": true,
+      "originalSHA256": "f84f6f4ed4ef7b9a5de9781ecda64f3cf189424ee708b00a6b11a1d848c03164",
+      "path": "build/esnext/otlp-export-delegate.d.ts",
+      "qualifiedSHA256": "1049f5a01c5fd42aba7d9aaf3e79bdcca22c4ba660b588113f576630e869f3ce"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "d39687b346c10cc1b3e57b0596f76c3cd9f1bf6a1431ce24b5b294b4d1cb9816",
+      "finalSHA256": "d39687b346c10cc1b3e57b0596f76c3cd9f1bf6a1431ce24b5b294b4d1cb9816",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cee68506db42a124f118ad4b829769780fa9ba4a643ca4bf848415b2d962e418",
+      "path": "build/esnext/otlp-export-delegate.js",
+      "qualifiedSHA256": "564d0117a60e40d21c05105469c977f46101a01f7db639409ffe58259a783843"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "99b92818f05e7a1feb16bdb7bb1da711b106eec69319169d74c25b711d130887",
+      "finalSHA256": "3614dd469980776b5e4c32dbd51f083a9c07f4476ff13df5c43b36434aedc778",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8e17d6b5101164e08094f9a75f4232591eb1592149271e9ce42407002b20eda4",
+      "path": "build/esnext/otlp-export-delegate.js.map",
+      "qualifiedSHA256": "9d2d35f97506585a6b3daefc4175836e3ab2f964115d87ded9a44b7c8934469e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "finalSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "noticeAddedByStager": false,
+      "originalSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "path": "build/esnext/otlp-http-export-delegate.d.ts",
+      "qualifiedSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "ded39dd6af537ab9ffdbe23df9f577b6b9d3aaa4a6fafb9f9d4edec2ee412768",
+      "finalSHA256": "ded39dd6af537ab9ffdbe23df9f577b6b9d3aaa4a6fafb9f9d4edec2ee412768",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1f790e3050b4b98e131d63e35c8738ee48d5709f2df1c30ca709977b03110b59",
+      "path": "build/esnext/otlp-http-export-delegate.js",
+      "qualifiedSHA256": "7981b1cf690e07be8268ea1bb38fd18c09264f48565c639e3c449262806b8b6b"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "0e4bc4cc0c897d326981690cd95519f4e1a8474085dd648a8b7b6730dc3c49c2",
+      "finalSHA256": "93ff9074315bd57265c0dc8bb9d129f18a0e12aa3896237cffbb087da976fd59",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1851a84b711013821e0a9cf3bf3831222418114915e53b4ddab2282d591707c4",
+      "path": "build/esnext/otlp-http-export-delegate.js.map",
+      "qualifiedSHA256": "b80612b0182cc6ab1a6c30844d4a0d4d12042ea7a45d48b46796e90c5e667013"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "finalSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "noticeAddedByStager": false,
+      "originalSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "path": "build/esnext/otlp-network-export-delegate.d.ts",
+      "qualifiedSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b",
+      "finalSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b",
+      "path": "build/esnext/otlp-network-export-delegate.js",
+      "qualifiedSHA256": "44a72a3d49eb9bd8cd62edfae8111a4469fc21aea13e4e4b265bbfdc4cfe8c4b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb",
+      "finalSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb",
+      "path": "build/esnext/otlp-network-export-delegate.js.map",
+      "qualifiedSHA256": "87bf8ffd99151b05f8f1764fbdec8c975e366b4209002cab671caeffd927accb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "finalSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "path": "build/esnext/response-handler.d.ts",
+      "qualifiedSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c",
+      "finalSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c",
+      "path": "build/esnext/response-handler.js",
+      "qualifiedSHA256": "14c404413a3cf99d5219c897059b0da472831ab4133f9a2391f9cd94f1c6970c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b",
+      "finalSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b",
+      "path": "build/esnext/response-handler.js.map",
+      "qualifiedSHA256": "9209e769545d756f403417620915865bb22ebed86aee97d27e933409e00ca32b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "finalSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "path": "build/esnext/retrying-transport.d.ts",
+      "qualifiedSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "021935d1f20a896220f32e88ee591882b3e9d1beee13d19c92fd31b194c3b136",
+      "finalSHA256": "021935d1f20a896220f32e88ee591882b3e9d1beee13d19c92fd31b194c3b136",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6d4d4a1a1a17d3a261b06f7f954d0c74a73c8e99449331a1fb9f8fde5ef9a8bb",
+      "path": "build/esnext/retrying-transport.js",
+      "qualifiedSHA256": "ea40690cc2e3bc129d42515ce2ad9e550ed6430ef290ef96be7523be36e6536e"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "814376ba29a14eb361ba0dfd1b14a770ec27147a1d144705f32ed34e62d68158",
+      "finalSHA256": "9ac0981a24c9b1424df1464c406c01736ef6415be07580f80c1a52b4c98c8e8d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c2b40c3406ec8e0a352628043fe6ce87f51dfe2ce4d7f88bc076f280bbae504f",
+      "path": "build/esnext/retrying-transport.js.map",
+      "qualifiedSHA256": "15d4f058fcc207c2536164b3e6adea13448ab64cba52da674dd9e05ab4c587e0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "finalSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "path": "build/esnext/transport/fetch-transport.d.ts",
+      "qualifiedSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2",
+      "finalSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2",
+      "path": "build/esnext/transport/fetch-transport.js",
+      "qualifiedSHA256": "7980dc77fb3c52d62c14e08c4abc84bd2f203cab1209bfd4a1d8e844d70710e2"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6",
+      "finalSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6",
+      "path": "build/esnext/transport/fetch-transport.js.map",
+      "qualifiedSHA256": "e469007e10e82fde6f3bc98d49c0678dcab7970137b777361b5dd033006d6db6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "finalSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "path": "build/esnext/transport/http-exporter-transport.d.ts",
+      "qualifiedSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "d57fe612535649e7c9b33078dfe526260ce2ce20f53d39145bc7b78b164957fd",
+      "finalSHA256": "d57fe612535649e7c9b33078dfe526260ce2ce20f53d39145bc7b78b164957fd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "785206ddf55bfb3a8ba39e024ef7bfed8a9fb6f1c35c20548ea7b3c2e1ab818c",
+      "path": "build/esnext/transport/http-exporter-transport.js",
+      "qualifiedSHA256": "933580cf52d0317a507b4c1bd7506b593d302c45d4f3a17b32da771aea2b9de9"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "eb3c80e814e1ce26500932102fba6427e95606bccf397113aa875b58b02869c9",
+      "finalSHA256": "6a8112ac7bf27ecf9df797623c4fe4764985d0938be0e1b81f4d170776585970",
+      "noticeAddedByStager": false,
+      "originalSHA256": "76a97b29824c8eb682cb1b50537e758954bd5a2758b589b9c7e1767a63867584",
+      "path": "build/esnext/transport/http-exporter-transport.js.map",
+      "qualifiedSHA256": "b37255198baae7ba8e6ba7ae48847b4e5164d5b8e085dbafe40f19f61b40c6bd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "finalSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "path": "build/esnext/transport/http-transport-types.d.ts",
+      "qualifiedSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd",
+      "finalSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd",
+      "path": "build/esnext/transport/http-transport-types.js",
+      "qualifiedSHA256": "0e3717d24e639ec19d38a7760b30e24d170237bd8955863ca713d2c8fe7653bd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51",
+      "finalSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51",
+      "path": "build/esnext/transport/http-transport-types.js.map",
+      "qualifiedSHA256": "3c4483ad25a83ad99fd3b0ff19b34384f2aa09ebf0f29417ddaad44fa83e7a51"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "c9161d4bae2613e33bbb42599d5b4ee54e269320f6507477cd2342f6e10317a0",
+      "finalSHA256": "edb6c33afe793e29dd322e5329aae30a2731437d2bf04357cb51a14018105547",
+      "noticeAddedByStager": true,
+      "originalSHA256": "3d52e19921c1157174e5b00de08372747f26aace246abebf6e33979d32f4cc5c",
+      "path": "build/esnext/transport/http-transport-utils.d.ts",
+      "qualifiedSHA256": "c9161d4bae2613e33bbb42599d5b4ee54e269320f6507477cd2342f6e10317a0"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "5669c107aaca0d3cfbe2519bacc7a8119c1176da16ae92d7124c356e6996f0a5",
+      "finalSHA256": "ab3aa78cb79876ad00b182e3e967017f647ba863d5d784e7a504faa7addddc05",
+      "noticeAddedByStager": true,
+      "originalSHA256": "88fd3f5e803f23110405b237d07eae990d6ed1be7d354e94efb5c51bbbffa0e4",
+      "path": "build/esnext/transport/http-transport-utils.js",
+      "qualifiedSHA256": "5669c107aaca0d3cfbe2519bacc7a8119c1176da16ae92d7124c356e6996f0a5"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "9c6f7f83a867499b111089087a1d296cba64dff34e98d96f0745f5fa059ff93e",
+      "finalSHA256": "4a3ac6d5a006ef2bbfb8d3eede718fa0c818392bc6b4890ec38618222d076210",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cb1047e0ba34ba92d95494cf3ee64051683517a9566cbb56262a7d2c23186790",
+      "path": "build/esnext/transport/http-transport-utils.js.map",
+      "qualifiedSHA256": "e06423c8b295472a05ee0d4f6e463543702fc9ff30ee9193f33dfcdac6337eb1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "finalSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "path": "build/esnext/transport/node-http-transport-types.d.ts",
+      "qualifiedSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632",
+      "finalSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632",
+      "noticeAddedByStager": false,
+      "originalSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632",
+      "path": "build/esnext/transport/node-http-transport-types.js",
+      "qualifiedSHA256": "17be15d4be2cfc47dbfd26a7919f2c619f1d3c5e37df0de86a5552cc94856632"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e",
+      "finalSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e",
+      "path": "build/esnext/transport/node-http-transport-types.js.map",
+      "qualifiedSHA256": "5534a2ed08d6f27da8feb72e86e4d5fa5e5f13ee8b8ac9d9df96b8f81855c16e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "finalSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "path": "build/esnext/transport/send-beacon-transport.d.ts",
+      "qualifiedSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b",
+      "finalSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b",
+      "path": "build/esnext/transport/send-beacon-transport.js",
+      "qualifiedSHA256": "0d7c98588c6c28606ad9d3ab9e99c163ec92279a07bddda2f67d35446d10cf7b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0",
+      "finalSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0",
+      "path": "build/esnext/transport/send-beacon-transport.js.map",
+      "qualifiedSHA256": "7667c466ccf0839ab0449d07d8470c890be8a06329245d49259f1ab1885a23f0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "finalSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "noticeAddedByStager": false,
+      "originalSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "path": "build/esnext/transport/xhr-transport.d.ts",
+      "qualifiedSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb",
+      "finalSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb",
+      "path": "build/esnext/transport/xhr-transport.js",
+      "qualifiedSHA256": "04c3c2d8e126aaad3a688e043292d42f464af59ea398c0d270ee2f54a1f2abcb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416",
+      "finalSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416",
+      "path": "build/esnext/transport/xhr-transport.js.map",
+      "qualifiedSHA256": "9c4e69a38eea857ffd292426dd8b35c745ec648af5619c4423d5559faa120416"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "finalSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "path": "build/esnext/types.d.ts",
+      "qualifiedSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1",
+      "finalSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1",
+      "path": "build/esnext/types.js",
+      "qualifiedSHA256": "f84d1549d652154df3ca0617833b482d9305751e938527297966a22293c572d1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7",
+      "finalSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7",
+      "path": "build/esnext/types.js.map",
+      "qualifiedSHA256": "76b338ccdcba59ad38254a53bfaac0081e91d8bcb8db67fbb71390bd73623bd7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "finalSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "path": "build/esnext/util.d.ts",
+      "qualifiedSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4",
+      "finalSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4",
+      "path": "build/esnext/util.js",
+      "qualifiedSHA256": "e5bcdc3943189f153e5907f3a004140f7e88aff585bd3ca4cec68bcbc20029e4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963",
+      "finalSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963",
+      "path": "build/esnext/util.js.map",
+      "qualifiedSHA256": "e1afc1eb4d4a971c7e15b5a8a84e7a9e0c46f403c94cc6ea0d6ee9ead3763963"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "finalSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "path": "build/esnext/version.d.ts",
+      "qualifiedSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982",
+      "finalSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982",
+      "path": "build/esnext/version.js",
+      "qualifiedSHA256": "bc3abc801a2913f3a5145abcf1bfb0be273d71adb718fb935b89ac1dbe398982"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5",
+      "finalSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5",
+      "path": "build/esnext/version.js.map",
+      "qualifiedSHA256": "b881f5b870279dee8645eebded18354f9dee6f3618fa72a072cbacc040e52af5"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "finalSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1",
+      "path": "build/src/OTLPExporterBase.d.ts",
+      "qualifiedSHA256": "30a6bda284d7763c2d5d2ae897a4e13802a3e508fa1a1a2f28933a5a15d1daf1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "92ff7b0eeafb203abe3364544d193bc2b5f4ada0e495117e1250d74a5dd2862f",
+      "finalSHA256": "92ff7b0eeafb203abe3364544d193bc2b5f4ada0e495117e1250d74a5dd2862f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "92ff7b0eeafb203abe3364544d193bc2b5f4ada0e495117e1250d74a5dd2862f",
+      "path": "build/src/OTLPExporterBase.js",
+      "qualifiedSHA256": "92ff7b0eeafb203abe3364544d193bc2b5f4ada0e495117e1250d74a5dd2862f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "77eef5d970df45aef066e79c677db0cb9cc025dd1893619438ad80a2ac82b68d",
+      "finalSHA256": "77eef5d970df45aef066e79c677db0cb9cc025dd1893619438ad80a2ac82b68d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "77eef5d970df45aef066e79c677db0cb9cc025dd1893619438ad80a2ac82b68d",
+      "path": "build/src/OTLPExporterBase.js.map",
+      "qualifiedSHA256": "77eef5d970df45aef066e79c677db0cb9cc025dd1893619438ad80a2ac82b68d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "finalSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "noticeAddedByStager": false,
+      "originalSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295",
+      "path": "build/src/bounded-queue-export-promise-handler.d.ts",
+      "qualifiedSHA256": "3eba7f5ea0357045d1b49be93460e6e5344a521865fc91ee295ff8b5b1cc7295"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "109ef6be03c6ad19f83afa09110a68a45850eca074563dd5aebd550bf7979b9f",
+      "finalSHA256": "109ef6be03c6ad19f83afa09110a68a45850eca074563dd5aebd550bf7979b9f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "109ef6be03c6ad19f83afa09110a68a45850eca074563dd5aebd550bf7979b9f",
+      "path": "build/src/bounded-queue-export-promise-handler.js",
+      "qualifiedSHA256": "109ef6be03c6ad19f83afa09110a68a45850eca074563dd5aebd550bf7979b9f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5a7067458f10fa3633f86ffd537dfe18de3bfe888754ce6a44ef91e9caf1bb5c",
+      "finalSHA256": "5a7067458f10fa3633f86ffd537dfe18de3bfe888754ce6a44ef91e9caf1bb5c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5a7067458f10fa3633f86ffd537dfe18de3bfe888754ce6a44ef91e9caf1bb5c",
+      "path": "build/src/bounded-queue-export-promise-handler.js.map",
+      "qualifiedSHA256": "5a7067458f10fa3633f86ffd537dfe18de3bfe888754ce6a44ef91e9caf1bb5c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "finalSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167",
+      "path": "build/src/configuration/convert-legacy-browser-http-options.d.ts",
+      "qualifiedSHA256": "f453d88cca6b97fdcfa81c7ddd0f5c4bb92d565bd63e18aa715f7bdffd47f167"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f2031ef0dbd304b7186a475c81005ee8f125724ffc70f5a260caeec7b43a235f",
+      "finalSHA256": "f2031ef0dbd304b7186a475c81005ee8f125724ffc70f5a260caeec7b43a235f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f2031ef0dbd304b7186a475c81005ee8f125724ffc70f5a260caeec7b43a235f",
+      "path": "build/src/configuration/convert-legacy-browser-http-options.js",
+      "qualifiedSHA256": "f2031ef0dbd304b7186a475c81005ee8f125724ffc70f5a260caeec7b43a235f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "be9c787dfe5df85d4658eca4b258ccd6c3f7ae1e955451e04d52e8acf9b12017",
+      "finalSHA256": "be9c787dfe5df85d4658eca4b258ccd6c3f7ae1e955451e04d52e8acf9b12017",
+      "noticeAddedByStager": false,
+      "originalSHA256": "be9c787dfe5df85d4658eca4b258ccd6c3f7ae1e955451e04d52e8acf9b12017",
+      "path": "build/src/configuration/convert-legacy-browser-http-options.js.map",
+      "qualifiedSHA256": "be9c787dfe5df85d4658eca4b258ccd6c3f7ae1e955451e04d52e8acf9b12017"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "finalSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "noticeAddedByStager": false,
+      "originalSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802",
+      "path": "build/src/configuration/convert-legacy-http-options.d.ts",
+      "qualifiedSHA256": "48ad91eecb269f2d7e31afd804fc3fb53f12d832bcf24be2043baf59b7e1d802"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "046f3fa37e2d284e8afdb1581f4e2900a442db78f2f807e782dab35d0a22ca13",
+      "finalSHA256": "046f3fa37e2d284e8afdb1581f4e2900a442db78f2f807e782dab35d0a22ca13",
+      "noticeAddedByStager": false,
+      "originalSHA256": "046f3fa37e2d284e8afdb1581f4e2900a442db78f2f807e782dab35d0a22ca13",
+      "path": "build/src/configuration/convert-legacy-http-options.js",
+      "qualifiedSHA256": "046f3fa37e2d284e8afdb1581f4e2900a442db78f2f807e782dab35d0a22ca13"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "527e1147879af274ad216ca0df5196cda20b3e62c85b33c73a6b9b9689be8de3",
+      "finalSHA256": "527e1147879af274ad216ca0df5196cda20b3e62c85b33c73a6b9b9689be8de3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "527e1147879af274ad216ca0df5196cda20b3e62c85b33c73a6b9b9689be8de3",
+      "path": "build/src/configuration/convert-legacy-http-options.js.map",
+      "qualifiedSHA256": "527e1147879af274ad216ca0df5196cda20b3e62c85b33c73a6b9b9689be8de3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "finalSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc",
+      "path": "build/src/configuration/convert-legacy-node-http-options.d.ts",
+      "qualifiedSHA256": "628b2dfc02944b433f599a182ffde11a5d1114bb7de145d23b281c3b43a3acbc"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "82fef3bf246be9f56b0162f8a692481c1cabbdd6ec3f1b712e44c558186e27a3",
+      "finalSHA256": "82fef3bf246be9f56b0162f8a692481c1cabbdd6ec3f1b712e44c558186e27a3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "82fef3bf246be9f56b0162f8a692481c1cabbdd6ec3f1b712e44c558186e27a3",
+      "path": "build/src/configuration/convert-legacy-node-http-options.js",
+      "qualifiedSHA256": "82fef3bf246be9f56b0162f8a692481c1cabbdd6ec3f1b712e44c558186e27a3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "57e26e95515b654bd4969e0c38e9277bbc7656cd607edfe88c4a4481d09c5989",
+      "finalSHA256": "57e26e95515b654bd4969e0c38e9277bbc7656cd607edfe88c4a4481d09c5989",
+      "noticeAddedByStager": false,
+      "originalSHA256": "57e26e95515b654bd4969e0c38e9277bbc7656cd607edfe88c4a4481d09c5989",
+      "path": "build/src/configuration/convert-legacy-node-http-options.js.map",
+      "qualifiedSHA256": "57e26e95515b654bd4969e0c38e9277bbc7656cd607edfe88c4a4481d09c5989"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "finalSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d",
+      "path": "build/src/configuration/create-legacy-browser-delegate.d.ts",
+      "qualifiedSHA256": "29ba98f01ebe94c2f54e6327187f7a49588ca318edd2986374397388a8ffd91d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "1a66e4c8fabe08991073ae75278f3d712204ac8b7e651d1cdc351cc86f95414d",
+      "finalSHA256": "1a66e4c8fabe08991073ae75278f3d712204ac8b7e651d1cdc351cc86f95414d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1a66e4c8fabe08991073ae75278f3d712204ac8b7e651d1cdc351cc86f95414d",
+      "path": "build/src/configuration/create-legacy-browser-delegate.js",
+      "qualifiedSHA256": "1a66e4c8fabe08991073ae75278f3d712204ac8b7e651d1cdc351cc86f95414d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "1b501935d75df30609d4d46fa67660ab63b4c28898f02dcc547ddd4eb395a0db",
+      "finalSHA256": "1b501935d75df30609d4d46fa67660ab63b4c28898f02dcc547ddd4eb395a0db",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1b501935d75df30609d4d46fa67660ab63b4c28898f02dcc547ddd4eb395a0db",
+      "path": "build/src/configuration/create-legacy-browser-delegate.js.map",
+      "qualifiedSHA256": "1b501935d75df30609d4d46fa67660ab63b4c28898f02dcc547ddd4eb395a0db"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "finalSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071",
+      "path": "build/src/configuration/legacy-base-configuration.d.ts",
+      "qualifiedSHA256": "8735649c27cf6348a9b28a601e1d71e06df0870cf5bafb7aeefb1b25b4e91071"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "34eac08619342fd7ac71615215782f534ef21948a116a721aaf3381809d9cf14",
+      "finalSHA256": "34eac08619342fd7ac71615215782f534ef21948a116a721aaf3381809d9cf14",
+      "noticeAddedByStager": false,
+      "originalSHA256": "34eac08619342fd7ac71615215782f534ef21948a116a721aaf3381809d9cf14",
+      "path": "build/src/configuration/legacy-base-configuration.js",
+      "qualifiedSHA256": "34eac08619342fd7ac71615215782f534ef21948a116a721aaf3381809d9cf14"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "finalSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d",
+      "path": "build/src/configuration/legacy-base-configuration.js.map",
+      "qualifiedSHA256": "7130857483f889762748ba753a788fcce51f9774138b6c049f96b6eadca28b8d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "finalSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6",
+      "path": "build/src/configuration/legacy-node-configuration.d.ts",
+      "qualifiedSHA256": "049773d4cadff9d48898a2bbe8bfc3aef8b42dc21c45e4807ea4cf689ebf81e6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e084c25f6502ab888489d2a8933f4639f234dd67686a3d72184a20364632cd46",
+      "finalSHA256": "e084c25f6502ab888489d2a8933f4639f234dd67686a3d72184a20364632cd46",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e084c25f6502ab888489d2a8933f4639f234dd67686a3d72184a20364632cd46",
+      "path": "build/src/configuration/legacy-node-configuration.js",
+      "qualifiedSHA256": "e084c25f6502ab888489d2a8933f4639f234dd67686a3d72184a20364632cd46"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7ceb06328918fb4a9ed6ae12c821cdf42bf693adcb2f043c18e81199ce3e80e4",
+      "finalSHA256": "7ceb06328918fb4a9ed6ae12c821cdf42bf693adcb2f043c18e81199ce3e80e4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7ceb06328918fb4a9ed6ae12c821cdf42bf693adcb2f043c18e81199ce3e80e4",
+      "path": "build/src/configuration/legacy-node-configuration.js.map",
+      "qualifiedSHA256": "7ceb06328918fb4a9ed6ae12c821cdf42bf693adcb2f043c18e81199ce3e80e4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "finalSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e",
+      "path": "build/src/configuration/otlp-http-configuration.d.ts",
+      "qualifiedSHA256": "7d25e4a1d4a8e08894a1f518f37f227458223a0e698130cf77035b4d29d5cd0e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "43221734d587e8666a4f0d1ef8d6008266beeba9eacc19f786d33ad43b87a9e3",
+      "finalSHA256": "43221734d587e8666a4f0d1ef8d6008266beeba9eacc19f786d33ad43b87a9e3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "43221734d587e8666a4f0d1ef8d6008266beeba9eacc19f786d33ad43b87a9e3",
+      "path": "build/src/configuration/otlp-http-configuration.js",
+      "qualifiedSHA256": "43221734d587e8666a4f0d1ef8d6008266beeba9eacc19f786d33ad43b87a9e3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d532e1535db9d73efa4ede64dd5523f02615ce15073cdf5a731fbfdb59c72854",
+      "finalSHA256": "d532e1535db9d73efa4ede64dd5523f02615ce15073cdf5a731fbfdb59c72854",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d532e1535db9d73efa4ede64dd5523f02615ce15073cdf5a731fbfdb59c72854",
+      "path": "build/src/configuration/otlp-http-configuration.js.map",
+      "qualifiedSHA256": "d532e1535db9d73efa4ede64dd5523f02615ce15073cdf5a731fbfdb59c72854"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "finalSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b",
+      "path": "build/src/configuration/otlp-node-http-configuration.d.ts",
+      "qualifiedSHA256": "8b21427af3cbd2de6c8713fdf9a3fd437578482b5c5ac8d3de6c43c78e5f0d8b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8287564f79b66600e41a384ff653add24085c5c4a6d8a87f9c1137f8769efccb",
+      "finalSHA256": "8287564f79b66600e41a384ff653add24085c5c4a6d8a87f9c1137f8769efccb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8287564f79b66600e41a384ff653add24085c5c4a6d8a87f9c1137f8769efccb",
+      "path": "build/src/configuration/otlp-node-http-configuration.js",
+      "qualifiedSHA256": "8287564f79b66600e41a384ff653add24085c5c4a6d8a87f9c1137f8769efccb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "c819f528d46a92306e8f377c2ce55db655b0be25192b36ab8e4d61bc27649e39",
+      "finalSHA256": "c819f528d46a92306e8f377c2ce55db655b0be25192b36ab8e4d61bc27649e39",
+      "noticeAddedByStager": false,
+      "originalSHA256": "c819f528d46a92306e8f377c2ce55db655b0be25192b36ab8e4d61bc27649e39",
+      "path": "build/src/configuration/otlp-node-http-configuration.js.map",
+      "qualifiedSHA256": "c819f528d46a92306e8f377c2ce55db655b0be25192b36ab8e4d61bc27649e39"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "finalSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44",
+      "path": "build/src/configuration/otlp-node-http-env-configuration.d.ts",
+      "qualifiedSHA256": "9ef4e73e4be62ce595bcf94ea230678bb7f93fb0eb2f03c2c9294745c3316c44"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b17f075e83fefcb4ef7cb28cdd45d676a5cc4fcaa7d5ae5ce166781b5147dbaa",
+      "finalSHA256": "b17f075e83fefcb4ef7cb28cdd45d676a5cc4fcaa7d5ae5ce166781b5147dbaa",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b17f075e83fefcb4ef7cb28cdd45d676a5cc4fcaa7d5ae5ce166781b5147dbaa",
+      "path": "build/src/configuration/otlp-node-http-env-configuration.js",
+      "qualifiedSHA256": "b17f075e83fefcb4ef7cb28cdd45d676a5cc4fcaa7d5ae5ce166781b5147dbaa"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "710783fedd0ceafdd24993af6cf4520b38768259f4dea37a70885529ef471756",
+      "finalSHA256": "710783fedd0ceafdd24993af6cf4520b38768259f4dea37a70885529ef471756",
+      "noticeAddedByStager": false,
+      "originalSHA256": "710783fedd0ceafdd24993af6cf4520b38768259f4dea37a70885529ef471756",
+      "path": "build/src/configuration/otlp-node-http-env-configuration.js.map",
+      "qualifiedSHA256": "710783fedd0ceafdd24993af6cf4520b38768259f4dea37a70885529ef471756"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "finalSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f",
+      "path": "build/src/configuration/shared-configuration.d.ts",
+      "qualifiedSHA256": "44cc4cd349a585f1bbf9c756ca77f740d4ac57a3c4951b065a0d20f8d12f8a5f"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b6ec7049bcfeda1ba9fd6897819ff2ee7c44f238238d58827c7d56b8381ae65c",
+      "finalSHA256": "b6ec7049bcfeda1ba9fd6897819ff2ee7c44f238238d58827c7d56b8381ae65c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b6ec7049bcfeda1ba9fd6897819ff2ee7c44f238238d58827c7d56b8381ae65c",
+      "path": "build/src/configuration/shared-configuration.js",
+      "qualifiedSHA256": "b6ec7049bcfeda1ba9fd6897819ff2ee7c44f238238d58827c7d56b8381ae65c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bd8a76bcbe2d1e519399d1f1705a23220c9b7de59c85ba52eca7bd5c687f91c9",
+      "finalSHA256": "bd8a76bcbe2d1e519399d1f1705a23220c9b7de59c85ba52eca7bd5c687f91c9",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bd8a76bcbe2d1e519399d1f1705a23220c9b7de59c85ba52eca7bd5c687f91c9",
+      "path": "build/src/configuration/shared-configuration.js.map",
+      "qualifiedSHA256": "bd8a76bcbe2d1e519399d1f1705a23220c9b7de59c85ba52eca7bd5c687f91c9"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "finalSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22",
+      "path": "build/src/configuration/shared-env-configuration.d.ts",
+      "qualifiedSHA256": "2fc785bac37d07722a97fc28439f89af768559d1cfc0a5d0790cacc755269f22"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f11c0a6f06366ba63e2010781708bea128b3e0b7a3138dbfc75ba61d07a371a7",
+      "finalSHA256": "f11c0a6f06366ba63e2010781708bea128b3e0b7a3138dbfc75ba61d07a371a7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f11c0a6f06366ba63e2010781708bea128b3e0b7a3138dbfc75ba61d07a371a7",
+      "path": "build/src/configuration/shared-env-configuration.js",
+      "qualifiedSHA256": "f11c0a6f06366ba63e2010781708bea128b3e0b7a3138dbfc75ba61d07a371a7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "b4dd564f7d853c2ec01a46d26a5cd4c227fb32e90f07891f4e4755d0d6e554e3",
+      "finalSHA256": "b4dd564f7d853c2ec01a46d26a5cd4c227fb32e90f07891f4e4755d0d6e554e3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b4dd564f7d853c2ec01a46d26a5cd4c227fb32e90f07891f4e4755d0d6e554e3",
+      "path": "build/src/configuration/shared-env-configuration.js.map",
+      "qualifiedSHA256": "b4dd564f7d853c2ec01a46d26a5cd4c227fb32e90f07891f4e4755d0d6e554e3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "finalSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "noticeAddedByStager": false,
+      "originalSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854",
+      "path": "build/src/export-response.d.ts",
+      "qualifiedSHA256": "dbd831c98574825af24ec6af038ecb3ad4bbe97651ac33571e2a17c6ee75d854"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2535510e5f2d273044fd2a9a30c2e76b94b8ed962c390bf4b8b20f39d8690e20",
+      "finalSHA256": "2535510e5f2d273044fd2a9a30c2e76b94b8ed962c390bf4b8b20f39d8690e20",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2535510e5f2d273044fd2a9a30c2e76b94b8ed962c390bf4b8b20f39d8690e20",
+      "path": "build/src/export-response.js",
+      "qualifiedSHA256": "2535510e5f2d273044fd2a9a30c2e76b94b8ed962c390bf4b8b20f39d8690e20"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9bed06d662b53137faa622d37d62458330aacb004bd2435872b4748cdfe032ab",
+      "finalSHA256": "9bed06d662b53137faa622d37d62458330aacb004bd2435872b4748cdfe032ab",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9bed06d662b53137faa622d37d62458330aacb004bd2435872b4748cdfe032ab",
+      "path": "build/src/export-response.js.map",
+      "qualifiedSHA256": "9bed06d662b53137faa622d37d62458330aacb004bd2435872b4748cdfe032ab"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "6c3a0fa97e8da436e7f9d53b8c8bd08e60c3ca48b9a41577e14e444134452afb",
+      "finalSHA256": "2c322f6db94da39a9079a256162b768bae7108c1e86b5687177459eba3e095e9",
+      "noticeAddedByStager": true,
+      "originalSHA256": "ef06e439aad2c8b26c1930b581e83b6908ca2678f6300e3b32942437b97a31af",
+      "path": "build/src/exporter-transport.d.ts",
+      "qualifiedSHA256": "6c3a0fa97e8da436e7f9d53b8c8bd08e60c3ca48b9a41577e14e444134452afb"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "0986031d3083eee5674e47f891fa235f03a409081604aa45da4a1cc5ed1fee5c",
+      "finalSHA256": "0986031d3083eee5674e47f891fa235f03a409081604aa45da4a1cc5ed1fee5c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ca50a9c7217e9c8d6f3ddb73ea28f40c68679aa26f36db9004b82e3fdaa78d49",
+      "path": "build/src/exporter-transport.js",
+      "qualifiedSHA256": "ca50a9c7217e9c8d6f3ddb73ea28f40c68679aa26f36db9004b82e3fdaa78d49"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "97c2f9d4dfb69ff9f27391ec671fa44fd2bd5dbabd910d6151f3485cd23d1a2b",
+      "finalSHA256": "b3654dabc5434d0d0cd7757f3dcafce617453df1bd66f98701b2f3b42faffe86",
+      "noticeAddedByStager": false,
+      "originalSHA256": "789de2e3550b00e68941fac6601cfbf9aff18ef0bda57f2d2a074c62deab8898",
+      "path": "build/src/exporter-transport.js.map",
+      "qualifiedSHA256": "3c790068f942d45debfac03695affeb647f11e24707f85ad0ff6ba5045c6f024"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "finalSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619",
+      "path": "build/src/index-browser-http.d.ts",
+      "qualifiedSHA256": "d00366937412468d574609c366f6d4afcf902ff3fe7999a3575666b39d8c3619"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "cb54fc600e111178c360da4d8531e7128fef7691832e7112a93d4103ee3b0df0",
+      "finalSHA256": "cb54fc600e111178c360da4d8531e7128fef7691832e7112a93d4103ee3b0df0",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cb54fc600e111178c360da4d8531e7128fef7691832e7112a93d4103ee3b0df0",
+      "path": "build/src/index-browser-http.js",
+      "qualifiedSHA256": "cb54fc600e111178c360da4d8531e7128fef7691832e7112a93d4103ee3b0df0"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e0410fef435bbcce00e9e54c071c200510f43542d8e2cd2b850e1701cf5407d8",
+      "finalSHA256": "e0410fef435bbcce00e9e54c071c200510f43542d8e2cd2b850e1701cf5407d8",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e0410fef435bbcce00e9e54c071c200510f43542d8e2cd2b850e1701cf5407d8",
+      "path": "build/src/index-browser-http.js.map",
+      "qualifiedSHA256": "e0410fef435bbcce00e9e54c071c200510f43542d8e2cd2b850e1701cf5407d8"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "finalSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4",
+      "path": "build/src/index-node-http.d.ts",
+      "qualifiedSHA256": "533c2ccbc9c6b5d3019e47e225bb73a97c9b01bf66e9ab738d10a4aaa56746a4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7700fea97edf84bd65ca78e6526f06e0f3113dd4c5d3946ab6faf0a53707999a",
+      "finalSHA256": "7700fea97edf84bd65ca78e6526f06e0f3113dd4c5d3946ab6faf0a53707999a",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7700fea97edf84bd65ca78e6526f06e0f3113dd4c5d3946ab6faf0a53707999a",
+      "path": "build/src/index-node-http.js",
+      "qualifiedSHA256": "7700fea97edf84bd65ca78e6526f06e0f3113dd4c5d3946ab6faf0a53707999a"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "7c547426fd9b8f3066e5994dc22b72f6d57ea6940e622bb7c61ce1c7d966c274",
+      "finalSHA256": "7c547426fd9b8f3066e5994dc22b72f6d57ea6940e622bb7c61ce1c7d966c274",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7c547426fd9b8f3066e5994dc22b72f6d57ea6940e622bb7c61ce1c7d966c274",
+      "path": "build/src/index-node-http.js.map",
+      "qualifiedSHA256": "7c547426fd9b8f3066e5994dc22b72f6d57ea6940e622bb7c61ce1c7d966c274"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "finalSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc",
+      "path": "build/src/index.d.ts",
+      "qualifiedSHA256": "0713decb34a720ae524733fd2108a9c52cf1ef6a39673bb7e787760f13da9fcc"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "e2ee5cfd07ec6d74e2485f6299057ff05fc652f362e703a6b76648862c8ba846",
+      "finalSHA256": "e2ee5cfd07ec6d74e2485f6299057ff05fc652f362e703a6b76648862c8ba846",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e2ee5cfd07ec6d74e2485f6299057ff05fc652f362e703a6b76648862c8ba846",
+      "path": "build/src/index.js",
+      "qualifiedSHA256": "e2ee5cfd07ec6d74e2485f6299057ff05fc652f362e703a6b76648862c8ba846"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "07d189f200a2bfc1ebfd60a1496f4e82238d49ebe12cdea6a4dcce6d05fa06f1",
+      "finalSHA256": "07d189f200a2bfc1ebfd60a1496f4e82238d49ebe12cdea6a4dcce6d05fa06f1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "07d189f200a2bfc1ebfd60a1496f4e82238d49ebe12cdea6a4dcce6d05fa06f1",
+      "path": "build/src/index.js.map",
+      "qualifiedSHA256": "07d189f200a2bfc1ebfd60a1496f4e82238d49ebe12cdea6a4dcce6d05fa06f1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "finalSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "noticeAddedByStager": false,
+      "originalSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753",
+      "path": "build/src/is-export-retryable.d.ts",
+      "qualifiedSHA256": "63beffe435c17398e2373492f58d18532633532b84c6e97a1dece56f42736753"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "21ab345cbcde60380f4ba9256c3cdef9d26f44b0feb1043fea1e3caaf2f8a8c6",
+      "finalSHA256": "21ab345cbcde60380f4ba9256c3cdef9d26f44b0feb1043fea1e3caaf2f8a8c6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "21ab345cbcde60380f4ba9256c3cdef9d26f44b0feb1043fea1e3caaf2f8a8c6",
+      "path": "build/src/is-export-retryable.js",
+      "qualifiedSHA256": "21ab345cbcde60380f4ba9256c3cdef9d26f44b0feb1043fea1e3caaf2f8a8c6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "ab8d35abdfa941074b32654ca72052509e29e527a3b52a078dc93888064cf73d",
+      "finalSHA256": "ab8d35abdfa941074b32654ca72052509e29e527a3b52a078dc93888064cf73d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ab8d35abdfa941074b32654ca72052509e29e527a3b52a078dc93888064cf73d",
+      "path": "build/src/is-export-retryable.js.map",
+      "qualifiedSHA256": "ab8d35abdfa941074b32654ca72052509e29e527a3b52a078dc93888064cf73d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "finalSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7",
+      "path": "build/src/logging-response-handler.d.ts",
+      "qualifiedSHA256": "80c1fe61fe849c57994afefd965b261a8213b25bf8ec5dd9e47a7292a667a8f7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "a08b084b841b3f3d79d515047ee2988409c07232362f89512edc3e09590b37e3",
+      "finalSHA256": "a08b084b841b3f3d79d515047ee2988409c07232362f89512edc3e09590b37e3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "a08b084b841b3f3d79d515047ee2988409c07232362f89512edc3e09590b37e3",
+      "path": "build/src/logging-response-handler.js",
+      "qualifiedSHA256": "a08b084b841b3f3d79d515047ee2988409c07232362f89512edc3e09590b37e3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9f022797a144f2feedaeddba799f0ec5ffff7e80082254d6a0317de34d2d6317",
+      "finalSHA256": "9f022797a144f2feedaeddba799f0ec5ffff7e80082254d6a0317de34d2d6317",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9f022797a144f2feedaeddba799f0ec5ffff7e80082254d6a0317de34d2d6317",
+      "path": "build/src/logging-response-handler.js.map",
+      "qualifiedSHA256": "9f022797a144f2feedaeddba799f0ec5ffff7e80082254d6a0317de34d2d6317"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "finalSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2",
+      "path": "build/src/otlp-browser-http-export-delegate.d.ts",
+      "qualifiedSHA256": "6b7b58b027bb661a2601bcacc8452c6d200cdcad8f8b0331991e86e4d5221dc2"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "044fe39d95b5017efc3a34951c3060ee17ee7751675b6d344ee8921edfdf09f7",
+      "finalSHA256": "044fe39d95b5017efc3a34951c3060ee17ee7751675b6d344ee8921edfdf09f7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "044fe39d95b5017efc3a34951c3060ee17ee7751675b6d344ee8921edfdf09f7",
+      "path": "build/src/otlp-browser-http-export-delegate.js",
+      "qualifiedSHA256": "044fe39d95b5017efc3a34951c3060ee17ee7751675b6d344ee8921edfdf09f7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "571fab69f444c36c48b5d933e996b90805d1e34bbd610d37bac945d254297038",
+      "finalSHA256": "571fab69f444c36c48b5d933e996b90805d1e34bbd610d37bac945d254297038",
+      "noticeAddedByStager": false,
+      "originalSHA256": "571fab69f444c36c48b5d933e996b90805d1e34bbd610d37bac945d254297038",
+      "path": "build/src/otlp-browser-http-export-delegate.js.map",
+      "qualifiedSHA256": "571fab69f444c36c48b5d933e996b90805d1e34bbd610d37bac945d254297038"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "1049f5a01c5fd42aba7d9aaf3e79bdcca22c4ba660b588113f576630e869f3ce",
+      "finalSHA256": "ec1f1b6f7b9ac78237be4b9445f94150fc8a3f2df82894fb6a78128124ddb88a",
+      "noticeAddedByStager": true,
+      "originalSHA256": "f84f6f4ed4ef7b9a5de9781ecda64f3cf189424ee708b00a6b11a1d848c03164",
+      "path": "build/src/otlp-export-delegate.d.ts",
+      "qualifiedSHA256": "1049f5a01c5fd42aba7d9aaf3e79bdcca22c4ba660b588113f576630e869f3ce"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "884f6871fb56e0652a460923898387b6ccfd2ce49a94a11f319c47a7c85134cc",
+      "finalSHA256": "884f6871fb56e0652a460923898387b6ccfd2ce49a94a11f319c47a7c85134cc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1c392b1d79b06be176e945c3db7d0bfc93386cbf2843db1e590b5c9cd4958217",
+      "path": "build/src/otlp-export-delegate.js",
+      "qualifiedSHA256": "66c91510cb13863cd1d1b3dcd6529330062dbc58e0339250287a1bb417b555df"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "7512650a02dab7638d9925311e5e5a397be06f7bdd652e57eb6a39a5426bdeb6",
+      "finalSHA256": "f24ef2d0c43cce9bb9bebce84c7b4c326969e05ee9bf4dd6c85186f5d8957022",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b3813566b3932e2539000f857e305b7612db45c16d6e1819f96e3aed2cb424e8",
+      "path": "build/src/otlp-export-delegate.js.map",
+      "qualifiedSHA256": "91d625e96d0af2fd10b594bc9b97b7aad5c4caef461317a2fb269233932bb893"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "finalSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "noticeAddedByStager": false,
+      "originalSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697",
+      "path": "build/src/otlp-http-export-delegate.d.ts",
+      "qualifiedSHA256": "39fcd3fec3d07d7ebc0d553b9b960f1d89bdef60f2d6c7c74d5a1ca0a8b72697"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "064c0fbe8a341d8f85ab1f47fcf4e8a7d9536f387f6d66e55945f12a088525f0",
+      "finalSHA256": "064c0fbe8a341d8f85ab1f47fcf4e8a7d9536f387f6d66e55945f12a088525f0",
+      "noticeAddedByStager": false,
+      "originalSHA256": "788ee35f46b4e3708b9735c069917e233505f52f4c8042c99ee28d200996b792",
+      "path": "build/src/otlp-http-export-delegate.js",
+      "qualifiedSHA256": "87d32cd23d80981f6f471459509d5460923f0a5463fb810aa538add03f701baf"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "1a444499c58ef9d206c08d84e0a4d48b5d907a557c86f10c95d62d2995966edb",
+      "finalSHA256": "86294e07e0b4b0d98bc25dbe118b323c354004743ea3bdbd8178aaed77bd17d9",
+      "noticeAddedByStager": false,
+      "originalSHA256": "e8b8e3b9f2671acad177b945ca651b93370407e3a23fd23e3d9a05fd199213cb",
+      "path": "build/src/otlp-http-export-delegate.js.map",
+      "qualifiedSHA256": "341ef3bc89be6d46877153f614d87eae6458e1f49b7ff541142ba1e47facfe4a"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "finalSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "noticeAddedByStager": false,
+      "originalSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687",
+      "path": "build/src/otlp-network-export-delegate.d.ts",
+      "qualifiedSHA256": "4e00a3df5e4a06827311e59740591f0930314ec4a2a6a13a23ef27e3773f3687"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bc4123c0b25c9bd4cd43429e8932ea740367ea034e829375ab70437947a72ff7",
+      "finalSHA256": "bc4123c0b25c9bd4cd43429e8932ea740367ea034e829375ab70437947a72ff7",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bc4123c0b25c9bd4cd43429e8932ea740367ea034e829375ab70437947a72ff7",
+      "path": "build/src/otlp-network-export-delegate.js",
+      "qualifiedSHA256": "bc4123c0b25c9bd4cd43429e8932ea740367ea034e829375ab70437947a72ff7"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "99071a7f0a9db8b4e41aaf6d2ef370c605d29c71ae82e33476b0c1667629fffb",
+      "finalSHA256": "99071a7f0a9db8b4e41aaf6d2ef370c605d29c71ae82e33476b0c1667629fffb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "99071a7f0a9db8b4e41aaf6d2ef370c605d29c71ae82e33476b0c1667629fffb",
+      "path": "build/src/otlp-network-export-delegate.js.map",
+      "qualifiedSHA256": "99071a7f0a9db8b4e41aaf6d2ef370c605d29c71ae82e33476b0c1667629fffb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "finalSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d",
+      "path": "build/src/response-handler.d.ts",
+      "qualifiedSHA256": "f06903c690ac41fcd3d7007f40d6b0f9b99acc93c9467da7c07502e2a234554d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "660d585acdf42a7381be911ac59365423c80abbbc921c5f271e40f443eb40ec1",
+      "finalSHA256": "660d585acdf42a7381be911ac59365423c80abbbc921c5f271e40f443eb40ec1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "660d585acdf42a7381be911ac59365423c80abbbc921c5f271e40f443eb40ec1",
+      "path": "build/src/response-handler.js",
+      "qualifiedSHA256": "660d585acdf42a7381be911ac59365423c80abbbc921c5f271e40f443eb40ec1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8e369de68fca8635f5a8fdd7f67cb2414dd5b925ba4493444848fbd191897c7d",
+      "finalSHA256": "8e369de68fca8635f5a8fdd7f67cb2414dd5b925ba4493444848fbd191897c7d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8e369de68fca8635f5a8fdd7f67cb2414dd5b925ba4493444848fbd191897c7d",
+      "path": "build/src/response-handler.js.map",
+      "qualifiedSHA256": "8e369de68fca8635f5a8fdd7f67cb2414dd5b925ba4493444848fbd191897c7d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "finalSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "noticeAddedByStager": false,
+      "originalSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288",
+      "path": "build/src/retrying-transport.d.ts",
+      "qualifiedSHA256": "6f17236dc888b2d5e9fc186ab6b5ed6c538da8e1ad77ae1e44073026efd0a288"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "104ddd3fdb2f194596f4b66db7d6bcc2dc821ed90ee8a9179da4bafe19d50983",
+      "finalSHA256": "104ddd3fdb2f194596f4b66db7d6bcc2dc821ed90ee8a9179da4bafe19d50983",
+      "noticeAddedByStager": false,
+      "originalSHA256": "7538492973770a293a4b76eeac99c904b767dadd4332f318655a9885296dd566",
+      "path": "build/src/retrying-transport.js",
+      "qualifiedSHA256": "32ea93cf70f3cd3e2e423e4dda5e068bd56e1203cb13ba769bd4d2397db79320"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "f7c269a6ce6435593e01cb829bb95ab64eeaa95aa09c7a574127e869ec474914",
+      "finalSHA256": "56667e6ec1648f9ce9729b6a1111e193185521533c163ac8ccfbdf252ca3ddcb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ce307f47029ddb9836fa7b8c65661a9bf33e2a3c16d0c41f0474dcf591520073",
+      "path": "build/src/retrying-transport.js.map",
+      "qualifiedSHA256": "1668fb58e919d971789758aeda718d9846b912ee7d635eb3a7e84f3f7b248f93"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "finalSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "noticeAddedByStager": false,
+      "originalSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975",
+      "path": "build/src/transport/fetch-transport.d.ts",
+      "qualifiedSHA256": "bb407010c9ac63e9d5bba7cda7c539ab4273c083327d7547cb81e05895d82975"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "cd28ed8e8e56c81e5a7f2a232d05301341512d98e95801877e3a73209febc024",
+      "finalSHA256": "cd28ed8e8e56c81e5a7f2a232d05301341512d98e95801877e3a73209febc024",
+      "noticeAddedByStager": false,
+      "originalSHA256": "cd28ed8e8e56c81e5a7f2a232d05301341512d98e95801877e3a73209febc024",
+      "path": "build/src/transport/fetch-transport.js",
+      "qualifiedSHA256": "cd28ed8e8e56c81e5a7f2a232d05301341512d98e95801877e3a73209febc024"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "0237f6bc8024143f11a5e0d22d68653ffb086a00740b26e68100a4ebf45b0fae",
+      "finalSHA256": "0237f6bc8024143f11a5e0d22d68653ffb086a00740b26e68100a4ebf45b0fae",
+      "noticeAddedByStager": false,
+      "originalSHA256": "0237f6bc8024143f11a5e0d22d68653ffb086a00740b26e68100a4ebf45b0fae",
+      "path": "build/src/transport/fetch-transport.js.map",
+      "qualifiedSHA256": "0237f6bc8024143f11a5e0d22d68653ffb086a00740b26e68100a4ebf45b0fae"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "finalSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "noticeAddedByStager": false,
+      "originalSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef",
+      "path": "build/src/transport/http-exporter-transport.d.ts",
+      "qualifiedSHA256": "8b1154082fbf71ba3a5b787f10911533ae213323c35ca65a035d820919af56ef"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "76e63003504d5bedd40fa81970845a820eec2f82e5e7207523bdfd3ef7a105b2",
+      "finalSHA256": "76e63003504d5bedd40fa81970845a820eec2f82e5e7207523bdfd3ef7a105b2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "b93c22e3839c5f559a096f5ff07d94ea6b6b06c2f16ab9d7f6fdcc59c2555ecf",
+      "path": "build/src/transport/http-exporter-transport.js",
+      "qualifiedSHA256": "5a87d83087a7ac76f5514a6d8c5a82d685a8b539674e38d1a65bd29dfa1ac87f"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "482e2156d96abcd57767d1038f53fb997b7654a5579ebe2918cb59bd348b6d9b",
+      "finalSHA256": "2b3e63feab5185289badba11779d8ef9e37697a7db0d4cb7e8cac7de4f68ebbc",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1d7af50d481d3067c80889cd3f204b7cd2cf3cbdbc0fafc257a97898ddc45e00",
+      "path": "build/src/transport/http-exporter-transport.js.map",
+      "qualifiedSHA256": "65e4c9a5d5771ff75dc97a10f78a0b1b289c5de88b7f3b11e396aea2cba69235"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "finalSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e",
+      "path": "build/src/transport/http-transport-types.d.ts",
+      "qualifiedSHA256": "25e47c6ff85729bd89439bf6dafb70effeece17877d2350a535193349edee66e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d795b1b1f2c3c2930474150042f60dcf8e624283be0f721cc545aa83b06bef1d",
+      "finalSHA256": "d795b1b1f2c3c2930474150042f60dcf8e624283be0f721cc545aa83b06bef1d",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d795b1b1f2c3c2930474150042f60dcf8e624283be0f721cc545aa83b06bef1d",
+      "path": "build/src/transport/http-transport-types.js",
+      "qualifiedSHA256": "d795b1b1f2c3c2930474150042f60dcf8e624283be0f721cc545aa83b06bef1d"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "1a9f9a6b81137942228399effc80016a8f9ce233128a0ce72e27cb504e78f1cb",
+      "finalSHA256": "1a9f9a6b81137942228399effc80016a8f9ce233128a0ce72e27cb504e78f1cb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1a9f9a6b81137942228399effc80016a8f9ce233128a0ce72e27cb504e78f1cb",
+      "path": "build/src/transport/http-transport-types.js.map",
+      "qualifiedSHA256": "1a9f9a6b81137942228399effc80016a8f9ce233128a0ce72e27cb504e78f1cb"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "c9161d4bae2613e33bbb42599d5b4ee54e269320f6507477cd2342f6e10317a0",
+      "finalSHA256": "edb6c33afe793e29dd322e5329aae30a2731437d2bf04357cb51a14018105547",
+      "noticeAddedByStager": true,
+      "originalSHA256": "3d52e19921c1157174e5b00de08372747f26aace246abebf6e33979d32f4cc5c",
+      "path": "build/src/transport/http-transport-utils.d.ts",
+      "qualifiedSHA256": "c9161d4bae2613e33bbb42599d5b4ee54e269320f6507477cd2342f6e10317a0"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "fd5c2c9e4105858cdbc029939520be03c2c0a8c63890634efd481937642c3e50",
+      "finalSHA256": "89687b6297aa8dbd4b1d95552e35ab190e5f0c1d6f18585ab4d62d83af6896e6",
+      "noticeAddedByStager": true,
+      "originalSHA256": "448e7ef2e29f09caf28532db31abfde1ac556aba56b9b3dd4b729d49315f8418",
+      "path": "build/src/transport/http-transport-utils.js",
+      "qualifiedSHA256": "fd5c2c9e4105858cdbc029939520be03c2c0a8c63890634efd481937642c3e50"
+    },
+    {
+      "changed": true,
+      "compilerSHA256": "7b27701f217c5e573103a2e958e808717aa7a1aca568790bf12aa6be75aee991",
+      "finalSHA256": "f38017ca34dc9db3d18551a949837cb1b0ba4432586942905d1b9292d7e312dd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d3869c80949f51369f70b5167a607c954bc64149dfa2b140a13260eca4df4bfa",
+      "path": "build/src/transport/http-transport-utils.js.map",
+      "qualifiedSHA256": "4c7b7531e3e82754e553ccdd8552dda36adf558c400ff8ae16f943bc3da6bb8b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "finalSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b",
+      "path": "build/src/transport/node-http-transport-types.d.ts",
+      "qualifiedSHA256": "d6b981ae2b8ec237c2a688a080e93ba28a186676cd37ad843ef58689da6dbf7b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "4044affff91095644e36555c3a7d1e265a0b98852c64c5fe1532752c30748b8c",
+      "finalSHA256": "4044affff91095644e36555c3a7d1e265a0b98852c64c5fe1532752c30748b8c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "4044affff91095644e36555c3a7d1e265a0b98852c64c5fe1532752c30748b8c",
+      "path": "build/src/transport/node-http-transport-types.js",
+      "qualifiedSHA256": "4044affff91095644e36555c3a7d1e265a0b98852c64c5fe1532752c30748b8c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "ede4d5f993fc98d4360832d3714cb2d953c1bc31dffe06571446b362adc514f9",
+      "finalSHA256": "ede4d5f993fc98d4360832d3714cb2d953c1bc31dffe06571446b362adc514f9",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ede4d5f993fc98d4360832d3714cb2d953c1bc31dffe06571446b362adc514f9",
+      "path": "build/src/transport/node-http-transport-types.js.map",
+      "qualifiedSHA256": "ede4d5f993fc98d4360832d3714cb2d953c1bc31dffe06571446b362adc514f9"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "finalSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "noticeAddedByStager": false,
+      "originalSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c",
+      "path": "build/src/transport/send-beacon-transport.d.ts",
+      "qualifiedSHA256": "aa8a0f2b03fff9c33122fd3bbc11b259e098b1a31739292e37c1f217486d7e8c"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "9b94e2f3457d38dc05f11c1b5c559cd6ae1c5014b12a132df077af5bebc5a2d1",
+      "finalSHA256": "9b94e2f3457d38dc05f11c1b5c559cd6ae1c5014b12a132df077af5bebc5a2d1",
+      "noticeAddedByStager": false,
+      "originalSHA256": "9b94e2f3457d38dc05f11c1b5c559cd6ae1c5014b12a132df077af5bebc5a2d1",
+      "path": "build/src/transport/send-beacon-transport.js",
+      "qualifiedSHA256": "9b94e2f3457d38dc05f11c1b5c559cd6ae1c5014b12a132df077af5bebc5a2d1"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "5adb43a430f541400d768923ee8cbed3f1036279a0057e73b0c77582c556af23",
+      "finalSHA256": "5adb43a430f541400d768923ee8cbed3f1036279a0057e73b0c77582c556af23",
+      "noticeAddedByStager": false,
+      "originalSHA256": "5adb43a430f541400d768923ee8cbed3f1036279a0057e73b0c77582c556af23",
+      "path": "build/src/transport/send-beacon-transport.js.map",
+      "qualifiedSHA256": "5adb43a430f541400d768923ee8cbed3f1036279a0057e73b0c77582c556af23"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "finalSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "noticeAddedByStager": false,
+      "originalSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8",
+      "path": "build/src/transport/xhr-transport.d.ts",
+      "qualifiedSHA256": "afc7b1ee9e1274edeae2205568abec652b259a3bfab3f7069861bc7b97d127e8"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "474a0ba92c93a0a7e1fc4b599b46be6f63a60738ff158f2c4d19bec4b8051edb",
+      "finalSHA256": "474a0ba92c93a0a7e1fc4b599b46be6f63a60738ff158f2c4d19bec4b8051edb",
+      "noticeAddedByStager": false,
+      "originalSHA256": "474a0ba92c93a0a7e1fc4b599b46be6f63a60738ff158f2c4d19bec4b8051edb",
+      "path": "build/src/transport/xhr-transport.js",
+      "qualifiedSHA256": "474a0ba92c93a0a7e1fc4b599b46be6f63a60738ff158f2c4d19bec4b8051edb"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "499cf88e38cd01d455f0df06729ed6e2d58c5d116bb9a3ce25719376d9ffe19e",
+      "finalSHA256": "499cf88e38cd01d455f0df06729ed6e2d58c5d116bb9a3ce25719376d9ffe19e",
+      "noticeAddedByStager": false,
+      "originalSHA256": "499cf88e38cd01d455f0df06729ed6e2d58c5d116bb9a3ce25719376d9ffe19e",
+      "path": "build/src/transport/xhr-transport.js.map",
+      "qualifiedSHA256": "499cf88e38cd01d455f0df06729ed6e2d58c5d116bb9a3ce25719376d9ffe19e"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "finalSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6",
+      "path": "build/src/types.d.ts",
+      "qualifiedSHA256": "2ecf2ce9a6dd1c80379da6ecff23eda52aaad7e75371b448003ff987298067f6"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "64af45b199d0ebbd10ff6c5a5eb7c9d1503fefce994dd4be6df47928d61a0312",
+      "finalSHA256": "64af45b199d0ebbd10ff6c5a5eb7c9d1503fefce994dd4be6df47928d61a0312",
+      "noticeAddedByStager": false,
+      "originalSHA256": "64af45b199d0ebbd10ff6c5a5eb7c9d1503fefce994dd4be6df47928d61a0312",
+      "path": "build/src/types.js",
+      "qualifiedSHA256": "64af45b199d0ebbd10ff6c5a5eb7c9d1503fefce994dd4be6df47928d61a0312"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2782ff55eeb38f1e370f1086e719d5ddb0b08f3ce092b26a590fec75a63facd2",
+      "finalSHA256": "2782ff55eeb38f1e370f1086e719d5ddb0b08f3ce092b26a590fec75a63facd2",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2782ff55eeb38f1e370f1086e719d5ddb0b08f3ce092b26a590fec75a63facd2",
+      "path": "build/src/types.js.map",
+      "qualifiedSHA256": "2782ff55eeb38f1e370f1086e719d5ddb0b08f3ce092b26a590fec75a63facd2"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "finalSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "noticeAddedByStager": false,
+      "originalSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4",
+      "path": "build/src/util.d.ts",
+      "qualifiedSHA256": "287154eb1ff82c7a8f99f41ac7564e85b12f9e0a5d5257ed8157fbb779c06dd4"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f886121ac14178856d628bab1949001d204dd4dcf00c514d57647fdb5487f9a3",
+      "finalSHA256": "f886121ac14178856d628bab1949001d204dd4dcf00c514d57647fdb5487f9a3",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f886121ac14178856d628bab1949001d204dd4dcf00c514d57647fdb5487f9a3",
+      "path": "build/src/util.js",
+      "qualifiedSHA256": "f886121ac14178856d628bab1949001d204dd4dcf00c514d57647fdb5487f9a3"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "1fc5ad4555eb2deba35cfab697c094e4410d4b8c403154b1da694d5004a171fd",
+      "finalSHA256": "1fc5ad4555eb2deba35cfab697c094e4410d4b8c403154b1da694d5004a171fd",
+      "noticeAddedByStager": false,
+      "originalSHA256": "1fc5ad4555eb2deba35cfab697c094e4410d4b8c403154b1da694d5004a171fd",
+      "path": "build/src/util.js.map",
+      "qualifiedSHA256": "1fc5ad4555eb2deba35cfab697c094e4410d4b8c403154b1da694d5004a171fd"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "finalSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "noticeAddedByStager": false,
+      "originalSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22",
+      "path": "build/src/version.d.ts",
+      "qualifiedSHA256": "2af1b74a8ab67aeb607bc92e46607cd6ff0ce39e350feed2ffbb21fcd8ee5d22"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "f438d782a71627d5fc601a0230e9f6be0fcd18b3f1a945335bdfd92d1eb1814b",
+      "finalSHA256": "f438d782a71627d5fc601a0230e9f6be0fcd18b3f1a945335bdfd92d1eb1814b",
+      "noticeAddedByStager": false,
+      "originalSHA256": "f438d782a71627d5fc601a0230e9f6be0fcd18b3f1a945335bdfd92d1eb1814b",
+      "path": "build/src/version.js",
+      "qualifiedSHA256": "f438d782a71627d5fc601a0230e9f6be0fcd18b3f1a945335bdfd92d1eb1814b"
+    },
+    {
+      "changed": false,
+      "compilerSHA256": "ee1a8ab33b94a1d60770cc4bf61aa22846497ffcf38a9ff98876a43b652f784f",
+      "finalSHA256": "ee1a8ab33b94a1d60770cc4bf61aa22846497ffcf38a9ff98876a43b652f784f",
+      "noticeAddedByStager": false,
+      "originalSHA256": "ee1a8ab33b94a1d60770cc4bf61aa22846497ffcf38a9ff98876a43b652f784f",
+      "path": "build/src/version.js.map",
+      "qualifiedSHA256": "ee1a8ab33b94a1d60770cc4bf61aa22846497ffcf38a9ff98876a43b652f784f"
+    },
+    {
+      "changed": false,
+      "finalSHA256": "875e711bbfe092f072d6248cc2909ce2b023fce04532d8dc74077a801fdf15aa",
+      "noticeAddedByStager": false,
+      "originalSHA256": "875e711bbfe092f072d6248cc2909ce2b023fce04532d8dc74077a801fdf15aa",
+      "path": "package.json"
+    }
+  ],
+  "jsNoticesAddedAfterFirstStatement": 3,
+  "regularFiles": 327,
+  "reproducibleBuildGate": "open; two in-memory archive encodings are not independent rebuilds",
+  "runtimeGate": "unrun against this archive",
+  "sourceCompileOverallStatus": "comparison failed; all three compiler modes passed",
+  "status": "PASS"
+}
