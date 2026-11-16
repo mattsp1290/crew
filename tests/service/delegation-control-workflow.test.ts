@@ -10,11 +10,13 @@ import { isAbsolute, join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { Client, Connection } from "@temporalio/client";
+import { isDeepStrictEqual } from "node:util";
+import { Context } from "@temporalio/activity";
+import { ApplicationFailure, Client, Connection } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { Pool } from "pg";
 import { z } from "zod";
-import { memberActivities } from "../../src/service/activities.ts";
+import { memberActivities, type MemberActivities } from "../../src/service/activities.ts";
 import { ApprovalStore } from "../../src/service/approvals.ts";
 import { type ChildKey } from "../../src/service/children.ts";
 import { MemberClient } from "../../src/service/client.ts";
@@ -325,12 +327,16 @@ function runWorker(worker: Worker) {
   })() };
   manualWorkers.add(running); return running;
 }
-async function activityWorkers(names = [parentProfile, legacyProfile, analystProfile, recorderProfile]) {
+async function activityWorkers(names = [parentProfile, legacyProfile, analystProfile, recorderProfile],
+  wrapExecuteTurn?: (executeTurn: MemberActivities["executeTurn"]) => MemberActivities["executeTurn"]) {
   const supervisor = await startSupervisor(config, stateDir);
   const running: RunningWorker[] = [];
   try {
-    for (const name of names) running.push(runWorker(await Worker.create({ connection: native, taskQueue: activityQueue("pi", name),
-      activities: memberActivities(store, supervisor, profiles, stateDir, "pi") })));
+    for (const name of names) {
+      const activities = memberActivities(store, supervisor, profiles, stateDir, "pi");
+      if (wrapExecuteTurn) activities.executeTurn = wrapExecuteTurn(activities.executeTurn);
+      running.push(runWorker(await Worker.create({ connection: native, taskQueue: activityQueue("pi", name), activities })));
+    }
   } catch (error) { await Promise.allSettled(running.map(worker => worker.stop())); await supervisor.close(); throw error; }
   let stopping: Promise<void> | undefined;
   const group = { stop: () => stopping ??= (async () => {
@@ -939,5 +945,161 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
   } finally {
     try { if (locked) await blocker.query("ROLLBACK"); }
     finally { blocker.release(); await worker.stop(); }
+  }
+});
+
+test("disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails", { timeout: 240_000 }, async () => {
+  await enable();
+  const failureType = "ControlFixturePostCommitAcknowledgementLoss";
+  const task = "hold " + randomUUID();
+  const holdKey = "child/" + digest(task);
+  let targetRequestId: string | undefined;
+  let injected: { requestId: string; workflowRunId: string; activityId: string; reply: string } | undefined;
+  const workflow = await workflowWorker();
+  const activities = await activityWorkers(undefined, executeTurn => async (request, resume) => {
+    const result = await executeTurn(request, resume);
+    if (request.requestId === targetRequestId && resume && "children" in resume && result.kind === "complete") {
+      assert.equal(injected, undefined, "Only this request's committed follow-up loses its acknowledgement once");
+      const info = Context.current().info;
+      assert.ok(info.workflowExecution);
+      injected = { requestId: request.requestId, workflowRunId: info.workflowExecution.runId,
+        activityId: info.activityId, reply: result.text };
+      throw ApplicationFailure.nonRetryable("Actual Pi SQL commit completed before the fixture lost its activity acknowledgement", failureType);
+    }
+    return result;
+  });
+  try {
+    const value = await delegation([{ role: "analyst", task }]);
+    targetRequestId = value.request.requestId;
+    const barrier = await until(async () => held.get(holdKey), "actual Pi child provider response held before parent commit");
+    const submitted = members.submit(value.request);
+    void submitted.catch(() => {});
+    await until(async () => {
+      const history = await temporal.workflow.getHandle(value.workflowId).fetchHistory();
+      return history.events?.some(event => event.workflowExecutionUpdateAcceptedEventAttributes?.acceptedRequest?.input?.name === "submitTurn")
+        ? true : undefined;
+    }, "actual submitTurn update accepted before the parent commits");
+    barrier.release();
+    await before(barrier.closed, now() + 10_000, "actual child provider response closes");
+    const delivered = await before(submitted, now() + 60_000, "actual submit resolves through production reconcileTurn");
+    const reply = await committed(value);
+    assert.equal(delivered, reply, "The waiting caller receives the actual committed reply after activity acknowledgement loss");
+    assert.ok(injected, "The production executeTurn returned a complete actual Pi result before injection");
+    const fault = injected;
+    const parent = parentResultKeySchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
+      t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
+      d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
+      JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
+      WHERE t.request_id=$1`, [value.request.requestId])).rows[0]);
+    const { phase, ...key } = parent;
+    assert.equal(phase, "committed");
+    assert.deepEqual(fault, { requestId: key.requestId, workflowRunId: key.workflowRunId,
+      activityId: key.resumeActivityId, reply: key.reply });
+    assert.equal(key.reply, delivered);
+    assert.ok(key.workflowRunId); assert.ok(key.resumeActivityId);
+    type Payload = Parameters<typeof temporal.options.loadedDataConverter.payloadConverter.fromPayload>[0];
+    async function decoded(payloads: Payload[] | null | undefined) {
+      assert.ok(payloads);
+      let result = payloads;
+      const converter = temporal.options.loadedDataConverter;
+      for (const codec of [...converter.payloadCodecs].reverse()) result = await codec.decode(result);
+      return result.map(payload => converter.payloadConverter.fromPayload(payload));
+    }
+    const history = await until(async () => {
+      const raw = await temporal.workflow.getHandle(value.workflowId, key.workflowRunId ?? undefined).fetchHistory();
+      const events = raw.events ?? [];
+      const execute = events.find(event => event.activityTaskScheduledEventAttributes?.activityId === key.resumeActivityId
+        && event.activityTaskScheduledEventAttributes.activityType?.name === "executeTurn");
+      if (!execute?.eventId) return undefined;
+      const failedIndex = events.findIndex(event => event.activityTaskFailedEventAttributes?.scheduledEventId?.toString() === execute.eventId?.toString());
+      if (failedIndex < 0) return undefined;
+      const reconciles = events.slice(failedIndex + 1).filter(event => event.activityTaskScheduledEventAttributes?.activityType?.name === "reconcileTurn");
+      for (const scheduled of reconciles) {
+        const args = await decoded(scheduled.activityTaskScheduledEventAttributes?.input?.payloads);
+        if (!isDeepStrictEqual(args, [value.request, key.workflowRunId, true])) continue;
+        const completedIndex = events.findIndex(event => event.activityTaskCompletedEventAttributes?.scheduledEventId?.toString() === scheduled.eventId?.toString());
+        if (completedIndex < 0) continue;
+        const completed = events[completedIndex];
+        const result = await decoded(completed.activityTaskCompletedEventAttributes?.result?.payloads);
+        const postCompletionWorkflowTasks = events.slice(completedIndex + 1).filter(event => {
+          const startedId = event.workflowTaskCompletedEventAttributes?.startedEventId?.toString();
+          return startedId !== undefined && events.slice(completedIndex + 1).some(started =>
+            started.workflowTaskStartedEventAttributes && started.eventId?.toString() === startedId);
+        });
+        if (!postCompletionWorkflowTasks.length) continue;
+        return { raw, execute, failed: events[failedIndex], reconcile: scheduled, args, completed, result, postCompletionWorkflowTasks };
+      }
+      return undefined;
+    }, "real failed executeTurn followed by exact production reconciliation and parent workflow processing");
+    const failure = history.failed.activityTaskFailedEventAttributes?.failure;
+    assert.ok(failure?.applicationFailureInfo, "Actual Temporal records the injected application failure");
+    assert.equal(failure.applicationFailureInfo.type, failureType);
+    assert.equal(failure.applicationFailureInfo.nonRetryable, true);
+    assert.deepEqual(await decoded(history.execute.activityTaskScheduledEventAttributes?.input?.payloads), [value.request, { children: true }]);
+    assert.deepEqual(history.args, [value.request, key.workflowRunId, true]);
+    assert.deepEqual(history.result, [{ kind: "complete", text: delivered }]);
+    assert.ok(history.postCompletionWorkflowTasks.length > 0, "The actual parent workflow processed reconciliation completion");
+    assert.equal(history.raw.events?.some(event => event.activityTaskCompletedEventAttributes?.scheduledEventId?.toString()
+      === history.execute.eventId?.toString()), false, "The recorded follow-up executeTurn has no successful activity completion");
+    const launches = await until(async () => {
+      const rows = z.array(z.looseObject({ token: z.uuid(), stopped: z.boolean() })).parse((await pool.query(
+        "SELECT * FROM birbcrew_ts.native_launches WHERE request_id=$1 ORDER BY child_id NULLS FIRST,token", [key.requestId])).rows);
+      return rows.length > 0 && rows.every(row => row.stopped) ? rows : undefined;
+    }, "all actual native launches stopped before recovered-parent control drain");
+    const children = await childRows(key.requestId);
+    assert.ok(children.every(child => child.phase === "complete" && child.outcome?.kind === "completed"));
+    const observer = new TemporalDelegationWorkflows(temporal);
+    const observation = await observer.observeParentResult(key);
+    await evidence("reconciled-parent-raw-history", history.raw);
+    await evidence("reconciled-parent-exact-recovery", { parent, fault, failureType, failure, delivered, launches, children,
+      executeScheduledEventId: history.execute.eventId?.toString(), failedEventId: history.failed.eventId?.toString(),
+      reconcileScheduledEventId: history.reconcile.eventId?.toString(), reconcileArgs: history.args,
+      reconcileCompletedEventId: history.completed.eventId?.toString(), reconcileResult: history.result,
+      postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, expectedObservation: { kind: "observed" } });
+    const command = await change(false);
+    const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
+    const cohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+      FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+    assert.deepEqual(cohort.find(row => row.childId === value.rows[0].childId), {
+      commandId: command.commandId, childId: value.rows[0].childId, retire: false,
+    }, "Disable retains the already completed child without retiring it");
+    const noLaunchBaseline = await countSnapshot();
+    const flush = await control.flush();
+    const report = await control.drain(command.commandId);
+    await evidence("reconciled-parent-disable-drain", { key, command, cohort, flush, report, observation,
+      expectedObservation: { kind: "observed" }, expectedDrainComplete: true });
+    assert.deepEqual(observation, { kind: "observed" }, "The actual adapter must recognize the exact committed parent reply delivered through reconciliation");
+    assert.equal(report.complete, true, "Disable must not strand a completed parent whose actual workflow delivered its reconciled reply");
+    await until(async () => {
+      await control.flush();
+      const { rows: [row] } = await pool.query("SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId]);
+      return z.strictObject({ observed: z.boolean() }).parse(row).observed ? true : undefined;
+    }, "fair historical discovery persists this exact recovered parent observation");
+    const positiveSchema = parentResultKeySchema.omit({ memberId: true }).extend({
+      workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
+      resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(),
+      reply: parentResultKeySchema.shape.reply.unwrap(), installationId: z.uuid(), instanceId: z.uuid(),
+    });
+    const positives = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
+      o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
+      o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply
+      FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
+        ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
+      WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+    assert.deepEqual(positives, [{ installationId: command.installationId, instanceId: command.instanceId,
+      conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
+      resumeActivityId: key.resumeActivityId, reply: key.reply }], "Actual controller flush persists the exact reconciled parent result");
+    const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+      "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
+    assert.equal(applicable.observed, true);
+    const fresh = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
+    const persistedReport = await fresh.drain(command.commandId);
+    assert.equal(persistedReport.complete, true, "A fresh controller drains the original command using durable reconciled-result evidence");
+    assert.deepEqual(await countSnapshot(), noLaunchBaseline, "Reconciled observation, flush and fresh drain launch no additional runner or provider work");
+    await evidence("reconciled-parent-positive", { key, command, cohort, positives, applicable, persistedReport,
+      noLaunchBaseline, noLaunchAfter: await countSnapshot(), source: "actual-Temporal-adapter-through-controller-flush" });
+  } finally {
+    held.get(holdKey)?.release();
+    try { await activities.stop(); } finally { await workflow.stop(); }
   }
 });
