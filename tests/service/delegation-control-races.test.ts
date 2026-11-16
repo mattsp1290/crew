@@ -9,6 +9,7 @@ import { z } from "zod";
 import { fixedRoles } from "@birbcrew/pi-subagents";
 import { MemberStore } from "../../src/service/store.ts";
 import { freshChildAdmission, lockChildAdmission } from "../../src/service/supervisor-child.ts";
+import { withNativeAdmission } from "../../src/service/native-admission.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL 17 database.");
@@ -24,6 +25,7 @@ const receiptSchema = z.object({ commandId: z.uuid(), installationId: z.uuid(), 
 type Db = Pool | PoolClient;
 type Scope = z.infer<typeof scopeSchema>;
 type ProofObservation =
+  | { kind: "native_boundary"; enabled: boolean; callbacks: number; refusal: string | null }
   | { kind: "native_isolation"; isolation: string; oldAdmissionRows: number | null; freshAdmissionRows: number | null }
   | { kind: "lock_wait"; case: string; waiter: number; holder: number; wait_event_type: string | null; wait_event: string | null; blockers: number[] }
   | { kind: "admission"; case: string; oldAdmissionRows: number | null; freshAdmissionRows: number | null; reservations: number | null }
@@ -311,6 +313,33 @@ test("old admission SELECT begun behind a rolling-back writer keeps stale stop v
     assert.equal(old.rowCount, 1, "Pinned old SELECT is not the new final-admission guarantee");
     assert.equal(fresh.rowCount, 0);
   });
+  const nativePool = new Pool({ connectionString: url, max: 1, application_name: "control-native-admission-boundary",
+    statement_timeout: 15_000, lock_timeout: 10_000 });
+  try {
+    const direct = await fixture(); await direct.start(); await direct.reserve();
+    let callbacks = 0;
+    await sessions(async writer => {
+      await begin(writer);
+      await writer.query("UPDATE birbcrew_ts.pi_children SET task=task WHERE child_id=$1", [direct.childId]);
+      const native = await nativePool.connect();
+      pids.set(native, await pid(native)); native.release();
+      const pending = observed(withNativeAdmission(nativePool, direct.launch, new AbortController().signal, async () => { callbacks++; }));
+      await blocked(native, writer, t);
+      await change(direct.targetScope); await stopped(direct);
+      await writer.query("ROLLBACK");
+      const result = await pending;
+      assert.equal(result.kind, "error");
+      if (result.kind !== "error") assert.fail("Disabled native admission invoked its callback");
+      assert.ok(result.error instanceof Error);
+      assert.equal(result.error.message, "Native admission revoked");
+      assert.equal(callbacks, 0);
+      record({ kind: "native_boundary", enabled: false, callbacks, refusal: result.error.message });
+    });
+    const eligible = await fixture(); await eligible.start(); await eligible.reserve();
+    await withNativeAdmission(nativePool, eligible.launch, new AbortController().signal, async () => { callbacks++; });
+    assert.equal(callbacks, 1);
+    record({ kind: "native_boundary", enabled: true, callbacks, refusal: null });
+  } finally { await nativePool.end(); }
 });
 
 test("generation guard takes a fresh policy snapshot after waiting for disable; reverse order captures the committed generation", { timeout: 45_000 }, async t => {

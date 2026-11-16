@@ -102,11 +102,17 @@ const suites={
     ],
     "count": 1,
     "pattern": "restoring an older snapshot atomically retires named roles and delegation while preserving recorded child identity"
+  },
+  "rollback": {
+    "file": "tests/proof/delegation-control-rollback.mts",
+    "kind": "experiment"
   }
 };
+const oldRevision='f3327346d979270a18c9f46b9cfe6a075b1cb157';
+const oldTree='d0b9f8b90b95dd55e27b96ab11c754c3f432fc39';
 const source=process.cwd(),controller=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const revision=process.env.CONTROL_SQL_SOURCE,probe=process.env.CONTROL_SQL_CONTROLLER,suiteName=process.env.CONTROL_SQL_SUITE;
-const output=resolve(source,'../artifacts');
+const output=resolve(source,'../artifacts'),oldSource=resolve(source,'../old-source');
 mkdirSync(output,{recursive:true});
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const save=(name,value)=>writeFileSync(join(output,name+'.json'),JSON.stringify(value,null,2)+'\n');
@@ -114,21 +120,21 @@ function git(args,cwd=source) {
   const result=spawnSync('git',args,{cwd,maxBuffer:64*1024*1024});
   assert.equal(result.status,0,result.stderr?.toString());return result.stdout;
 }
-function manifest(label) {
-  const stage=git(['ls-files','--stage','-z']);
+function manifest(label,root=source) {
+  const stage=git(['ls-files','--stage','-z'],root);
   writeFileSync(join(output,label+'.git-stage'),stage);
-  writeFileSync(join(output,label+'.git-status'),git(['status','--porcelain','--untracked-files=all','-z']));
-  writeFileSync(join(output,label+'.git-diff'),git(['diff','HEAD','--binary','--no-ext-diff']));
+  writeFileSync(join(output,label+'.git-status'),git(['status','--porcelain','--untracked-files=all','-z'],root));
+  writeFileSync(join(output,label+'.git-diff'),git(['diff','HEAD','--binary','--no-ext-diff'],root));
   return stage.toString().split('\0').filter(Boolean).map(entry=>{
     const match=entry.match(/^(\d+) ([a-f0-9]+) 0\t([\s\S]+)$/);assert.ok(match);
     const [,mode,blob,path]=match;
-    const bytes=mode==='120000'?Buffer.from(readlinkSync(join(source,path))):readFileSync(join(source,path));
-    assert.equal(hash(bytes),hash(git(['cat-file','blob',blob])),'tracked source differs from Git '+path);
+    const bytes=mode==='120000'?Buffer.from(readlinkSync(join(root,path))):readFileSync(join(root,path));
+    assert.equal(hash(bytes),hash(git(['cat-file','blob',blob],root)),'tracked source differs from Git '+path);
     return {path,mode,blob,bytes:bytes.length,sha256:hash(bytes)};
   });
 }
 const commands=[],cleanupFailures=[];
-let captureCommand,before,admin,database,databaseInventory,Pool,failure;
+let captureCommand,before,oldBefore,admin,database,databaseInventory,Pool,failure;
 async function must(name,program,args,env={}) {
   const previous=new Map(Object.keys(env).map(key=>[key,process.env[key]]));
   let capturedFailure;
@@ -167,14 +173,46 @@ try {
   const path='tests/proof/control-sql-boundaries.mjs',bytes=readFileSync(join(controller,path));
   const blob=git(['rev-parse','HEAD:'+path],controller).toString().trim();assert.ok(bytes.equals(git(['cat-file','blob',blob],controller)));
   save('controller-source',{path,blob,sha256:hash(bytes)});
-  const sourceCases=[...readFileSync(join(source,suite.file),'utf8').matchAll(/^test\((["'])(.*?)\1,/gm)].map(match=>match[2]);
-  assert.deepEqual(sourceCases,suite.sourceCases,'Frozen suite definitions differ');
-  const expectedCases=suite.pattern?[suite.pattern]:suite.sourceCases;
-  assert.equal(expectedCases.length,suite.count);save('expected-suite',{suite:suiteName,...suite,expectedCases});
+  let expectedCases;
+  if(suite.kind==='experiment') {
+    save('expected-suite',{suite:suiteName,...suite,scope:'retained application rollback with migration 038 and global admission disabled',tap:false});
+    assert.notEqual(oldSource,source);assert.notEqual(oldSource,controller);
+    assert.equal(git(['rev-parse','HEAD'],oldSource).toString().trim(),oldRevision);
+    assert.equal(git(['rev-parse','HEAD^{tree}'],oldSource).toString().trim(),oldTree);
+    assert.equal(git(['status','--porcelain','--untracked-files=all'],oldSource).length,0);
+    oldBefore=manifest('old-source-before',oldSource);save('old-source-before',oldBefore);
+    const equality=[];
+    for(const [path,expectedBlob] of [['package-lock.json','72809d33079c9b1c5c853b4fccf51599214a2f6d'],
+      ['src/service/workflow.ts','8f5409a50c3bebe51a5e7a8ba1b2ec610ddccf67']]) {
+      const oldBlob=git(['rev-parse','HEAD:'+path],oldSource).toString().trim();
+      const newBlob=git(['rev-parse','HEAD:'+path]).toString().trim();
+      assert.equal(oldBlob,expectedBlob);assert.equal(newBlob,oldBlob);
+      const bytes=readFileSync(join(oldSource,path));assert.ok(bytes.equals(readFileSync(join(source,path))));
+      equality.push({path,oldBlob,newBlob,sha256:hash(bytes),byteEqual:true});
+    }
+    save('rollback-source-identity',{oldRevision,oldTree,oldSource,newRevision:revision,source,equality,installations:'separate fresh npm ci and build for each exact checkout'});
+  } else {
+    const sourceCases=[...readFileSync(join(source,suite.file),'utf8').matchAll(/^test\((["'])(.*?)\1,/gm)].map(match=>match[2]);
+    assert.deepEqual(sourceCases,suite.sourceCases,'Frozen suite definitions differ');
+    expectedCases=suite.pattern?[suite.pattern]:suite.sourceCases;
+    assert.equal(expectedCases.length,suite.count);save('expected-suite',{suite:suiteName,...suite,expectedCases});
+  }
   ({captureCommand}=await import(pathToFileURL(join(source,helper)).href));
   await must('npm-ci','npm',['ci']);await must('build','npm',['run','build']);await must('dependency-graph','npm',['ls','--all','--json']);
+  if(suite.kind==='experiment') {
+    await must('old-npm-ci','npm',['--prefix',oldSource,'ci']);
+    await must('old-build','npm',['--prefix',oldSource,'run','build']);
+    await must('old-dependency-graph','npm',['--prefix',oldSource,'ls','--all','--json']);
+    const built=manifest('source-after-build');save('source-after-build',built);assert.deepEqual(built,before);
+    const oldBuilt=manifest('old-source-after-build',oldSource);save('old-source-after-build',oldBuilt);assert.deepEqual(oldBuilt,oldBefore);
+    for(const [label,root] of [['source',source],['old-source',oldSource]]) {
+      const porcelain=git(['status','--porcelain','--untracked-files=all'],root).toString();assert.equal(porcelain,'');
+      save(label+'-build-status',{porcelain,trackedUnchanged:true,ignoredGeneratedOnly:true});
+    }
+    before=built;oldBefore=oldBuilt;
+  }
   const environment={BIRBCREW_PROOF_WORKING_STATE:'github-hosted-vm'};
-  if(suiteName==='workflow') {
+  if(suiteName==='workflow'||suite.kind==='experiment') {
     const tools=join(source,'.proof/control-tools');mkdirSync(tools,{recursive:true});
     const archive='temporal_cli_1.10.0_linux_amd64.tar.gz',archivePath=join(tools,archive),checksums=join(output,'temporal-checksums.txt');
     const release='https://github.com/temporalio/cli/releases/download/v1.10.0/';
@@ -189,8 +227,14 @@ try {
     await must('temporal-version',environment.TEMPORAL_CLI,['--version']);
     assert.match(readFileSync(join(output,'temporal-version.log'),'utf8'),/\b1\.10\.0\b/);
     const launcher=join(source,'.proof/bin/member-launch');assert.ok(lstatSync(launcher).isFile());
-    save('native-tools',{temporal:{release,archiveSha256:entries[0][0],binarySha256:hash(readFileSync(environment.TEMPORAL_CLI))},
-      confinementLauncher:{path:'.proof/bin/member-launch',sha256:hash(readFileSync(launcher))}});
+    const nativeTools={temporal:{release,archiveSha256:entries[0][0],binarySha256:hash(readFileSync(environment.TEMPORAL_CLI))},
+      confinementLauncher:{path:'.proof/bin/member-launch',sha256:hash(readFileSync(launcher))}};
+    if(suite.kind==='experiment') {
+      const oldLauncher=join(oldSource,'.proof/bin/member-launch');assert.ok(lstatSync(oldLauncher).isFile());
+      nativeTools.oldConfinementLauncher={root:oldSource,path:'.proof/bin/member-launch',sha256:hash(readFileSync(oldLauncher))};
+      environment.BIRBCREW_ROLLBACK_OLD_ROOT=oldSource;
+    }
+    save('native-tools',nativeTools);
   }
   const require=createRequire(join(source,'package.json'));({Pool}=require('pg'));
   admin=new Pool({connectionString:process.env.CONTROL_SQL_DATABASE_URL,statement_timeout:15_000,connectionTimeoutMillis:10_000});
@@ -220,19 +264,24 @@ try {
     await must('postgres-container','docker',['inspect','--format','{{.Config.Image}}',environment.BIRBCREW_RECOVERY_POSTGRES_CONTAINER]);
     assert.equal(readFileSync(join(output,'postgres-container.log'),'utf8').trim(),'postgres:17');
   }
-  const args=['--test','--test-reporter=tap','--test-concurrency=1'];
-  if(suite.pattern)args.push('--test-name-pattern',suite.pattern);
-  args.push(suite.file);
-  await must(suiteName+'-tests',process.execPath,args,environment);
-  const tap=readFileSync(join(output,suiteName+'-tests.log'),'utf8');
-  const actualCases=[...tap.matchAll(/^ok [0-9]+ - (.+)$/gm)].map(match=>match[1]);
-  assert.deepEqual(actualCases,expectedCases);assert.ok(tap.split('\n').includes('1..'+suite.count),'Unexpected TAP plan');
-  const totals={};
-  for(const [name,expected] of Object.entries({tests:suite.count,suites:0,pass:suite.count,fail:0,cancelled:0,skipped:0,todo:0})) {
-    const match=tap.match(new RegExp('^# '+name+' ([0-9]+)$','m'));assert.ok(match,'Missing TAP total '+name);
-    totals[name]=Number(match[1]);assert.equal(totals[name],expected,'Unexpected TAP total '+name);
+  if(suite.kind==='experiment') {
+    await must('rollback-experiment',process.execPath,[suite.file],environment);
+    save('experiment',{suite:suiteName,kind:'experiment',commandReceipt:'rollback-experiment.log.result.json',tap:false});
+  } else {
+    const args=['--test','--test-reporter=tap','--test-concurrency=1'];
+    if(suite.pattern)args.push('--test-name-pattern',suite.pattern);
+    args.push(suite.file);
+    await must(suiteName+'-tests',process.execPath,args,environment);
+    const tap=readFileSync(join(output,suiteName+'-tests.log'),'utf8');
+    const actualCases=[...tap.matchAll(/^ok [0-9]+ - (.+)$/gm)].map(match=>match[1]);
+    assert.deepEqual(actualCases,expectedCases);assert.ok(tap.split('\n').includes('1..'+suite.count),'Unexpected TAP plan');
+    const totals={};
+    for(const [name,expected] of Object.entries({tests:suite.count,suites:0,pass:suite.count,fail:0,cancelled:0,skipped:0,todo:0})) {
+      const match=tap.match(new RegExp('^# '+name+' ([0-9]+)$','m'));assert.ok(match,'Missing TAP total '+name);
+      totals[name]=Number(match[1]);assert.equal(totals[name],expected,'Unexpected TAP total '+name);
+    }
+    save('tap',{suite:suiteName,actualCases,...totals});
   }
-  save('tap',{suite:suiteName,actualCases,...totals});
   const caseFiles=readdirSync(caseOutput);save('case-artifacts',caseFiles);
   if(suiteName==='sql')assert.ok(caseFiles.includes('sql-first-observations.json'));
   if(suiteName==='store')assert.ok(caseFiles.includes('control-store-observations.json'));
@@ -245,6 +294,66 @@ try {
     assert.ok(cleanup.runnerObservations.length>0);assert.ok(cleanup.runnerObservations.every(row=>row.absent));
     const retention=JSON.parse(readFileSync(join(caseOutput,'diagnostic-retention.json'),'utf8')).value;
     assert.equal(retention.complete,true);assert.ok(retention.observations.every(row=>row.captureClosed));
+  }
+  if(suite.kind==='experiment') {
+    for(const name of ['cleanup.json','provider.json','rollback-assertions.json','drain-before-rollback.json','retained-before.json',
+      'working-state.json','old-seed.log','current.log','old-rollback.log','temporal.log'])assert.ok(caseFiles.includes(name),'Missing rollback evidence '+name);
+    const readCase=name=>JSON.parse(readFileSync(join(caseOutput,name+'.json'),'utf8'));
+    const cleanup=readCase('cleanup');
+    assert.equal(cleanup.result.kind,'passed');assert.deepEqual(cleanup.failures,[]);
+    assert.equal(cleanup.workingState,'retained-in-disposable-hosted-vm');assert.equal(cleanup.ancestry,'unproven');
+    assert.deepEqual(cleanup.processReports.map(row=>row.label).sort(),['current','old-rollback','old-seed','temporal']);
+    for(const row of cleanup.processReports) {
+      assert.ok(Number.isSafeInteger(row.pid)&&row.pid>1);assert.ok(!Number.isNaN(Date.parse(row.stoppedAt)));
+      assert.ok(row.exitCode===0||row.signalCode==='SIGTERM','Owned process must close normally or on requested SIGTERM');
+      assert.equal(row.capture.truncated,false);assert.equal(row.capture.received,row.capture.retained);assert.ok(row.capture.retained<=1024*1024);
+    }
+    assert.deepEqual(cleanup.steps.map(row=>row.label),['old-seed','current','old-rollback']);
+    for(const step of cleanup.steps) {
+      assert.equal(step.root,step.label==='current'?source:oldSource);assert.ok(step.identity.startsWith(step.pid+'@'));
+    }
+    assert.ok(cleanup.runnerObservations.length>0);assert.ok(cleanup.runnerObservations.every(row=>row.absent===true&&row.loadedBy==='supervisor-runner.ts'));
+    const provider=readCase('provider');assert.deepEqual(provider.failures,[]);assert.ok(provider.wire.length>0);
+    assert.ok(provider.wire.some(row=>row.closed===true&&row.finished===false));assert.ok(provider.wire.some(row=>row.recalled===true));
+    const rollback=readCase('rollback-assertions'),retained=readCase('retained-before');
+    assert.deepEqual(rollback.retained,retained.sql);assert.equal(rollback.scope,'live-database-global-disable-application-only');
+    assert.equal(rollback.workflowCode,'byte-identical-at-accepted-floor');assert.equal(rollback.dependencyLock,'byte-identical');
+    assert.equal(rollback.oldWorkerIdentity,cleanup.steps[2].identity);
+    assert.ok(rollback.histories.length>=5);assert.equal(rollback.histories.length,retained.histories.length);
+    for(const previous of retained.histories) {
+      const replay=rollback.histories.find(row=>row.workflowId===previous.workflowId&&row.runId===previous.runId);
+      assert.ok(replay);assert.equal(replay.replayedWith,oldRevision);assert.ok(replay.events>=previous.eventCount);
+    }
+    assert.equal(rollback.refusal.event,'native_turn_unconfirmed');assert.equal(rollback.refusal.code,'55000');
+    assert.equal(rollback.refusal.message,'Delegation admission is disabled or retired');assert.match(rollback.refusal.requestId,/^[a-f0-9-]{36}$/);
+    assert.match(rollback.ordinaryApprovalId,/^[a-f0-9-]{36}$/);
+    for(const drain of [readCase('drain-before-rollback'),rollback.finalDrain]) {
+      assert.equal(drain.kind,'observed_snapshot');assert.equal(drain.complete,true);assert.equal(drain.valid,true);assert.equal(drain.admissionClosed,true);
+      assert.deepEqual(drain.blockers,[]);assert.equal(drain.receipt.scope.kind,'global');assert.equal(drain.receipt.enabled,false);
+      assert.equal(drain.current.globalEnabled,false);assert.equal(drain.children.length,1);assert.equal(drain.parents.length,1);
+      assert.equal(drain.children[0].retire,true);assert.equal(drain.children[0].workflow.kind,'closed');
+      assert.equal(drain.parents[0].workflow.kind,'observed');assert.deepEqual(drain.parents[0].unstoppedLaunches,[]);
+    }
+    assert.equal(rollback.retained.state.globalEnabled,false);
+    assert.equal(Math.max(...rollback.retained.migrations.map(row=>row.version)),38);
+    const state=new Pool({connectionString:url.toString(),statement_timeout:15_000,connectionTimeoutMillis:10_000});
+    try {
+      const migrations=(await state.query('SELECT version FROM birbcrew_ts.schema_versions ORDER BY version')).rows;
+      assert.deepEqual(migrations,rollback.retained.migrations);
+      const control=(await state.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows;
+      assert.deepEqual(control,[{global_enabled:false}]);
+      const receipt=(await state.query('SELECT approval_id,request_id FROM birbcrew_ts.work_items WHERE approval_id=$1',[rollback.ordinaryApprovalId])).rows;
+      assert.equal(receipt.length,1);
+      const launches=(await state.query('SELECT token FROM birbcrew_ts.native_launches WHERE NOT stopped')).rows;assert.deepEqual(launches,[]);
+      for(const table of ['pi_children','delegations']) {
+        assert.equal((await state.query(`SELECT 1 FROM birbcrew_ts.${table} WHERE request_id=$1`,[rollback.refusal.requestId])).rowCount,0);
+      }
+      assert.equal((await state.query('SELECT 1 FROM birbcrew_ts.native_launches WHERE request_id=$1 AND child_id IS NOT NULL',[rollback.refusal.requestId])).rowCount,0);
+      save('rollback-sql',{migrations,control,ordinaryApprovalReceipt:receipt,unstoppedLaunches:launches,refusedRequest:rollback.refusal.requestId});
+    } finally {await state.end();}
+    save('rollback-validation',{kind:'experiment',passed:true,tap:false,
+      processScope:'The exact proof asserts absence of each owned leader and its owned process group after close before recording processReports. Known native runner PIDs are separately observed absent. Generic descendant ancestry remains unproven.',
+      sourceProof: suite.file,cleanupResult:cleanup.result,refusal:rollback.refusal,ordinaryApprovalId:rollback.ordinaryApprovalId});
   }
   if(suiteName!=='restore') {
     const state=new Pool({connectionString:url.toString(),statement_timeout:15_000,connectionTimeoutMillis:10_000});
@@ -277,6 +386,14 @@ try {
     const after=manifest('source-after');save('source-after',after);assert.deepEqual(after,before);
     const porcelain=git(['status','--porcelain','--untracked-files=all']).toString();assert.equal(porcelain,'');
     save('source-status',{porcelain,trackedUnchanged:true});
+    if(suiteName==='rollback')assert.equal(git(['rev-parse','HEAD']).toString().trim(),revision);
+  } catch(error) {cleanupFailures.push(error.message);}
+  if(suiteName==='rollback'&&oldBefore)try {
+    const oldAfter=manifest('old-source-after',oldSource);save('old-source-after',oldAfter);assert.deepEqual(oldAfter,oldBefore);
+    assert.equal(git(['rev-parse','HEAD'],oldSource).toString().trim(),oldRevision);
+    assert.equal(git(['rev-parse','HEAD^{tree}'],oldSource).toString().trim(),oldTree);
+    const oldPorcelain=git(['status','--porcelain','--untracked-files=all'],oldSource).toString();assert.equal(oldPorcelain,'');
+    save('old-source-status',{revision:oldRevision,tree:oldTree,porcelain:oldPorcelain,trackedUnchanged:true});
   } catch(error) {cleanupFailures.push(error.message);}
   save('cleanup',{failures:cleanupFailures});
   save('result',{status:failure||cleanupFailures.length?'FAIL':'PASS',revision,suite:suiteName});

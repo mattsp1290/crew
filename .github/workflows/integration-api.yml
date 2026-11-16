@@ -5,7 +5,12 @@ on:
       source_sha:
         description: Exact immutable feature commit to qualify
         required: true
-        default: 9d42bbb5d63963d695110b242d78a88aee9ba0b2
+        default: 23315d46b8f782597680b9ac94e4281d362cb413
+        type: string
+      suites:
+        description: JSON suite selection. Use ["rollback"] for the retained rollback experiment.
+        required: true
+        default: '["sql","store","workflow","restore"]'
         type: string
 permissions:
   contents: read
@@ -14,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [sql, store, workflow, restore]
+        suite: ${{ fromJSON(inputs.suites) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     services:
@@ -36,6 +41,12 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
           path: source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: ${{ matrix.suite == 'rollback' }}
+        with:
+          ref: f3327346d979270a18c9f46b9cfe6a075b1cb157
+          path: old-source
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
