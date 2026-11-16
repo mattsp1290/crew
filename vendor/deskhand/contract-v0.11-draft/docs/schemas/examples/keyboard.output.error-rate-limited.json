@@ -1,0 +1,7 @@
+{
+  "code": "rate_limited",
+  "message": "The per-minute action ceiling (60) is reached.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R2",
+  "retry_after_ms": 4200
+}

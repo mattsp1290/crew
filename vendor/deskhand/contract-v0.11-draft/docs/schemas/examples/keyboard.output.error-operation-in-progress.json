@@ -1,0 +1,10 @@
+{
+  "code": "operation_in_progress",
+  "message": "An earlier call with this operation_id is still executing.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R1",
+  "operation": {
+    "status": "executing",
+    "events_posted": 12
+  }
+}

@@ -100,6 +100,47 @@ target's first user message in its snapshot, and the reserved request's receipt 
 
 `initiatorKinds` is now `["owner", "routine", "handoff"]`.
 
+## Portable client
+
+`@birbcrew/client` exposes `createHandoff({ conversationId, requestId, memberId }, options?)`
+and `handoff({ conversationId }, options?)`. Both accept the existing abort signal and
+make one HTTP attempt. The create result retains `apiVersion: "1"`. The read result
+retains its versioned envelope, and nested records have no `apiVersion`. Both methods
+validate response identities and record bounds. The shared strict body schema also
+validates the server's `{ requestId, memberId }` input.
+
+The application saves the three command IDs before dispatch and binds that intent to
+the original service, authenticated owner and chat segment. It chooses the target member,
+which may be the source's member. The SDK allocates no IDs, performs no preflight or
+automatic retry and never replays the interrupted owner prompt. See the
+[client examples](../packages/client/README.md) for creation, reconciliation and reading
+the reserved request's receipt.
+
+`CrewUnknownOutcomeError.command` preserves the frozen normalized identity
+`{ kind: "handoff", conversationId, requestId, memberId }`. The exact handoff POST error
+`409 update_rejected` has an unknown outcome because it follows commit. Its cause is
+`CrewHttpError` with that status and code. Ordinary refusals retain `CrewHttpError`.
+Transport failure, in-flight abort and invalid command responses also leave the command
+outcome unknown.
+
+On a separate reconciliation action, compare the outgoing record's source conversation,
+`requestId` and target member with the saved command. A different outgoing record is
+another command's successor. An incoming-only read or GET 404 does not resolve the
+earlier POST, which may still commit afterward. An explicit retry reconstructs the
+original three input fields. Passing the error identity directly fails strict input
+validation because it includes `kind`.
+
+`firstRequestAdmitted` reports admission, not execution. The reserved request's receipt
+reports whether that admitted request completed, failed, was rejected or became
+uncertain. The handoff command's `requestId` and target's server-chosen `firstRequestId`
+have distinct roles. Neither handoff method returns transcript text or transfers
+execution authority.
+
+The optional `capabilities().handoffs` uses version-aware validation. The `/contract`
+export `handoffsCapabilityV1Schema` recognizes supported version 1 metadata. Future
+positive versions remain opaque. Malformed advertised version 1 metadata fails
+validation. The existing owner, grant and permission rules apply unchanged.
+
 ## Errors
 
 | Status | Error | When |

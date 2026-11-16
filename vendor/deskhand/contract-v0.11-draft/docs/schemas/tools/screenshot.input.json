@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/screenshot.input.json",
+  "title": "screenshot arguments",
+  "description": "Capture one display, or a region of it, and mint a frame.",
+  "type": "object",
+  "properties": {
+    "holder_id": {
+      "description": "The frame is scoped to this holder. Holding the lease is not required to take a screenshot.",
+      "$ref": "../defs.json#/$defs/holder_id"
+    },
+    "display_id": {
+      "description": "The display to capture. Defaults to the main display.",
+      "$ref": "../defs.json#/$defs/display_id"
+    },
+    "region": {
+      "description": "Region to capture, in global points. Must lie entirely inside the display's bounds. Defaults to the whole display.",
+      "$ref": "../defs.json#/$defs/rect"
+    },
+    "format": {
+      "type": "string",
+      "enum": ["jpeg", "png"],
+      "default": "jpeg"
+    },
+    "max_long_edge": {
+      "description": "Upper bound on the longer output edge, in pixels.",
+      "type": "integer",
+      "minimum": 256,
+      "maximum": 2576,
+      "default": 2576
+    }
+  },
+  "required": ["holder_id"],
+  "additionalProperties": false
+}

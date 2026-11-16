@@ -1,0 +1,9 @@
+{
+  "lease_result": {
+    "op": "release",
+    "outcome": "released"
+  },
+  "lease": {
+    "held_by_caller": false
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "operation_id": "call_01HZX3M9Q3",
+  "status": "completed",
+  "events_posted": 3,
+  "replayed": false,
+  "frame_id": "frm_Zk3vQ8sN1xT5bYc2Lw9RaA",
+  "measured": {
+    "frontmost_app": {
+      "bundle_id": null,
+      "team_id": null,
+      "name": ""
+    },
+    "target_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "window_title": "notes.txt",
+    "global_point": {
+      "x": 883.8114649681529,
+      "y": 571.3432982917215
+    },
+    "measured_at": "2026-11-14T15:02:19.730Z"
+  },
+  "completed_at": "2026-11-14T15:02:19.781Z"
+}

@@ -1,0 +1,18 @@
+{
+  "resultType": "complete",
+  "supportedVersions": [
+    "2026-07-28"
+  ],
+  "capabilities": {
+    "tools": {
+      "listChanged": false
+    }
+  },
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "deskhand",
+      "version": "0.1.0"
+    }
+  },
+  "cacheScope": "private"
+}

@@ -5,9 +5,10 @@ import { codexExecutable } from "./codex-executable.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { Codex, type McpToolCallItem } from "@openai/codex-sdk";
+import { Codex, type McpToolCallItem, type ThreadEvent } from "@openai/codex-sdk";
 import { z } from "zod";
 import { codexSubscriptionEndpoint } from "./accounts.ts";
+import { redact } from "./diagnostics.ts";
 import { turnTextBytes } from "./domain.ts";
 import { codexRolloutModel, codexRolloutTotal, codexUsage, type SegmentUsage } from "./usage-capture.ts";
 
@@ -76,6 +77,18 @@ async function delivered(item: McpToolCallItem, input: CodexInput) {
   if (!input.mcp || item.server !== "birbcrew" || item.tool !== input.mcp.tool) throw new Error("Unexpected native Codex tool");
   const content = item.result?.content;
   if (content?.length === 1 && content[0].type === "text") await input.onToolDelivered?.(content[0].text);
+}
+
+function codexTurnFailure(event: Extract<ThreadEvent, { type: "error" | "turn.failed" }>): Error {
+  const failure = new Error("Codex native turn failed");
+  try {
+    const code = event.type;
+    if (code !== "error" && code !== "turn.failed") return failure;
+    const message = code === "error" ? event.message : event.error?.message;
+    const reason = typeof message === "string" ? redact(message, 64) : undefined;
+    Object.assign(failure, { code, ...(reason && { reason }) });
+  } catch {}
+  return failure;
 }
 
 export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
@@ -160,7 +173,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       developer_instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
       ...(input.mcp && endpoint && { mcp_servers: { birbcrew: { url: endpoint.href,
         bearer_token_env_var: "BIRBCREW_MCP_AUTH", enabled_tools: [input.mcp.tool], required: true,
-        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve" } } }),
+        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve",
+        omit_tools_from: ["code_mode", "deferred"] } } }),
     },
   });
   const options = { workingDirectory: scratch, model: profile.model, skipGitRepoCheck: true, sandboxMode: "read-only", approvalPolicy: "never", webSearchMode: "disabled" } as const;
@@ -179,7 +193,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     } else if (event.type === "item.completed" && event.item.type === "mcp_tool_call") {
       await delivered(event.item, input);
     } else if (event.type === "turn.completed") completed = event;
-    else if (event.type === "error" || event.type === "turn.failed") throw new Error("Codex native turn failed");
+    else if (event.type === "error" || event.type === "turn.failed") throw codexTurnFailure(event);
   }
   input.signal.throwIfAborted();
   if (!nativeId || !text || !completed) throw new Error("Incomplete native Codex turn");

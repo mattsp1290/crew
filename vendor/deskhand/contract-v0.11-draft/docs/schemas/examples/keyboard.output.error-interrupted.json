@@ -1,0 +1,12 @@
+{
+  "code": "interrupted",
+  "message": "deskhand restarted while this operation was executing. Input may have been posted.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R1",
+  "operation": {
+    "status": "aborted_by_restart",
+    "events_posted": 12
+  },
+  "replayed": true,
+  "current_state": "ok"
+}

@@ -1,0 +1,2671 @@
+[
+  {
+    "file": "allowance.json",
+    "pointer": "",
+    "properties": [
+      "expires_at",
+      "mac",
+      "not_before",
+      "version"
+    ],
+    "required": [
+      "version",
+      "mac",
+      "not_before",
+      "expires_at"
+    ]
+  },
+  {
+    "file": "allowance.json",
+    "pointer": "/properties/not_before",
+    "reference": "#/$defs/timestamp"
+  },
+  {
+    "file": "allowance.json",
+    "pointer": "/properties/expires_at",
+    "reference": "#/$defs/timestamp"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/point",
+    "properties": [
+      "x",
+      "y"
+    ],
+    "required": [
+      "x",
+      "y"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/rect",
+    "properties": [
+      "height",
+      "width",
+      "x",
+      "y"
+    ],
+    "required": [
+      "x",
+      "y",
+      "width",
+      "height"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/pixel_size",
+    "properties": [
+      "height",
+      "width"
+    ],
+    "required": [
+      "width",
+      "height"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/frame_point",
+    "properties": [
+      "x",
+      "y"
+    ],
+    "required": [
+      "x",
+      "y"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/frame_point/properties/x",
+    "reference": "#/$defs/frame_coordinate"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/frame_point/properties/y",
+    "reference": "#/$defs/frame_coordinate"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/modifiers/items",
+    "reference": "#/$defs/modifier"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/permitted_apps/items",
+    "reference": "#/$defs/bundle_id"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/app_ref",
+    "properties": [
+      "bundle_id",
+      "name",
+      "team_id"
+    ],
+    "required": [
+      "bundle_id",
+      "team_id",
+      "name"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/identified_app/allOf/0",
+    "reference": "#/$defs/app_ref"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/identified_app/allOf/1",
+    "properties": [
+      "bundle_id"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured",
+    "properties": [
+      "drag_end",
+      "frontmost_app",
+      "global_point",
+      "measured_at",
+      "target_app",
+      "window_title"
+    ],
+    "required": [
+      "frontmost_app",
+      "target_app",
+      "window_title",
+      "global_point",
+      "measured_at"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/frontmost_app",
+    "reference": "#/$defs/app_ref"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/target_app/anyOf/0",
+    "reference": "#/$defs/app_ref"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/global_point/anyOf/0",
+    "reference": "#/$defs/point"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/drag_end",
+    "properties": [
+      "global_point",
+      "target_app",
+      "window_title"
+    ],
+    "required": [
+      "target_app",
+      "window_title",
+      "global_point"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/drag_end/properties/target_app",
+    "reference": "#/$defs/app_ref"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/drag_end/properties/global_point",
+    "reference": "#/$defs/point"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/measured/properties/measured_at",
+    "reference": "#/$defs/timestamp"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/operation_view",
+    "properties": [
+      "events_posted",
+      "status"
+    ],
+    "required": [
+      "status",
+      "events_posted"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/operation_view/properties/status",
+    "reference": "#/$defs/operation_status"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view",
+    "properties": [
+      "acquired_at",
+      "expires_at",
+      "expires_in_ms",
+      "held_by_caller"
+    ],
+    "required": [
+      "held_by_caller"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/properties/acquired_at",
+    "reference": "#/$defs/timestamp"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/properties/expires_at",
+    "reference": "#/$defs/timestamp"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/not",
+    "required": [
+      "holder_id"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/if",
+    "properties": [
+      "held_by_caller"
+    ],
+    "required": [
+      "held_by_caller"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/then",
+    "required": [
+      "acquired_at",
+      "expires_at",
+      "expires_in_ms"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/else/not/anyOf/0",
+    "required": [
+      "acquired_at"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/else/not/anyOf/1",
+    "required": [
+      "expires_at"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/lease_view/else/not/anyOf/2",
+    "required": [
+      "expires_in_ms"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result",
+    "properties": [
+      "completed_at",
+      "events_posted",
+      "frame_id",
+      "measured",
+      "operation_id",
+      "replayed",
+      "status"
+    ],
+    "required": [
+      "operation_id",
+      "status",
+      "events_posted",
+      "replayed",
+      "frame_id",
+      "measured",
+      "completed_at"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/operation_id",
+    "reference": "#/$defs/operation_id"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/frame_id",
+    "reference": "#/$defs/frame_id"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/measured/allOf/0",
+    "reference": "#/$defs/measured"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/measured/allOf/1",
+    "properties": [
+      "drag_end",
+      "frontmost_app",
+      "target_app"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/measured/allOf/1/properties/frontmost_app",
+    "reference": "#/$defs/identified_app"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/measured/allOf/1/properties/target_app",
+    "reference": "#/$defs/identified_app"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/measured/allOf/1/properties/drag_end",
+    "properties": [
+      "target_app"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/measured/allOf/1/properties/drag_end/properties/target_app",
+    "reference": "#/$defs/identified_app"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/properties/completed_at",
+    "reference": "#/$defs/timestamp"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/effect_result/not",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error",
+    "properties": [
+      "code",
+      "current_state",
+      "details",
+      "measured",
+      "message",
+      "operation",
+      "operation_id",
+      "replayed",
+      "retry_after_ms",
+      "state"
+    ],
+    "required": [
+      "code",
+      "message",
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/code",
+    "reference": "#/$defs/error_code"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/state",
+    "reference": "#/$defs/state"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/current_state",
+    "reference": "#/$defs/state"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/operation_id",
+    "reference": "#/$defs/operation_id"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/operation",
+    "reference": "#/$defs/operation_view"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/measured",
+    "reference": "#/$defs/measured"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/details",
+    "properties": [
+      "argument",
+      "denied_by",
+      "expires_in_ms",
+      "idle_ms",
+      "image_bytes",
+      "max_image_bytes",
+      "output_pixel_size",
+      "point_index",
+      "reason",
+      "shortcut"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/details/properties/reason",
+    "reference": "#/$defs/stale_frame_reason"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/properties/details/properties/output_pixel_size",
+    "reference": "#/$defs/pixel_size"
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/0/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/0/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/0/then/properties/details",
+    "required": [
+      "reason"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/1/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/1/then",
+    "required": [
+      "retry_after_ms"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/2/if",
+    "properties": [
+      "code",
+      "details"
+    ],
+    "required": [
+      "code",
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/2/if/properties/details",
+    "properties": [
+      "reason"
+    ],
+    "required": [
+      "reason"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/2/then",
+    "properties": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/2/then/properties/details",
+    "required": [
+      "point_index"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/3/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/3/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/3/then/properties/details",
+    "required": [
+      "argument"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/4/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/4/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/4/then/properties/details",
+    "required": [
+      "point_index",
+      "output_pixel_size"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/5/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/5/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/5/then/properties/details",
+    "required": [
+      "image_bytes",
+      "max_image_bytes"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/6/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/6/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/6/then/properties/details",
+    "required": [
+      "idle_ms"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/7/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/7/then",
+    "properties": [
+      "details",
+      "measured"
+    ],
+    "required": [
+      "details",
+      "measured"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/7/then/properties/details",
+    "required": [
+      "denied_by"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/7/then/properties/measured",
+    "properties": [
+      "window_title"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/7/then/properties/measured/not",
+    "required": [
+      "drag_end"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/8/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/8/then",
+    "required": [
+      "measured"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/9/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/9/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/9/then/properties/details",
+    "required": [
+      "shortcut"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/10/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/10/then",
+    "properties": [
+      "details"
+    ],
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/10/then/properties/details",
+    "required": [
+      "expires_in_ms"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/11/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/11/else/not",
+    "required": [
+      "details"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/12/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/12/then",
+    "required": [
+      "operation_id",
+      "operation"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/13/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/13/then",
+    "properties": [
+      "replayed"
+    ],
+    "required": [
+      "replayed"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/14/if",
+    "properties": [
+      "replayed"
+    ],
+    "required": [
+      "replayed"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/14/then",
+    "required": [
+      "current_state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/14/else/not",
+    "required": [
+      "current_state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/15/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/15/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/16/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/16/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/17/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/17/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/18/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/18/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/19/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/19/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/20/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/20/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/21/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/21/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/22/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/22/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/23/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "defs.json",
+    "pointer": "/$defs/tool_error/allOf/23/then",
+    "properties": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/displays.input.json",
+    "pointer": "",
+    "properties": []
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/oneOf/0",
+    "reference": "#/$defs/displays_result"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/oneOf/1",
+    "reference": "#/$defs/displays_error"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_error/allOf/0",
+    "reference": "../defs.json#/$defs/tool_error"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_error/allOf/1",
+    "properties": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_result",
+    "properties": [
+      "display_config_generation",
+      "displays"
+    ],
+    "required": [
+      "display_config_generation",
+      "displays"
+    ]
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_result/properties/display_config_generation",
+    "reference": "../defs.json#/$defs/display_config_generation"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_result/properties/displays/items",
+    "reference": "#/$defs/display"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/displays_result/not",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/display",
+    "properties": [
+      "asleep",
+      "bounds",
+      "display_id",
+      "is_builtin",
+      "is_main",
+      "name",
+      "pixel_size",
+      "point_pixel_scale",
+      "uuid"
+    ],
+    "required": [
+      "display_id",
+      "uuid",
+      "name",
+      "is_main",
+      "is_builtin",
+      "asleep",
+      "bounds",
+      "pixel_size",
+      "point_pixel_scale"
+    ]
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/display/properties/display_id",
+    "reference": "../defs.json#/$defs/display_id"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/display/properties/bounds",
+    "reference": "../defs.json#/$defs/rect"
+  },
+  {
+    "file": "tools/displays.output.json",
+    "pointer": "/$defs/display/properties/pixel_size",
+    "reference": "../defs.json#/$defs/pixel_size"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "",
+    "properties": [
+      "action",
+      "frame_id",
+      "holder_id",
+      "operation_id",
+      "permitted_apps"
+    ],
+    "required": [
+      "holder_id",
+      "frame_id",
+      "operation_id",
+      "action"
+    ]
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/properties/holder_id",
+    "reference": "../defs.json#/$defs/holder_id"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/properties/frame_id",
+    "reference": "../defs.json#/$defs/frame_id"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/properties/operation_id",
+    "reference": "../defs.json#/$defs/operation_id"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/properties/permitted_apps",
+    "reference": "../defs.json#/$defs/permitted_apps"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/properties/action/anyOf/0",
+    "reference": "#/$defs/keyboard_type"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/properties/action/anyOf/1",
+    "reference": "#/$defs/keyboard_press"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/$defs/keyboard_type",
+    "properties": [
+      "text",
+      "type"
+    ],
+    "required": [
+      "type",
+      "text"
+    ]
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/$defs/keyboard_press",
+    "properties": [
+      "hold_ms",
+      "key",
+      "modifiers",
+      "type"
+    ],
+    "required": [
+      "type",
+      "key"
+    ]
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/$defs/keyboard_press/properties/key",
+    "reference": "../defs.json#/$defs/key"
+  },
+  {
+    "file": "tools/keyboard.input.json",
+    "pointer": "/$defs/keyboard_press/properties/modifiers",
+    "reference": "../defs.json#/$defs/modifiers"
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/oneOf/0",
+    "reference": "#/$defs/keyboard_result"
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/oneOf/1",
+    "reference": "#/$defs/keyboard_error"
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_result/allOf/0",
+    "reference": "../defs.json#/$defs/effect_result"
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_result/allOf/1",
+    "properties": [
+      "measured"
+    ]
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_result/allOf/1/properties/measured",
+    "properties": [
+      "global_point"
+    ]
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_result/allOf/1/properties/measured/not",
+    "required": [
+      "drag_end"
+    ]
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_error/allOf/0",
+    "reference": "../defs.json#/$defs/tool_error"
+  },
+  {
+    "file": "tools/keyboard.output.json",
+    "pointer": "/$defs/keyboard_error/allOf/1",
+    "properties": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/lease.input.json",
+    "pointer": "",
+    "properties": [
+      "holder_id",
+      "op",
+      "ttl_ms"
+    ],
+    "required": [
+      "op",
+      "holder_id"
+    ]
+  },
+  {
+    "file": "tools/lease.input.json",
+    "pointer": "/properties/holder_id",
+    "reference": "../defs.json#/$defs/holder_id"
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/oneOf/0",
+    "reference": "#/$defs/lease_tool_result"
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/oneOf/1",
+    "reference": "#/$defs/lease_error"
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result",
+    "properties": [
+      "lease",
+      "lease_result"
+    ],
+    "required": [
+      "lease_result",
+      "lease"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/properties/lease_result",
+    "reference": "#/$defs/lease_result"
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/properties/lease",
+    "reference": "../defs.json#/$defs/lease_view"
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/not/anyOf/0",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/not/anyOf/1",
+    "required": [
+      "holder_id"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/if",
+    "properties": [
+      "lease_result"
+    ],
+    "required": [
+      "lease_result"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/if/properties/lease_result",
+    "properties": [
+      "outcome"
+    ],
+    "required": [
+      "outcome"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/then",
+    "properties": [
+      "lease"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/then/properties/lease",
+    "properties": [
+      "held_by_caller"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/else",
+    "properties": [
+      "lease"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_tool_result/else/properties/lease",
+    "properties": [
+      "held_by_caller"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result",
+    "properties": [
+      "code",
+      "expires_in_ms",
+      "op",
+      "outcome"
+    ],
+    "required": [
+      "op",
+      "outcome"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/0/if",
+    "properties": [
+      "outcome"
+    ],
+    "required": [
+      "outcome"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/0/then",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/0/else/not",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/1/if",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/1/then",
+    "required": [
+      "expires_in_ms"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/1/else/not",
+    "required": [
+      "expires_in_ms"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/2/if",
+    "properties": [
+      "op"
+    ],
+    "required": [
+      "op"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/2/then",
+    "properties": [
+      "code",
+      "outcome"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/3/if",
+    "properties": [
+      "op"
+    ],
+    "required": [
+      "op"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/3/then",
+    "properties": [
+      "outcome"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/4/if",
+    "properties": [
+      "op"
+    ],
+    "required": [
+      "op"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_result/allOf/4/then",
+    "properties": [
+      "code",
+      "outcome"
+    ]
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_error/allOf/0",
+    "reference": "../defs.json#/$defs/tool_error"
+  },
+  {
+    "file": "tools/lease.output.json",
+    "pointer": "/$defs/lease_error/allOf/1",
+    "properties": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "",
+    "properties": [
+      "action",
+      "frame_id",
+      "holder_id",
+      "operation_id",
+      "permitted_apps"
+    ],
+    "required": [
+      "holder_id",
+      "frame_id",
+      "operation_id",
+      "action"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/holder_id",
+    "reference": "../defs.json#/$defs/holder_id"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/frame_id",
+    "reference": "../defs.json#/$defs/frame_id"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/operation_id",
+    "reference": "../defs.json#/$defs/operation_id"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/permitted_apps",
+    "reference": "../defs.json#/$defs/permitted_apps"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/action/anyOf/0",
+    "reference": "#/$defs/pointer_move"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/action/anyOf/1",
+    "reference": "#/$defs/pointer_click"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/action/anyOf/2",
+    "reference": "#/$defs/pointer_drag"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/properties/action/anyOf/3",
+    "reference": "#/$defs/pointer_scroll"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_move",
+    "properties": [
+      "type",
+      "x",
+      "y"
+    ],
+    "required": [
+      "type",
+      "x",
+      "y"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_move/properties/x",
+    "reference": "../defs.json#/$defs/frame_coordinate"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_move/properties/y",
+    "reference": "../defs.json#/$defs/frame_coordinate"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_click",
+    "properties": [
+      "button",
+      "count",
+      "modifiers",
+      "type",
+      "x",
+      "y"
+    ],
+    "required": [
+      "type",
+      "x",
+      "y"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_click/properties/x",
+    "reference": "../defs.json#/$defs/frame_coordinate"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_click/properties/y",
+    "reference": "../defs.json#/$defs/frame_coordinate"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_click/properties/button",
+    "reference": "../defs.json#/$defs/mouse_button"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_click/properties/modifiers",
+    "reference": "../defs.json#/$defs/modifiers"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_drag",
+    "properties": [
+      "button",
+      "duration_ms",
+      "modifiers",
+      "path",
+      "type"
+    ],
+    "required": [
+      "type",
+      "path"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_drag/properties/path/items",
+    "reference": "../defs.json#/$defs/frame_point"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_drag/properties/button",
+    "reference": "../defs.json#/$defs/mouse_button"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_drag/properties/modifiers",
+    "reference": "../defs.json#/$defs/modifiers"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_scroll",
+    "properties": [
+      "dx",
+      "dy",
+      "modifiers",
+      "type",
+      "x",
+      "y"
+    ],
+    "required": [
+      "type",
+      "x",
+      "y"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_scroll/properties/x",
+    "reference": "../defs.json#/$defs/frame_coordinate"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_scroll/properties/y",
+    "reference": "../defs.json#/$defs/frame_coordinate"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_scroll/properties/modifiers",
+    "reference": "../defs.json#/$defs/modifiers"
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_scroll/anyOf/0",
+    "properties": [
+      "dx"
+    ],
+    "required": [
+      "dx"
+    ]
+  },
+  {
+    "file": "tools/pointer.input.json",
+    "pointer": "/$defs/pointer_scroll/anyOf/1",
+    "properties": [
+      "dy"
+    ],
+    "required": [
+      "dy"
+    ]
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/oneOf/0",
+    "reference": "#/$defs/pointer_result"
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/oneOf/1",
+    "reference": "#/$defs/pointer_error"
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_result/allOf/0",
+    "reference": "../defs.json#/$defs/effect_result"
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_result/allOf/1",
+    "properties": [
+      "measured"
+    ]
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_result/allOf/1/properties/measured",
+    "properties": [
+      "global_point"
+    ]
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_result/allOf/1/properties/measured/properties/global_point",
+    "reference": "../defs.json#/$defs/point"
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_error/allOf/0",
+    "reference": "../defs.json#/$defs/tool_error"
+  },
+  {
+    "file": "tools/pointer.output.json",
+    "pointer": "/$defs/pointer_error/allOf/1",
+    "properties": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/screenshot.input.json",
+    "pointer": "",
+    "properties": [
+      "display_id",
+      "format",
+      "holder_id",
+      "max_long_edge",
+      "region"
+    ],
+    "required": [
+      "holder_id"
+    ]
+  },
+  {
+    "file": "tools/screenshot.input.json",
+    "pointer": "/properties/holder_id",
+    "reference": "../defs.json#/$defs/holder_id"
+  },
+  {
+    "file": "tools/screenshot.input.json",
+    "pointer": "/properties/display_id",
+    "reference": "../defs.json#/$defs/display_id"
+  },
+  {
+    "file": "tools/screenshot.input.json",
+    "pointer": "/properties/region",
+    "reference": "../defs.json#/$defs/rect"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/oneOf/0",
+    "reference": "#/$defs/screenshot_result"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/oneOf/1",
+    "reference": "#/$defs/screenshot_error"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_error/allOf/0",
+    "reference": "../defs.json#/$defs/tool_error"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_error/allOf/1",
+    "properties": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result",
+    "properties": [
+      "capture_rect",
+      "captured_at",
+      "display_config_generation",
+      "display_id",
+      "downscale",
+      "format",
+      "frame_id",
+      "frontmost_app",
+      "image_bytes",
+      "jpeg_quality",
+      "max_age_ms",
+      "mime_type",
+      "output_pixel_size",
+      "point_pixel_scale",
+      "pointer_position",
+      "sha256",
+      "source_pixel_size"
+    ],
+    "required": [
+      "frame_id",
+      "sha256",
+      "display_id",
+      "display_config_generation",
+      "capture_rect",
+      "source_pixel_size",
+      "output_pixel_size",
+      "point_pixel_scale",
+      "downscale",
+      "format",
+      "mime_type",
+      "image_bytes",
+      "captured_at",
+      "max_age_ms",
+      "pointer_position",
+      "frontmost_app"
+    ]
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/frame_id",
+    "reference": "../defs.json#/$defs/frame_id"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/sha256",
+    "reference": "../defs.json#/$defs/sha256"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/display_id",
+    "reference": "../defs.json#/$defs/display_id"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/display_config_generation",
+    "reference": "../defs.json#/$defs/display_config_generation"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/capture_rect",
+    "reference": "../defs.json#/$defs/rect"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/source_pixel_size",
+    "reference": "../defs.json#/$defs/pixel_size"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/output_pixel_size",
+    "properties": [
+      "height",
+      "width"
+    ],
+    "reference": "../defs.json#/$defs/pixel_size"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/captured_at",
+    "reference": "../defs.json#/$defs/timestamp"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/pointer_position/anyOf/0",
+    "reference": "../defs.json#/$defs/frame_point"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/properties/frontmost_app",
+    "reference": "../defs.json#/$defs/app_ref"
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/not",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/if",
+    "properties": [
+      "format"
+    ],
+    "required": [
+      "format"
+    ]
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/then",
+    "properties": [
+      "mime_type"
+    ],
+    "required": [
+      "jpeg_quality"
+    ]
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/else",
+    "properties": [
+      "mime_type"
+    ]
+  },
+  {
+    "file": "tools/screenshot.output.json",
+    "pointer": "/$defs/screenshot_result/else/not",
+    "required": [
+      "jpeg_quality"
+    ]
+  },
+  {
+    "file": "tools/status.input.json",
+    "pointer": "",
+    "properties": [
+      "holder_id",
+      "operation"
+    ]
+  },
+  {
+    "file": "tools/status.input.json",
+    "pointer": "/properties/holder_id",
+    "reference": "../defs.json#/$defs/holder_id"
+  },
+  {
+    "file": "tools/status.input.json",
+    "pointer": "/properties/operation",
+    "properties": [
+      "holder_id",
+      "operation_id"
+    ],
+    "required": [
+      "holder_id",
+      "operation_id"
+    ]
+  },
+  {
+    "file": "tools/status.input.json",
+    "pointer": "/properties/operation/properties/holder_id",
+    "reference": "../defs.json#/$defs/holder_id"
+  },
+  {
+    "file": "tools/status.input.json",
+    "pointer": "/properties/operation/properties/operation_id",
+    "reference": "../defs.json#/$defs/operation_id"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/oneOf/0",
+    "reference": "#/$defs/status_result"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/oneOf/1",
+    "reference": "#/$defs/status_error"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result",
+    "properties": [
+      "active_states",
+      "armed_until",
+      "conditions",
+      "contract_version",
+      "display_config_generation",
+      "lease",
+      "limits",
+      "mac",
+      "mcp_protocol_version",
+      "operation",
+      "server_version",
+      "started_at",
+      "state",
+      "time"
+    ],
+    "required": [
+      "contract_version",
+      "mcp_protocol_version",
+      "server_version",
+      "mac",
+      "time",
+      "started_at",
+      "state",
+      "active_states",
+      "conditions",
+      "armed_until",
+      "lease",
+      "display_config_generation",
+      "limits"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/time",
+    "reference": "../defs.json#/$defs/timestamp"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/started_at",
+    "reference": "../defs.json#/$defs/timestamp"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/state",
+    "reference": "../defs.json#/$defs/state"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/active_states/items",
+    "reference": "../defs.json#/$defs/blocking_state"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/conditions/items",
+    "reference": "../defs.json#/$defs/condition"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/armed_until/anyOf/0",
+    "reference": "../defs.json#/$defs/timestamp"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/lease/anyOf/0",
+    "reference": "../defs.json#/$defs/lease_view"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/operation/anyOf/0",
+    "reference": "../defs.json#/$defs/operation_view"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/display_config_generation",
+    "reference": "../defs.json#/$defs/display_config_generation"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/properties/limits",
+    "reference": "#/$defs/limits"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/not/anyOf/0",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/not/anyOf/1",
+    "required": [
+      "lease_result"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/not/anyOf/2",
+    "required": [
+      "holder_id"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/0/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/0/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/1/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/1/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/2/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/2/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/3/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/3/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/4/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/4/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/5/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/5/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/6/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/6/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/7/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/7/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/8/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/8/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/9/if",
+    "properties": [
+      "state"
+    ],
+    "required": [
+      "state"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_result/allOf/9/then",
+    "properties": [
+      "active_states"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_error/allOf/0",
+    "reference": "../defs.json#/$defs/tool_error"
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/status_error/allOf/1",
+    "properties": [
+      "code"
+    ]
+  },
+  {
+    "file": "tools/status.output.json",
+    "pointer": "/$defs/limits",
+    "properties": [
+      "actions_per_minute",
+      "frame_max_age_ms",
+      "keyboard_max_text_length",
+      "lease_ttl_max_ms",
+      "lease_ttl_min_ms",
+      "max_image_bytes",
+      "max_long_edge",
+      "max_pixels",
+      "min_long_edge",
+      "operation_max_records",
+      "operation_retention_ms",
+      "user_activity_lookback_ms"
+    ],
+    "required": [
+      "operation_retention_ms",
+      "operation_max_records",
+      "max_long_edge",
+      "min_long_edge",
+      "max_pixels",
+      "max_image_bytes",
+      "frame_max_age_ms",
+      "user_activity_lookback_ms",
+      "actions_per_minute",
+      "lease_ttl_min_ms",
+      "lease_ttl_max_ms",
+      "keyboard_max_text_length"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "",
+    "properties": [
+      "error",
+      "id",
+      "jsonrpc"
+    ],
+    "required": [
+      "jsonrpc",
+      "id",
+      "error"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "/properties/error",
+    "properties": [
+      "code",
+      "data",
+      "message"
+    ],
+    "required": [
+      "code",
+      "message"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "/properties/error/properties/data",
+    "properties": [
+      "detail",
+      "header"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "/if",
+    "properties": [
+      "error"
+    ],
+    "required": [
+      "error"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "/if/properties/error",
+    "properties": [
+      "code"
+    ],
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-error.json",
+    "pointer": "/then",
+    "properties": [
+      "id"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-notification.json",
+    "pointer": "",
+    "properties": [
+      "jsonrpc",
+      "method",
+      "params"
+    ],
+    "required": [
+      "jsonrpc",
+      "method"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "",
+    "properties": [
+      "id",
+      "jsonrpc",
+      "method",
+      "params"
+    ],
+    "required": [
+      "jsonrpc",
+      "id",
+      "method",
+      "params"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/properties/params",
+    "properties": [
+      "_meta"
+    ],
+    "required": [
+      "_meta"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/properties/params/properties/_meta",
+    "properties": [
+      "io.modelcontextprotocol/protocolVersion"
+    ],
+    "required": [
+      "io.modelcontextprotocol/protocolVersion"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/0/if",
+    "properties": [
+      "method"
+    ],
+    "required": [
+      "method"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/0/then",
+    "properties": [
+      "params"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/0/then/properties/params",
+    "properties": [
+      "arguments",
+      "name"
+    ],
+    "required": [
+      "name"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/1/if",
+    "properties": [
+      "method"
+    ],
+    "required": [
+      "method"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/1/then",
+    "properties": [
+      "params"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/2/if",
+    "properties": [
+      "method"
+    ],
+    "required": [
+      "method"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/2/then",
+    "properties": [
+      "params"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-request.json",
+    "pointer": "/allOf/2/then/properties/params",
+    "properties": [
+      "cursor"
+    ]
+  },
+  {
+    "file": "wire/jsonrpc-response.json",
+    "pointer": "",
+    "properties": [
+      "id",
+      "jsonrpc",
+      "result"
+    ],
+    "required": [
+      "jsonrpc",
+      "id",
+      "result"
+    ]
+  },
+  {
+    "file": "wire/server-discover-result.json",
+    "pointer": "",
+    "properties": [
+      "_meta",
+      "cacheScope",
+      "capabilities",
+      "resultType",
+      "supportedVersions",
+      "ttlMs"
+    ],
+    "required": [
+      "resultType",
+      "supportedVersions",
+      "capabilities",
+      "_meta",
+      "ttlMs",
+      "cacheScope"
+    ]
+  },
+  {
+    "file": "wire/server-discover-result.json",
+    "pointer": "/properties/capabilities",
+    "properties": [
+      "tools"
+    ],
+    "required": [
+      "tools"
+    ]
+  },
+  {
+    "file": "wire/server-discover-result.json",
+    "pointer": "/properties/capabilities/properties/tools",
+    "properties": [
+      "listChanged"
+    ],
+    "required": [
+      "listChanged"
+    ]
+  },
+  {
+    "file": "wire/server-discover-result.json",
+    "pointer": "/properties/_meta",
+    "properties": [
+      "io.modelcontextprotocol/serverInfo"
+    ],
+    "required": [
+      "io.modelcontextprotocol/serverInfo"
+    ]
+  },
+  {
+    "file": "wire/server-discover-result.json",
+    "pointer": "/properties/_meta/properties/io.modelcontextprotocol~1serverInfo",
+    "properties": [
+      "name",
+      "version"
+    ],
+    "required": [
+      "name",
+      "version"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "",
+    "properties": [
+      "content",
+      "isError",
+      "resultType",
+      "structuredContent"
+    ],
+    "required": [
+      "resultType",
+      "content",
+      "structuredContent",
+      "isError"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/properties/content/oneOf/0/prefixItems/0",
+    "reference": "#/$defs/text_block"
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/properties/content/oneOf/1/prefixItems/0",
+    "reference": "#/$defs/image_block"
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/properties/content/oneOf/1/prefixItems/1",
+    "reference": "#/$defs/text_block"
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/if",
+    "properties": [
+      "isError"
+    ],
+    "required": [
+      "isError"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/then",
+    "properties": [
+      "content",
+      "structuredContent"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/then/properties/structuredContent",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/else",
+    "properties": [
+      "structuredContent"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/else/properties/structuredContent/not",
+    "required": [
+      "code"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/$defs/text_block",
+    "properties": [
+      "text",
+      "type"
+    ],
+    "required": [
+      "type",
+      "text"
+    ]
+  },
+  {
+    "file": "wire/tools-call-result.json",
+    "pointer": "/$defs/image_block",
+    "properties": [
+      "data",
+      "mimeType",
+      "type"
+    ],
+    "required": [
+      "type",
+      "data",
+      "mimeType"
+    ]
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "",
+    "properties": [
+      "cacheScope",
+      "resultType",
+      "tools",
+      "ttlMs"
+    ],
+    "required": [
+      "resultType",
+      "tools",
+      "ttlMs",
+      "cacheScope"
+    ]
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/properties/tools/items",
+    "reference": "#/$defs/tool"
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/$defs/tool",
+    "properties": [
+      "annotations",
+      "description",
+      "inputSchema",
+      "name",
+      "outputSchema",
+      "title"
+    ],
+    "required": [
+      "name",
+      "title",
+      "description",
+      "inputSchema",
+      "outputSchema",
+      "annotations"
+    ]
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/$defs/tool/properties/inputSchema",
+    "reference": "#/$defs/object_schema"
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/$defs/tool/properties/outputSchema",
+    "reference": "#/$defs/object_schema"
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/$defs/tool/properties/annotations",
+    "properties": [
+      "destructiveHint",
+      "idempotentHint",
+      "openWorldHint",
+      "readOnlyHint"
+    ],
+    "required": [
+      "readOnlyHint",
+      "destructiveHint",
+      "idempotentHint",
+      "openWorldHint"
+    ]
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/$defs/object_schema",
+    "properties": [
+      "$schema",
+      "type"
+    ],
+    "required": [
+      "type"
+    ]
+  },
+  {
+    "file": "wire/tools-list-result.json",
+    "pointer": "/$defs/object_schema/not",
+    "required": [
+      "$id"
+    ]
+  }
+]

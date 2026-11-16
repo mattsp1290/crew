@@ -32,7 +32,7 @@ export async function runLiveTool(
       const threadId = await Promise.race([nativeThread.promise,delay(5000,undefined,{signal:call.signal})]);
       if (threadId !== call.threadId) throw new Error("Unexpected native thread");
       await discloseCallId(call.nativeCallId);
-      const deadline = Date.now() + 45_000;
+      const deadline = Date.now() + 120_000;
       const approval = await proposeLive(pool,launch,{...call,args:call.args,expiresAt:new Date(deadline).toISOString()});
       try {
         const connection = Connection.lazy(await temporalConnectionOptions(temporal));

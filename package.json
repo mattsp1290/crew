@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "npm run build:client && scripts/build-native && npm run typecheck",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node scripts/check-deskhand-boundary-imports.mjs && tsc --noEmit",
     "test": "node --test tests/fixtures/engines/artifacts.test.ts tests/fixtures/engines/consumer.test.mjs tests/fixtures/engines/codex/qualification.test.ts tests/fixtures/engines/pi/confinement.test.ts tests/service/temporal-config.test.ts tests/service/gateway-auth.test.ts",
     "gateway": "node src/service/gateway.ts",
     "members": "node src/service/cli.ts",
@@ -23,7 +23,7 @@
     "test:live": "node tests/proof/live-members.ts",
     "test:proxy": "node --test tests/proxy-relay.test.ts tests/service/proxy-credential.test.ts tests/service/proxy-members.test.ts tests/service/proxy-scope.test.ts",
     "test:trusted": "node --test tests/service/trusted-*.test.ts",
-    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts",
+    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts tests/service/telemetry-exporter-*.test.ts",
     "test:proxy:restart": "node tests/proof/proxy-restart.mts",
     "recovery": "node src/service/recovery-cli.ts",
     "test:recovery": "node --test tests/service/recovery.test.ts",
@@ -54,6 +54,7 @@
     "build:client": "npm run build --prefix packages/client",
     "openapi": "node scripts/generate-openapi.mjs",
     "check:openapi": "node scripts/generate-openapi.mjs --check",
+    "test:deskhand": "node scripts/generate-deskhand-vocabulary.mjs --check && node scripts/check-deskhand-boundary-imports.mjs && node --test tests/service/deskhand-contract.test.ts tests/service/deskhand-results/corpus.test.ts tests/service/deskhand-results/metadata.test.ts tests/service/deskhand-results/effects.test.ts tests/service/deskhand-results/tooling.test.ts",
     "test:client": "node --test tests/client/*.test.mts",
     "verify:client": "node scripts/verify-client-package.mjs"
   },
@@ -76,6 +77,7 @@
     "@openai/codex-sdk": "0.167.1",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.208.0",
+    "@opentelemetry/otlp-exporter-base": "file:vendor/opentelemetry/opentelemetry-otlp-exporter-base-0.208.0-crew.1.tgz",
     "@opentelemetry/resources": "2.2.0",
     "@opentelemetry/sdk-trace-base": "2.2.0",
     "@temporalio/activity": "1.25.0",
@@ -101,5 +103,8 @@
   "homepage": "https://github.com/mattsp1290/crew#readme",
   "bugs": {
     "url": "https://github.com/mattsp1290/crew/issues"
+  },
+  "overrides": {
+    "@opentelemetry/otlp-exporter-base": "$@opentelemetry/otlp-exporter-base"
   }
 }
