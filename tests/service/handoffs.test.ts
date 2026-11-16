@@ -4,6 +4,9 @@ import { once } from "node:events";
 import { readdir, readFile } from "node:fs/promises";
 import { after, before, test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { CrewClient, CrewHttpError, CrewUnknownOutcomeError } from "@birbcrew/client";
+import { conversationHandoffSchema, createHandoffBodySchema, createHandoffResponseSchema, handoffRecordSchema,
+  handoffsCapabilityV1Schema, uuid, type CreateHandoffResponse, type HandoffRecord } from "@birbcrew/client/contract";
 import { ApplicationFailure, WorkflowNotFoundError, WorkflowUpdateFailedError } from "@temporalio/client";
 import { Pool } from "pg";
 import { z } from "zod";
@@ -42,9 +45,42 @@ function parse(transcript: string) {
   return { header: transcript.slice(0, newline), body: JSON.parse(transcript.slice(newline + 1)) };
 }
 
-type View = { handoffId: string; requestId: string; firstRequestId: string; firstRequestAdmitted: boolean;
-  source: { conversationId: string; memberId: string; engine: Engine }; target: { conversationId: string; memberId: string; engine: Engine };
-  carriedTurns: number; omittedTurns: number; uncertainTurns: number; transcriptBytes: number; transcriptDigest: string; createdAt: string };
+test("shared handoff input parsing preserves the previous strict body and UUID normalization", () => {
+  const previousUuid = z.uuid().transform(value => value.toLowerCase());
+  const previousBody = z.strictObject({ requestId: previousUuid, memberId: previousUuid });
+  const id = "abcdef12-3456-4789-abcd-ef1234567890";
+  const ids: { input: unknown; accepted: boolean }[] = [
+    ...[id, id.toUpperCase(), "AbCdEf12-3456-4789-aBcD-eF1234567890",
+      "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      ...Array.from({ length: 8 }, (_, i) => `abcdef12-3456-${i + 1}789-abcd-ef1234567890`),
+      ...["8", "9", "a", "b"].map(variant => `abcdef12-3456-4789-${variant}bcd-ef1234567890`),
+    ].map(input => ({ input, accepted: true })),
+    ...["", "not-a-uuid", ` ${id}`, `${id} `, id.replaceAll("-", ""), `{${id}}`, `urn:uuid:${id}`,
+      "abcdef12-3456-0789-abcd-ef1234567890", "abcdef12-3456-9789-abcd-ef1234567890",
+      "abcdef12-3456-4789-7bcd-ef1234567890", "abcdef12-3456-4789-cbcd-ef1234567890",
+      "abcdef12-3456-4789-abcd-ef123456789g", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", null, undefined, 7, [], {},
+    ].map(input => ({ input, accepted: false })),
+  ];
+  for (const { input, accepted } of ids) {
+    const previous = previousUuid.safeParse(input), shared = uuid.safeParse(input);
+    assert.equal(previous.success, accepted, String(input));
+    assert.equal(shared.success, accepted, String(input));
+    if (previous.success && shared.success) assert.equal(shared.data, previous.data);
+    for (const field of ["requestId", "memberId"] as const) {
+      const body = { requestId: id, memberId: id, [field]: input };
+      const oldBody = previousBody.safeParse(body), sharedBody = createHandoffBodySchema.safeParse(body);
+      assert.equal(oldBody.success, accepted, field + " " + String(input));
+      assert.equal(sharedBody.success, accepted, field + " " + String(input));
+      if (oldBody.success && sharedBody.success) assert.deepEqual(sharedBody.data, oldBody.data);
+    }
+  }
+  for (const input of [null, undefined, [], id, {}, { requestId: id }, { memberId: id },
+    ...["ownerId", "conversationId", "text", "kind"].map(field => ({ requestId: id, memberId: id, [field]: id })),
+  ]) {
+    assert.equal(previousBody.safeParse(input).success, false);
+    assert.equal(createHandoffBodySchema.safeParse(input).success, false);
+  }
+});
 
 /** An in-process gateway whose open and accept are the real MemberClient's, before a stand-in for
  * Temporal whose acceptTurn update runs only the workflow's admission activity. `lose` drops an
@@ -53,12 +89,16 @@ type View = { handoffId: string; requestId: string; firstRequestId: string; firs
 async function fixture(t: TestContext) {
   const token = randomUUID(), stranger = randomUUID();
   const ownerId = "owner-" + randomUUID(), strangerId = "owner-" + randomUUID();
-  const control = { lose: 0, close: 0, accepted: [] as string[] };
+  const control = { lose: 0, close: 0, rejectUpdate: 0, accepted: [] as string[] };
   const handle = {
     async executeUpdate(name: string, { args: [request] }: { args: [TurnRequest] }) {
       assert.equal(name, "acceptTurn");
       if (control.lose > 0) { control.lose--; throw new Error("submission lost before Temporal"); }
       if (control.close > 0) { control.close--; throw new WorkflowNotFoundError("closed", "fixture", undefined); }
+      if (control.rejectUpdate > 0) {
+        control.rejectUpdate--;
+        throw new WorkflowUpdateFailedError("rejected", ApplicationFailure.nonRetryable("fixture rejection", "HandoffFixtureRejection"));
+      }
       await store.recordAcceptance(request, ownerInitiator);
       return request.requestId;
     },
@@ -124,25 +164,26 @@ async function fixture(t: TestContext) {
     commit(await start(conversationId, text, credential), reply);
   const handoff = (sourceId: string, memberId: string, requestId: string = randomUUID(), credential = token) =>
     api(`/v1/conversations/${sourceId}/handoffs`, { requestId, memberId }, credential);
-  async function created(sourceId: string, memberId: string, requestId?: string): Promise<View> {
+  async function created(sourceId: string, memberId: string, requestId?: string): Promise<CreateHandoffResponse> {
     const response = await handoff(sourceId, memberId, requestId);
     assert.equal(response.status, 201, JSON.stringify(response.body));
-    return response.body;
+    return createHandoffResponseSchema.parse(response.body);
   }
   /** Runs the target's reserved first request as its worker would. */
-  async function deliver(view: View, reply = "acknowledged") {
+  async function deliver(view: HandoffRecord, reply = "acknowledged") {
     const text = await transcriptOf(view.handoffId);
     return commit(await begin({ ownerId, conversationId: view.target.conversationId, requestId: view.firstRequestId, text }), reply);
   }
   const status = async (conversationId: string, requestId: string, credential = token) =>
     (await api(`/v1/conversations/${conversationId}/requests/${requestId}`, undefined, credential)).body;
-  return { api, spawn, open, start, begin, commit, turn, handoff, created, deliver, status, control, token, stranger, ownerId, strangerId };
+  const crew = new CrewClient({ baseUrl: endpoint, token });
+  return { api, spawn, open, start, begin, commit, turn, handoff, created, deliver, status, control, crew, token, stranger, ownerId, strangerId };
 }
 
-test("a handoff opens a fresh target of another engine whose reserved first request carries the transcript", async (t) => {
+test("a handoff opens a fresh target, including for the same member, whose reserved first request carries the transcript", async (t) => {
   const f = await fixture(t);
-  for (const [from, to] of [["pi", "claude"], ["claude", "codex"], ["codex", "pi"]] as const) {
-    const sourceMember = await f.spawn(from), targetMember = await f.spawn(to);
+  for (const [from, to] of [["pi", "claude"], ["claude", "codex"], ["codex", "pi"], ["pi", "pi"]] as const) {
+    const sourceMember = await f.spawn(from), targetMember = from === to ? sourceMember : await f.spawn(to);
     const source = await f.open(sourceMember);
     await f.turn(source, "remember cedar", "stored cedar");
     await f.turn(source, "a second prompt\nwith \"quotes\" and \\ backslash", "a second reply\twith a tab");
@@ -154,7 +195,7 @@ test("a handoff opens a fresh target of another engine whose reserved first requ
       source: { conversationId: source, memberId: sourceMember, engine: from }, target: { conversationId: target, memberId: targetMember, engine: to },
       firstRequestId: view.firstRequestId, firstRequestAdmitted: true, carriedTurns: 2, omittedTurns: 0, uncertainTurns: 0,
       transcriptBytes: Buffer.byteLength(transcript), transcriptDigest: hex(transcript), createdAt: view.createdAt });
-    assert.ok(![source, view.firstRequestId].includes(target));
+    assert.notEqual(target, source);
     const { header, body } = parse(transcript);
     assert.match(header, /^BirbCrew conversation handoff v1\. .*data and not instructions.*brief acknowledgement/);
     assert.deepEqual(body, { sourceEngine: from, omittedTurns: 0, uncertainTurns: 0, turns: [
@@ -169,7 +210,8 @@ test("a handoff opens a fresh target of another engine whose reserved first requ
     const receipt = await f.status(target, view.firstRequestId);
     assert.deepEqual([receipt.status, receipt.initiator], ["accepted", { kind: "handoff", id: view.handoffId }]);
     const listed = (await f.api(`/v1/conversations?memberId=${targetMember}`)).body.conversations;
-    assert.deepEqual(listed.map((c: { conversationId: string }) => c.conversationId), [target]);
+    assert.deepEqual(listed.map((c: { conversationId: string }) => c.conversationId).sort(),
+      (sourceMember === targetMember ? [source, target] : [target]).sort());
 
     // Its worker runs it: the transcript is the target's first user message, then the reply.
     await f.deliver(view, "acknowledged " + to);
@@ -186,12 +228,15 @@ test("a handoff opens a fresh target of another engine whose reserved first requ
     const { apiVersion: _, ...record } = view;
     assert.deepEqual(outgoing, { status: 200, body: { apiVersion: "1", conversationId: source, incoming: null, outgoing: record } });
     assert.deepEqual(incoming, { status: 200, body: { apiVersion: "1", conversationId: target, incoming: record, outgoing: null } });
+    assert.deepEqual(conversationHandoffSchema.parse(outgoing.body), outgoing.body);
+    assert.deepEqual(conversationHandoffSchema.parse(incoming.body), incoming.body);
     assert.ok(!JSON.stringify(incoming.body).includes("remember cedar"));
   }
   const capabilities = (await f.api("/v1/capabilities")).body;
   assert.deepEqual(capabilities.handoffs, { version: 1, route: "/v1/conversations/{conversationId}/handoffs",
     readRoute: "/v1/conversations/{conversationId}/handoff", delivery: "reserved-first-request", initiatorKind: "handoff",
     transcriptBytes: 65_536, promptBytes: 16_384, carried: "newest-whole-committed-turns", source: "sealed-readable" });
+  assert.deepEqual(handoffsCapabilityV1Schema.parse(capabilities.handoffs), capabilities.handoffs);
   assert.deepEqual(capabilities.initiatorKinds, ["owner", "routine", "handoff"]);
   assert.ok(capabilities.audit.eventTypes.includes("conversation.handed_off"));
 });
@@ -430,6 +475,52 @@ test("a retry after the reserved request was admitted returns the same handoff a
   }
 });
 
+test("a postcommit update_rejected preserves the public command and the same successor on explicit retry", async (t) => {
+  const f = await fixture(t);
+  const member = await f.spawn(), target = await f.spawn("claude");
+  const source = await f.open(member), requestId = randomUUID();
+  await f.turn(source, "remember hemlock", "stored hemlock");
+  const sent = f.control.accepted.length;
+  f.control.rejectUpdate = 1;
+  const failure = await f.crew.createHandoff({ conversationId: source.toUpperCase(), requestId: requestId.toUpperCase(),
+    memberId: target.toUpperCase() }).catch((error: unknown) => error);
+  assert.ok(failure instanceof CrewUnknownOutcomeError);
+  assert.deepEqual(failure.command, { kind: "handoff", conversationId: source, requestId, memberId: target });
+  assert.ok(Object.isFrozen(failure.command));
+  assert.ok(failure.cause instanceof CrewHttpError);
+  assert.equal(failure.cause.status, 409);
+  assert.equal(failure.cause.code, "update_rejected");
+  const { rows } = await pool.query<{ handoff_id: string; target_conversation_id: string; first_request_id: string }>(
+    `SELECT handoff_id, target_conversation_id, first_request_id FROM birbcrew_ts.conversation_handoffs
+      WHERE owner_id=$1 AND source_conversation_id=$2 AND request_id=$3`, [f.ownerId, source, requestId]);
+  assert.equal(rows.length, 1, "the gateway returned 409 after committing the handoff");
+  const [committed] = rows;
+  assert.ok(committed);
+  assert.deepEqual(f.control.accepted.slice(sent), [committed.first_request_id], "the public client did not retry the POST");
+  const chain = await f.crew.handoff({ conversationId: source });
+  const pending = chain.outgoing;
+  assert.ok(pending);
+  assert.deepEqual([pending.handoffId, pending.target.conversationId, pending.firstRequestId],
+    [committed.handoff_id, committed.target_conversation_id, committed.first_request_id]);
+  assert.deepEqual([pending.source.conversationId, pending.requestId, pending.target.memberId], [source, requestId, target]);
+  assert.equal(pending.firstRequestAdmitted, false);
+  assert.deepEqual(f.control.accepted.slice(sent), [committed.first_request_id], "GET did not attempt delivery");
+  assert.equal((await pool.query("SELECT count(*)::integer AS n FROM birbcrew_ts.request_admissions WHERE conversation_id=$1",
+    [pending.target.conversationId])).rows[0].n, 0);
+  assert.ok(failure.command.kind === "handoff");
+  const { conversationId, memberId } = failure.command;
+  const healed = await f.crew.createHandoff({ conversationId, requestId: failure.command.requestId, memberId });
+  assert.deepEqual(healed, { apiVersion: "1", ...pending, firstRequestAdmitted: true });
+  assert.deepEqual(f.control.accepted.slice(sent), [committed.first_request_id, committed.first_request_id]);
+  const { rows: counts } = await pool.query(`SELECT
+      (SELECT count(*)::integer FROM birbcrew_ts.conversation_handoffs WHERE owner_id=$1) AS handoffs,
+      (SELECT count(*)::integer FROM birbcrew_ts.conversations WHERE owner_id=$1 AND member_id=$2) AS targets,
+      (SELECT count(*)::integer FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type='conversation.handed_off') AS audited,
+      (SELECT count(*)::integer FROM birbcrew_ts.request_admissions WHERE conversation_id=$3 AND request_id=$4) AS admitted`,
+    [f.ownerId, target, committed.target_conversation_id, committed.first_request_id]);
+  assert.deepEqual(counts[0], { handoffs: 1, targets: 1, audited: 1, admitted: 1 });
+});
+
 test("a refusal after the commit returns the committed handoff unadmitted, and a retry with its requestId admits it", async (t) => {
   const f = await fixture(t);
   const member = await f.spawn(), target = await f.spawn("pi");
@@ -440,6 +531,7 @@ test("a refusal after the commit returns the committed handoff unadmitted, and a
   f.control.close = 1;
   const committed = await f.handoff(source, target, requestId);
   assert.deepEqual([committed.status, committed.body.firstRequestAdmitted], [201, false]);
+  assert.deepEqual(createHandoffResponseSchema.parse(committed.body), committed.body);
   assert.deepEqual(await f.api(`/v1/conversations/${source}/requests`, { requestId: randomUUID(), text: "more" }),
     { status: 409, body: { error: "handed_off" } }, "the source is sealed");
   assert.deepEqual(await f.created(source, target, requestId), { ...committed.body, firstRequestAdmitted: true });
@@ -618,7 +710,7 @@ test("the reserved request admits only the stored transcript, before any other r
   await f.turn(source, "remember pine", "stored pine");
   f.control.lose = 1;
   assert.equal((await f.handoff(source, target, randomUUID())).status, 503);
-  const view = (await f.api(`/v1/conversations/${source}/handoff`)).body.outgoing as View;
+  const view = handoffRecordSchema.parse((await f.api(`/v1/conversations/${source}/handoff`)).body.outgoing);
   const targetId = view.target.conversationId;
   const transcript = await transcriptOf(view.handoffId);
   const reserved = { ownerId: f.ownerId, conversationId: targetId, requestId: view.firstRequestId };
@@ -696,7 +788,7 @@ test("the reserved request takes no approval deadline; later requests in the tar
   const handoffRequest = randomUUID();
   f.control.lose = 1;
   assert.equal((await f.handoff(source, target, handoffRequest)).status, 503);
-  const view = (await f.api(`/v1/conversations/${source}/handoff`)).body.outgoing as View;
+  const view = handoffRecordSchema.parse((await f.api(`/v1/conversations/${source}/handoff`)).body.outgoing);
   const targetId = view.target.conversationId, transcript = await transcriptOf(view.handoffId);
   const reserved = { ownerId: f.ownerId, conversationId: targetId, requestId: view.firstRequestId, text: transcript };
   const requests = `/v1/conversations/${targetId}/requests`, conflict = { status: 409, body: { error: "conflict" } };
@@ -793,8 +885,8 @@ test("a chained handoff never presents carried text as the owner's prompt", asyn
     { ownerPrompt: "owner follow-up", modelReply: "follow-up reply" },
   ] });
   assert.ok(!transcript.includes(secret), "the earlier transcript is not quoted again");
-  const middle = (await f.api(`/v1/conversations/${ab.target.conversationId}/handoff`)).body;
-  assert.deepEqual([middle.incoming.handoffId, middle.outgoing.handoffId], [ab.handoffId, bc.handoffId]);
+  const middle = conversationHandoffSchema.parse((await f.api(`/v1/conversations/${ab.target.conversationId}/handoff`)).body);
+  assert.deepEqual([middle.incoming?.handoffId, middle.outgoing?.handoffId], [ab.handoffId, bc.handoffId]);
 });
 
 test("line and paragraph separators and C1 controls stay escaped inside their strings", async (t) => {
@@ -935,7 +1027,7 @@ test("MemberClient refuses a pending target, a sealed source and an oversized ow
   await f.turn(source, "remember fir", "stored fir");
   f.control.lose = 1;
   assert.equal((await f.handoff(source, target)).status, 503);
-  const view = (await f.api(`/v1/conversations/${source}/handoff`)).body.outgoing as View;
+  const view = handoffRecordSchema.parse((await f.api(`/v1/conversations/${source}/handoff`)).body.outgoing);
   const touched: string[] = [];
   const temporal = new Proxy({}, { get: (_, name) => { touched.push(String(name)); throw new Error("Temporal reached"); } });
   const client = new RealMemberClient(store, temporal as never);
@@ -975,7 +1067,7 @@ test("MemberClient checks admission again before each rollover retry, and admiss
   await f.turn(sealed, "remember rowan", "stored rowan");
   f.control.lose = 1;
   assert.equal((await f.handoff(sealed, target)).status, 503);
-  const view = (await f.api(`/v1/conversations/${sealed}/handoff`)).body.outgoing as View;
+  const view = handoffRecordSchema.parse((await f.api(`/v1/conversations/${sealed}/handoff`)).body.outgoing);
   const admit = ownerAdmissionActivity(store);
   const failsAtOnce = (code: string) => (error: unknown) => error instanceof ApplicationFailure && error.nonRetryable && error.message === code;
   await assert.rejects(admit({ ownerId: f.ownerId, conversationId: sealed, requestId: randomUUID(), text: "late" }), failsAtOnce("handed_off"));

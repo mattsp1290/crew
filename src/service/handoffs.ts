@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createHandoffBodySchema, uuid } from "@birbcrew/client/contract";
 import type { PoolClient } from "pg";
-import { z } from "zod";
 import { appendAudit } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
 import { MemberStoreError, promptBytes, turnTextBytes, type Engine, type RequestInitiator } from "./domain.ts";
@@ -142,9 +142,6 @@ function handoffView(row: ViewRow) {
   };
 }
 
-const lowerUuid = z.uuid().transform(value => value.toLowerCase());
-const createSchema = z.strictObject({ requestId: lowerUuid, memberId: lowerUuid });
-
 function requestConflict(error: unknown): never {
   if (error && typeof error === "object" && "constraint" in error && error.constraint === "conversation_handoffs_owner_id_request_id_key") {
     throw new MemberStoreError("conflict");
@@ -162,8 +159,8 @@ export class HandoffApi {
    * while that request is unadmitted, so a crash between the commit and the admission heals on
    * retry. A target whose workflow has closed is not healed: it stays unadmitted. */
   async create(ownerId: string, sourceId: string, input: unknown) {
-    const body = createSchema.parse(input);
-    const sourceConversationId = lowerUuid.parse(sourceId);
+    const body = createHandoffBodySchema.parse(input);
+    const sourceConversationId = uuid.parse(sourceId);
     const row = await this.store.transaction(async db => {
       // Locked as admission and turn starts lock it, so a request is either admitted before the
       // seal (and the source is busy) or refused after it.
@@ -236,7 +233,7 @@ export class HandoffApi {
 
   /** The handoff that created this conversation (incoming) and the one that sealed it (outgoing). */
   async read(ownerId: string, conversationId: string) {
-    const id = lowerUuid.parse(conversationId);
+    const id = uuid.parse(conversationId);
     const { rows } = await this.store.pool.query<ViewRow>(`${viewSelection}
       WHERE h.owner_id=$1 AND (h.source_conversation_id=$2 OR h.target_conversation_id=$2)`, [ownerId, id]);
     if (!rows.length) throw new MemberStoreError("not_found");

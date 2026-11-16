@@ -9,6 +9,10 @@ import {
   instructionsSummarySchema,
   memberSchema,
   conversationStateSchema,
+  createHandoffSchema,
+  handoffRecordSchema,
+  handoffsCapabilitySchema,
+  handoffsCapabilityV1Schema,
 } from "../packages/client/src/contract.ts";
 
 const registry = z.registry();
@@ -30,6 +34,13 @@ for (const [id, value] of Object.entries({
   GrantList: routes.listGrants.response,
   RevokeGrantResponse: routes.revokeGrant.response,
   RevokeGrant: routes.revokeGrant.body,
+  CreateHandoff: createHandoffSchema,
+  CreateHandoffBody: routes.createHandoff.body,
+  HandoffRecord: handoffRecordSchema,
+  CreateHandoffResponse: routes.createHandoff.response,
+  ConversationHandoff: routes.handoff.response,
+  HandoffsCapability: handoffsCapabilitySchema,
+  HandoffsCapabilityV1: handoffsCapabilityV1Schema,
   ConversationSnapshot: routes.conversation.response,
   RequestReceipt: routes.requestStatus.response,
   OwnerApprovalDetail: routes.approvalDetail.response,
@@ -102,6 +113,17 @@ for (const [operationId, route] of Object.entries(routes)) {
   };
   if (route.body)
     operation.requestBody = { required: true, content: content(route.body) };
+  if (route.unknownOutcomeErrors) {
+    operation["x-unknown-outcome-errors"] = route.unknownOutcomeErrors;
+    for (const status of new Set(route.unknownOutcomeErrors.map((failure) => failure.status))) {
+      const codes = route.unknownOutcomeErrors
+        .filter((failure) => failure.status === status).map((failure) => failure.code);
+      operation.responses[status] = {
+        description: `The command outcome is unknown for ${codes.join(", ")}. Reconcile the original identity. Other codes follow the ordinary command error rules.`,
+        content: content(errorSchema),
+      };
+    }
+  }
   if (route.query) {
     const query = z.toJSONSchema(route.query, { io: "input" });
     operation.parameters.push(
@@ -125,6 +147,12 @@ for (const [operationId, route] of Object.entries(routes)) {
   if (operationId === "submit")
     operation.description =
       "One admission attempt. Preserve requestId and exact UTF-8 text for reconciliation. Acceptance does not prove completion or effects.";
+  if (operationId === "createHandoff")
+    operation.description =
+      "One handoff attempt using the saved source conversation, requestId and target member. A successful response proves commit. firstRequestAdmitted reports admission, not execution. Reconcile unknown outcomes against the exact outgoing command before an explicit same-identity retry.";
+  if (operationId === "handoff")
+    operation.description =
+      "Read incoming and outgoing handoffs for the owner's conversation. A 404 or incoming-only response does not settle an earlier unknown outgoing command. Compare the outgoing source conversation, requestId and target member with the saved command.";
   if (operationId === "cancel")
     operation.description =
       "Durable cancellation intent. Delivery, native termination and effects are independent facts. This does not claim rollback.";
@@ -192,8 +220,6 @@ const document = {
     "/v1/webhooks and descendants",
     "/v1/usage and descendants",
     "/v1/members/{memberId}/instructions",
-    "/v1/conversations/{conversationId}/handoff",
-    "/v1/conversations/{conversationId}/handoffs",
     "/v1/conversations/{conversationId}/inputs (legacy admission)",
     "/v1/conversations/{conversationId}/cancel (legacy cancellation)",
   ],

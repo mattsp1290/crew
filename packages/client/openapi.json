@@ -308,6 +308,9 @@
                 "additionalProperties": {}
               }
             ]
+          },
+          "handoffs": {
+            "$ref": "#/components/schemas/HandoffsCapability"
           }
         },
         "required": [
@@ -967,6 +970,418 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
+      },
+      "CreateHandoff": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "memberId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "requestId",
+          "memberId",
+          "conversationId"
+        ],
+        "additionalProperties": false
+      },
+      "CreateHandoffBody": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "memberId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "requestId",
+          "memberId"
+        ],
+        "additionalProperties": false
+      },
+      "HandoffRecord": {
+        "type": "object",
+        "properties": {
+          "handoffId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "memberId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "pi",
+                  "claude",
+                  "codex"
+                ]
+              }
+            },
+            "required": [
+              "conversationId",
+              "memberId",
+              "engine"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "memberId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "pi",
+                  "claude",
+                  "codex"
+                ]
+              }
+            },
+            "required": [
+              "conversationId",
+              "memberId",
+              "engine"
+            ]
+          },
+          "firstRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "firstRequestAdmitted": {
+            "type": "boolean"
+          },
+          "carriedTurns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128
+          },
+          "omittedTurns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 127
+          },
+          "uncertainTurns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128
+          },
+          "transcriptBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "transcriptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+          }
+        },
+        "required": [
+          "handoffId",
+          "requestId",
+          "source",
+          "target",
+          "firstRequestId",
+          "firstRequestAdmitted",
+          "carriedTurns",
+          "omittedTurns",
+          "uncertainTurns",
+          "transcriptBytes",
+          "transcriptDigest",
+          "createdAt"
+        ]
+      },
+      "CreateHandoffResponse": {
+        "type": "object",
+        "properties": {
+          "handoffId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "memberId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "pi",
+                  "claude",
+                  "codex"
+                ]
+              }
+            },
+            "required": [
+              "conversationId",
+              "memberId",
+              "engine"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "memberId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "pi",
+                  "claude",
+                  "codex"
+                ]
+              }
+            },
+            "required": [
+              "conversationId",
+              "memberId",
+              "engine"
+            ]
+          },
+          "firstRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "firstRequestAdmitted": {
+            "type": "boolean"
+          },
+          "carriedTurns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128
+          },
+          "omittedTurns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 127
+          },
+          "uncertainTurns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128
+          },
+          "transcriptBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "transcriptDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+          },
+          "apiVersion": {
+            "type": "string",
+            "const": "1"
+          }
+        },
+        "required": [
+          "handoffId",
+          "requestId",
+          "source",
+          "target",
+          "firstRequestId",
+          "firstRequestAdmitted",
+          "carriedTurns",
+          "omittedTurns",
+          "uncertainTurns",
+          "transcriptBytes",
+          "transcriptDigest",
+          "createdAt",
+          "apiVersion"
+        ]
+      },
+      "ConversationHandoff": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "type": "string",
+            "const": "1"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "incoming": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HandoffRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outgoing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HandoffRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "apiVersion",
+          "conversationId",
+          "incoming",
+          "outgoing"
+        ]
+      },
+      "HandoffsCapability": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/HandoffsCapabilityV1"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "not": {
+                  "const": 1
+                }
+              }
+            },
+            "required": [
+              "version"
+            ],
+            "additionalProperties": {}
+          }
+        ]
+      },
+      "HandoffsCapabilityV1": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "route": {
+            "type": "string",
+            "const": "/v1/conversations/{conversationId}/handoffs"
+          },
+          "readRoute": {
+            "type": "string",
+            "const": "/v1/conversations/{conversationId}/handoff"
+          },
+          "delivery": {
+            "type": "string",
+            "const": "reserved-first-request"
+          },
+          "initiatorKind": {
+            "type": "string",
+            "const": "handoff"
+          },
+          "transcriptBytes": {
+            "type": "number",
+            "const": 65536
+          },
+          "promptBytes": {
+            "type": "number",
+            "const": 16384
+          },
+          "carried": {
+            "type": "string",
+            "const": "newest-whole-committed-turns"
+          },
+          "source": {
+            "type": "string",
+            "const": "sealed-readable"
+          }
+        },
+        "required": [
+          "version",
+          "route",
+          "readRoute",
+          "delivery",
+          "initiatorKind",
+          "transcriptBytes",
+          "promptBytes",
+          "carried",
+          "source"
+        ],
+        "additionalProperties": {}
       },
       "ConversationSnapshot": {
         "type": "object",
@@ -2213,6 +2628,135 @@
         }
       }
     },
+    "/v1/conversations/{conversationId}/handoffs": {
+      "post": {
+        "operationId": "createHandoff",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateHandoffResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "description": "The command outcome is unknown for update_rejected. Reconcile the original identity. Other codes follow the ordinary command error rules.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/CommandUnavailable"
+          },
+          "503": {
+            "$ref": "#/components/responses/CommandUnavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateHandoffBody"
+              }
+            }
+          }
+        },
+        "x-unknown-outcome-errors": [
+          {
+            "status": 409,
+            "code": "update_rejected"
+          }
+        ],
+        "description": "One handoff attempt using the saved source conversation, requestId and target member. A successful response proves commit. firstRequestAdmitted reports admission, not execution. Reconcile unknown outcomes against the exact outgoing command before an explicit same-identity retry."
+      }
+    },
+    "/v1/conversations/{conversationId}/handoff": {
+      "get": {
+        "operationId": "handoff",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationHandoff"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "description": "Read incoming and outgoing handoffs for the owner's conversation. A 404 or incoming-only response does not settle an earlier unknown outgoing command. Compare the outgoing source conversation, requestId and target member with the saved command."
+      }
+    },
     "/v1/conversations/{conversationId}/requests": {
       "post": {
         "operationId": "submit",
@@ -2663,8 +3207,6 @@
     "/v1/webhooks and descendants",
     "/v1/usage and descendants",
     "/v1/members/{memberId}/instructions",
-    "/v1/conversations/{conversationId}/handoff",
-    "/v1/conversations/{conversationId}/handoffs",
     "/v1/conversations/{conversationId}/inputs (legacy admission)",
     "/v1/conversations/{conversationId}/cancel (legacy cancellation)"
   ]
