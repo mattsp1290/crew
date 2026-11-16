@@ -64,9 +64,10 @@ const suites={
       "unanswered recorder cards close without owner answers and ordered failures wait separately for parent follow-up and confirmed native stop",
       "an approved resumed recorder keeps its committed receipt while control retires its native continuation",
       "target disable names the unaffected waiting recorder and global disable later retires it",
-      "a real restarted worker reconciles a pre-target waiting history after missed wake and re-enable"
+      "a real restarted worker reconciles a pre-target waiting history after missed wake and re-enable",
+      "disable retains a SQL-settled delegation until its actual parent workflow observes the completed follow-up"
     ],
-    "count": 6
+    "count": 7
   },
   "restore": {
     "file": "tests/service/recovery.test.ts",
