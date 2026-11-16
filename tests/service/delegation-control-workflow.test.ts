@@ -12,7 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { Context } from "@temporalio/activity";
-import { ApplicationFailure, Client, Connection } from "@temporalio/client";
+import { ApplicationFailure, Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import proto from "@temporalio/proto";
 import { Pool } from "pg";
@@ -1362,6 +1362,106 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     assert.deepEqual(await countSnapshot(), noLaunchBaseline, "Reconciled observation, flush and fresh drain launch no additional runner or provider work");
     await evidence("reconciled-parent-positive", { key, command, cohort, positives, applicable, persistedReport,
       noLaunchBaseline, noLaunchAfter: await countSnapshot(), source: "actual-Temporal-adapter-through-controller-flush" });
+
+    const missingKey = { ...key, workflowRunId: randomUUID() };
+    const missingNamespace = "control-missing-" + randomUUID();
+    const namespaceClient = new Client({ connection, namespace: missingNamespace });
+    const namespaceObserver = new TemporalDelegationWorkflows(namespaceClient);
+    const authorityBeforeMissingRun = await control.status();
+    const missingParentCalls: { key: typeof key; observation: Awaited<ReturnType<typeof observer.observeParentResult>> }[] = [];
+    const missingController = new DelegationControl({ pool, workflows: {
+      signalDecision: candidate => observer.signalDecision(candidate),
+      observe: candidate => observer.observe(candidate),
+      observeParentResult: async candidate => {
+        const observation = await observer.observeParentResult(candidate);
+        if (isDeepStrictEqual(candidate, missingKey)) missingParentCalls.push({ key: candidate, observation });
+        return observation;
+      },
+    } });
+    const replaced = await pool.query(`UPDATE birbcrew_ts.turns SET workflow_run_id=$3
+      WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$4 RETURNING workflow_run_id`,
+    [key.conversationId, key.requestId, missingKey.workflowRunId, key.workflowRunId]);
+    try {
+      assert.equal(replaced.rowCount, 1, "Only this test's completed parent gets a nonexistent stored run");
+      const missingObservation = await observer.observeParentResult(missingKey);
+      let missingHistoryRpc: { failed: boolean; code: number | null; workflowNotFound: boolean } = {
+        failed: false, code: null, workflowNotFound: false,
+      };
+      try {
+        await connection.withDeadline(Date.now() + 5000, () =>
+          temporal.workflow.getHandle(value.workflowId, missingKey.workflowRunId).fetchHistory());
+      }
+      catch (error) {
+        const status = z.object({ code: z.number().int() }).safeParse(error);
+        missingHistoryRpc = { failed: true, code: status.success ? status.data.code : null,
+          workflowNotFound: error instanceof WorkflowNotFoundError };
+      }
+      const namespaceObservation = await namespaceObserver.observeParentResult(key);
+      const discovery = z.strictObject({ count: z.number().int().positive() }).parse((await pool.query(
+        "SELECT count(*)::integer AS count FROM birbcrew_ts.delegations")).rows[0]);
+      const passLimit = Math.ceil(discovery.count / 4) + 1;
+      const flushPasses: { failed: boolean; aggregateError: boolean; parentUnavailable: boolean;
+        result: Awaited<ReturnType<typeof control.flush>> | null }[] = [];
+      for (let pass = 0; pass < passLimit && missingParentCalls.length === 0; pass++) {
+        try {
+          const result = await before(missingController.flush(), now() + 30_000, "real missing-history controller flush");
+          flushPasses.push({ failed: false, aggregateError: false, parentUnavailable: false, result });
+        } catch (error) {
+          flushPasses.push({ failed: true, aggregateError: error instanceof AggregateError, result: null,
+            parentUnavailable: error instanceof AggregateError && error.errors.some((cause: unknown) =>
+              cause instanceof AggregateError && cause.errors.some((failure: unknown) =>
+                failure instanceof Error && failure.message === "Delegation parent observation unavailable")) });
+        }
+      }
+      const flushParentCalls = [...missingParentCalls];
+      const missingReport = await missingController.drain(command.commandId);
+      const missingApplicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+        "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
+      const retainedPositives = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
+        o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
+        o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply
+        FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
+          ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
+        WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+      const missingRunPositives = z.strictObject({ count: z.number().int().nonnegative() }).parse((await pool.query(
+        `SELECT count(*)::integer AS count FROM birbcrew_ts.delegation_parent_observations
+          WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$3`,
+        [key.conversationId, key.requestId, missingKey.workflowRunId])).rows[0]);
+      const authorityAfterMissingRun = await control.status();
+      const noLaunchAfterMissingRun = await countSnapshot();
+      await evidence("missing-parent-history-background-flush", {
+        source: "SQL-seeded-stored-parent-run-and-actual-Temporal-RPC", actualRetentionExpiryClaim: false,
+        actualWorkerHeartbeatClaim: false, originalKey: key, missingKey, missingHistoryRpc, missingObservation,
+        missingNamespace, namespaceObservation, discovery, passLimit, flushPasses, flushParentCalls, missingReport,
+        missingApplicable, positives, retainedPositives, missingRunPositives, authorityBeforeMissingRun,
+        authorityAfterMissingRun, noLaunchBaseline, noLaunchAfterMissingRun,
+      });
+      assert.ok(flushParentCalls.length > 0, "Actual background discovery calls the real adapter for the exact stored missing run");
+      assert.equal(missingHistoryRpc.failed, true, "The nonexistent stored run is checked by an actual Temporal history RPC");
+      assert.equal(missingHistoryRpc.code, 5, "Actual Temporal history lookup returns NOT_FOUND for the nonexistent run");
+      assert.deepEqual(missingObservation, { kind: "missing" }, "A real nonexistent stored parent run is missing history, not an availability failure");
+      assert.ok(flushParentCalls.every(call => call.observation.kind === "missing"));
+      assert.ok(flushPasses.every(pass => !pass.failed), "Missing historical parent history must not fail background control reconciliation");
+      assert.deepEqual(namespaceObservation, { kind: "unavailable" }, "A nonexistent Temporal namespace remains an availability failure");
+      assert.equal(missingApplicable.observed, false, "The original positive cannot authorize a different stored run");
+      assert.deepEqual(retainedPositives, positives, "Missing history preserves the original exact positive without replacing it");
+      assert.equal(missingRunPositives.count, 0, "No positive observation is invented for the nonexistent stored run");
+      assert.equal(missingReport.complete, false, "Missing history conservatively blocks the original command's drain");
+      assert.deepEqual(missingReport.blockers.filter(blocker => blocker.kind === "parent_workflow" && blocker.requestId === key.requestId),
+        [{ kind: "parent_workflow", requestId: key.requestId, observation: { kind: "missing" } }]);
+      assert.deepEqual(authorityAfterMissingRun, authorityBeforeMissingRun, "Missing history preserves control authority");
+      assert.deepEqual(noLaunchAfterMissingRun, noLaunchBaseline, "Missing-history observation, background flush and drain launch no runner or provider work");
+    } finally {
+      const restored = await pool.query(`UPDATE birbcrew_ts.turns SET workflow_run_id=$3
+        WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$4 RETURNING workflow_run_id`,
+      [key.conversationId, key.requestId, key.workflowRunId, missingKey.workflowRunId]);
+      const restoredApplicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+        "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
+      await evidence("missing-parent-history-restoration", { originalKey: key, missingKey,
+        restoredRows: restored.rowCount, restoredApplicable });
+      assert.equal(restored.rowCount, 1, "Restore this test's original stored parent run even when the regression fails");
+      assert.equal(restoredApplicable.observed, true, "The retained original positive applies again after the original run is restored");
+    }
   } finally {
     held.get(holdKey)?.release();
     try { await activities.stop(); } finally { await workflow.stop(); }
