@@ -5,7 +5,7 @@ on:
       source_sha:
         description: Exact immutable feature commit to qualify
         required: true
-        default: ea940312fda637f37c11084e2ca33e6ae9008bb9
+        default: 9d42bbb5d63963d695110b242d78a88aee9ba0b2
         type: string
 permissions:
   contents: read

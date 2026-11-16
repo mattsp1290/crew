@@ -89,13 +89,14 @@ async function delegation(options: { profile?: string; roles?: ("analyst" | "rec
   const profile = options.profile ?? "control-" + randomUUID(), ownerId = randomUUID();
   const member = await members.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
   const conversationId = randomUUID();
-  const conversation = await members.openConversation({ ownerId, memberId: member.memberId, conversationId });
+  const conversation = { ownerId, memberId: member.memberId, conversationId };
+  const opened = await members.openConversation(conversation);
   const request = { ownerId, conversationId, requestId: randomUUID(), text: "bounded store fixture request" };
   const execution = { workflowRunId: randomUUID(), activityId: "parent-initial", attempt: 1 };
   const start = await members.beginTurn(request, execution);
   assert.equal(start.kind, "start");
   const proposals = (options.roles ?? ["analyst"]).map(proposal);
-  const keys = await children.delegate(conversation, request.requestId, start.token, proposals, checkpoint);
+  const keys = await children.delegate(opened, request.requestId, start.token, proposals, checkpoint);
   const fixture = { member, conversation, request, execution, keys, proposals, profile, token: start.token };
   fixtures.push(fixture);
   return fixture;
@@ -108,7 +109,9 @@ async function running(key: ChildKey) {
 }
 async function waiting(key: ChildKey) {
   const started = await running(key);
-  const approval = await approvals.propose({ ...key, token: started.generation, invocationId: key.childId,
+  const { ownerId, memberId, conversationId, requestId } = key;
+  const approval = await approvals.propose({ ownerId, memberId, conversationId, requestId,
+    token: started.generation, invocationId: key.childId,
     nativeCallId: "record-" + randomUUID(), toolName: "record_work_item",
     arguments: { operation_id: key.requestId, note: "private store fixture note" } }, checkpoint,
   { childGeneration: started.generation });
@@ -124,17 +127,24 @@ async function childState(key: ChildKey) {
     "SELECT phase,generation,outcome,launch_revoked FROM birbcrew_ts.pi_children WHERE child_id=$1", [key.childId])).rows[0]);
 }
 afterEach(async () => {
+  const failures: unknown[] = [];
   for (const fixture of fixtures.splice(0)) {
-    for (const key of fixture.keys) await children.closeExitedChild(key, false);
-    await finishParent(fixture);
+    for (const key of fixture.keys) {
+      try { await children.closeExitedChild(key, false); }
+      catch (error) { failures.push(error); }
+    }
+    try { await finishParent(fixture); }
+    catch (error) { failures.push(error); }
   }
+  if (failures.length) throw new AggregateError(failures, "Delegation store fixture cleanup failed");
 });
 async function finishParent(fixture: DelegationCleanup) {
   const execution = { ...fixture.execution, activityId: "parent-followup" };
   const resume = await members.beginResume(fixture.request, null, execution);
   if (resume.kind === "replay") return execution;
   assert.equal(resume.kind, "start");
-  await members.commitTurn({ ...fixture.request, token: resume.token, checkpoint, reply: "Fixture outcomes delivered" });
+  const { ownerId, conversationId, requestId } = fixture.request;
+  await members.commitTurn({ ownerId, conversationId, requestId, token: resume.token, checkpoint, reply: "Fixture outcomes delivered" });
   return execution;
 }
 
