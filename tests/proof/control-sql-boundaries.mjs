@@ -29,6 +29,9 @@ const expectedCases=[
   "historical unreadable target joins a conservative disable cohort without inventing authority",
   "native SHARE lease plus pinned waiting UPDATE permits disable stop publication, then refuses the stale writer",
   "pinned proposal INSERT waits for child before control, so native lease cannot prevent disable",
+  "pinned proposal INSERT and waiting UPDATE commit before a blocked disable and retain the unanswered card",
+  "pinned decision UPDATE commits before a blocked disable and preserves the owner choice",
+  "pinned successful terminal UPDATE commits before a blocked disable and preserves success without retirement",
   "old admission SELECT begun behind a rolling-back writer keeps stale stop visibility; separate post-lease read refuses",
   "generation guard takes a fresh policy snapshot after waiting for disable; reverse order captures the committed generation",
   "actual work-item INSERT independently fences a stale approved read in both commit orders and preserves committed receipts",
@@ -89,7 +92,7 @@ try {
   await must('sql-races',process.execPath,['--test','--test-reporter=tap','--test-concurrency=1','tests/service/delegation-control-races.test.ts'],
     {BIRBCREW_TEST_DATABASE_URL:url.toString(),BIRBCREW_CONTROL_PROOF_DIR:caseOutput});
   const tap=readFileSync(join(output,'sql-races.log'),'utf8');
-  assert.match(tap,/^# pass 14$/m);
+  assert.match(tap,/^# pass 17$/m);
   assert.deepEqual([...tap.matchAll(/^ok [0-9]+ - (.+)$/gm)].map(match=>match[1]),expectedCases);assert.match(tap,/^# fail 0$/m);assert.match(tap,/^# cancelled 0$/m);assert.match(tap,/^# skipped 0$/m);assert.match(tap,/^# todo 0$/m);
   save('tap',{pass:Number(tap.match(/^# pass ([0-9]+)$/m)[1]),fail:0,cancelled:0,skipped:0});
   const state=new Pool({connectionString:url.toString()});

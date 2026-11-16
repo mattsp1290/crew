@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: a1bda490fc7e21692a482dc9d961a4831cca8c79
+          ref: e2fd5ca90f029b8558f97562205c044b1ed52f0c
           path: source
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
         timeout-minutes: 15
         working-directory: source
         env:
-          CONTROL_SQL_SOURCE: a1bda490fc7e21692a482dc9d961a4831cca8c79
+          CONTROL_SQL_SOURCE: e2fd5ca90f029b8558f97562205c044b1ed52f0c
           CONTROL_SQL_CONTROLLER: ${{ github.sha }}
           CONTROL_SQL_DATABASE_URL: postgresql://birbcrew:fixture-only@127.0.0.1:5432/postgres
         run: exec node ../controller/tests/proof/control-sql-boundaries.mjs
