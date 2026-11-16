@@ -460,6 +460,8 @@ test("disabling a running Pi child closes its actual provider socket and known r
 test("unanswered recorder cards close without owner answers and ordered failures wait separately for parent follow-up and confirmed native stop", { timeout: 300_000 }, async () => {
   await enable(); const workflow = await workflowWorker(), activities = await activityWorkers();
   const blocker = await pool.connect();
+  const barrierId = randomUUID().replaceAll("-", "");
+  const barrier = { name: "control_stop_" + barrierId, key: BigInt("0x" + barrierId.slice(0, 15)).toString() };
   try {
     const tasks = [0, 1].map(() => ({ role: "recorder" as const, task: "record " + randomUUID() }));
     const parentPrompt = "delegate " + JSON.stringify(tasks); parentHolds.add(digest(parentPrompt));
@@ -480,34 +482,66 @@ test("unanswered recorder cards close without owner answers and ordered failures
     const parentPending = await control.drain(command.commandId);
     assert.equal(parentPending.complete, false); assert.ok(parentPending.blockers.some(blocker => blocker.kind === "parent_pending"));
     await evidence("parent-follow-up-pending", parentPending);
-    await blocker.query("BEGIN");
-    const locked = await blocker.query<{ token: string }>(`SELECT token FROM birbcrew_ts.native_launches WHERE request_id=$1
-      AND child_id IS NULL AND NOT stopped FOR UPDATE`, [value.request.requestId]);
-    assert.equal(locked.rowCount, 1, "The held provider request owns the parent follow-up launch");
-    const lockedToken = locked.rows[0].token;
+    const parentLaunch = await pool.query(`SELECT token FROM birbcrew_ts.native_launches WHERE request_id=$1
+      AND child_id IS NULL AND NOT stopped`, [value.request.requestId]);
+    assert.equal(parentLaunch.rowCount, 1, "The held provider request owns the parent follow-up launch");
+    const parentToken = z.uuid().parse(parentLaunch.rows[0].token);
+    const blockerPid = z.int().positive().parse((await blocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+    await blocker.query("SELECT pg_advisory_lock($1::bigint)", [barrier.key]);
+    await pool.query(`CREATE FUNCTION birbcrew_ts.${barrier.name}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.token = TG_ARGV[0]::uuid THEN
+          PERFORM pg_advisory_xact_lock(TG_ARGV[1]::bigint);
+        END IF;
+        RETURN NEW;
+      END;
+    $$`);
+    await pool.query(`CREATE TRIGGER ${barrier.name} BEFORE UPDATE OF stopped ON birbcrew_ts.native_launches
+      FOR EACH ROW WHEN (NEW.stopped AND NOT OLD.stopped)
+      EXECUTE FUNCTION birbcrew_ts.${barrier.name}('${parentToken}', '${barrier.key}')`);
     const beforeRelease = await runnerLoads();
+    assert.ok(beforeRelease.some(row => row.loadedBy === "supervisor-runner.ts" && !absent(row.pid)),
+      "The held parent response has a live observed runner before release");
     const parentBarrier = held.get("parent/" + digest(parentPrompt)); assert.ok(parentBarrier);
     parentBarrier.release(); parentHolds.delete(digest(parentPrompt));
+    const wait = await until(async () => {
+      const { rows: [row] } = await pool.query(`SELECT pid,wait_event_type,wait_event,state,query,pg_blocking_pids(pid) AS blocking_pids
+        FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory'
+        AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'UPDATE birbcrew_ts.native_launches SET stopped=true%'`, [blockerPid]);
+      return row;
+    }, "real native stop UPDATE withheld by the owned advisory lock");
+    await evidence("native-stop-update-blocked", { sql: wait, blockerPid, barrier, token: parentToken });
     const reply = await committed(value);
     const outcomes = z.array(childOutcomeSchema).parse(JSON.parse(reply.slice(10)));
     assert.deepEqual(outcomes.map(outcome => [outcome.nativeCallId, outcome.kind]), rows.map(row => [row.nativeCallId, "failed"]));
-    const wait = await until(async () => {
-      const { rows: [row] } = await pool.query(`SELECT pid,wait_event_type,wait_event,state,query FROM pg_stat_activity
-        WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE birbcrew_ts.native_launches SET stopped=true%'`);
-      return row;
-    }, "real native stop UPDATE withheld by the owned row lock");
     const remaining = await until(async () => {
       const rows = beforeRelease.filter(row => row.loadedBy === "supervisor-runner.ts").map(row => ({ pid: row.pid, absent: absent(row.pid) }));
       return rows.every(row => row.absent) ? rows : undefined;
     }, "known runner PIDs absent before withheld stopped update");
     const nativePending = await control.drain(command.commandId);
     assert.equal(nativePending.complete, false);
-    assert.ok(nativePending.blockers.some(blocker => blocker.kind === "native_unconfirmed" && blocker.tokens.includes(lockedToken)));
+    assert.ok(nativePending.blockers.some(blocker => blocker.kind === "native_unconfirmed" && blocker.tokens.includes(parentToken)));
     assert.ok(!nativePending.blockers.some(blocker => blocker.kind === "parent_pending"));
-    await evidence("native-stopped-row-withheld", { sql: wait, knownRunnerPids: remaining, token: lockedToken, report: nativePending });
-    await blocker.query("ROLLBACK");
+    await evidence("native-stopped-row-withheld", { sql: wait, blockerPid, barrier, knownRunnerPids: remaining, token: parentToken, report: nativePending });
+    assert.equal((await blocker.query("SELECT pg_advisory_unlock($1::bigint) AS unlocked", [barrier.key])).rows[0].unlocked, true);
     await flushUntilComplete(command); await recordCase("unanswered-recorders", value, command); await replay(value);
-  } finally { await blocker.query("ROLLBACK"); blocker.release(); await activities.stop(); await workflow.stop(); }
+  } catch (error) {
+    try {
+      const sql = (await pool.query(`SELECT pid,application_name,wait_event_type,wait_event,state,query,
+        pg_blocking_pids(pid) AS blocking_pids FROM pg_stat_activity
+        WHERE datname=current_database() AND pid<>pg_backend_pid() ORDER BY pid LIMIT 30`)).rows;
+      await evidence("native-stop-barrier-failure", { barrier, sql, error: error instanceof Error ? error.message : String(error) });
+    } catch (diagnosticError) { throw new AggregateError([error, diagnosticError], "Native stop barrier and diagnostics failed"); }
+    throw error;
+  } finally {
+    blocker.release(true);
+    try {
+      try { await pool.query(`DROP TRIGGER IF EXISTS ${barrier.name} ON birbcrew_ts.native_launches`); }
+      finally { await pool.query(`DROP FUNCTION IF EXISTS birbcrew_ts.${barrier.name}()`); }
+    } finally {
+      try { await activities.stop(); } finally { await workflow.stop(); }
+    }
+  }
 });
 
 test("an approved resumed recorder keeps its committed receipt while control retires its native continuation", { timeout: 240_000 }, async () => {
