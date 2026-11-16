@@ -425,6 +425,8 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
       "work_item.committed": { conversationId, requestId, payload: { receiptId: randomUUID(), approvalId: randomUUID() } },
       "request.cancellation_requested": { conversationId, requestId, payload: {} },
       "request.finished": { conversationId, requestId, payload: { status: "completed" } },
+      "delegation.started": { conversationId, requestId, payload: { childId: randomUUID(), role: "analyst", engine: "pi", profile } },
+      "delegation.finished": { conversationId, requestId, payload: { childId: randomUUID(), outcome: "failed", code: "budget_exhausted" } },
       "trusted_effect.completed": { conversationId, requestId, payload: { operationId: randomUUID(), toolName: "fixture_effect" } },
       "routine.created": { payload: { routineId, revision: 1, schedule: "*/15 * * * *", approvalPolicy: "wait", promptDigest: digest } },
       "routine.enabled": { payload: { routineId, revision: 3 } },
@@ -1425,4 +1427,32 @@ test("migration 30 indexes a version-29 trail without queueing for an open audit
   const migrations = (await readdir(sql)).map(file => Number(file.split("-")[0])).sort((a, b) => a - b);
   assert.deepEqual((await upgraded.query("SELECT version FROM birbcrew_ts.schema_versions WHERE version>=29 ORDER BY 1")).rows
     .map(row => row.version), migrations.filter(version => version >= 29));
+});
+
+test("migration 36 preserves old child history without inventing admission facts", async t => {
+  const upgraded = await databaseAt(t, 35), current = new MemberStore(upgraded), children = new ChildStore(upgraded);
+  const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID();
+  const { memberId } = await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  await current.openConversation({ ownerId, memberId, conversationId });
+  const request = { ownerId, conversationId, requestId, text: "legacy delegation" };
+  const turn = await current.beginTurn(request, { workflowRunId: randomUUID(), activityId: "parent", attempt: 1 });
+  assert.equal(turn.kind, "start");
+  if (turn.kind !== "start") throw new Error("Expected started parent");
+  const checkpoint = { version: 1, engine: "pi", state: {} };
+  const proposals = [0, 1].map(n => ({ nativeCallId: "legacy_" + n, task: "private legacy task", profile: {
+    role: "analyst" as const, version: 1 as const, instructions: "Answer the task", model: "fixture", tools: [],
+  } }));
+  const [complete, running] = await children.delegate(turn.conversation, requestId, turn.token, proposals, checkpoint);
+  const generation = randomUUID(), completed = { kind: "completed", nativeCallId: proposals[0].nativeCallId, text: "legacy reply" };
+  await upgraded.query(`UPDATE birbcrew_ts.pi_children SET phase='complete',outcome=$2 WHERE child_id=$1`, [complete.childId, JSON.stringify(completed)]);
+  await upgraded.query(`UPDATE birbcrew_ts.pi_children SET phase='running',generation=$2 WHERE child_id=$1`, [running.childId, generation]);
+  const before = (await upgraded.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [ownerId])).rows;
+  await current.migrate();
+  assert.deepEqual((await upgraded.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [ownerId])).rows, before);
+  assert.deepEqual(await children.begin(complete, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 }), { kind: "settled", outcome: completed });
+  await children.finish(running, generation, null, true);
+  assert.deepEqual((await upgraded.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type LIKE 'delegation.%' ORDER BY event_id",
+    [ownerId])).rows, [{ event_type: "delegation.finished", payload: { childId: running.childId, outcome: "failed", code: "child_failed" } }]);
+  await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  assert.equal((await upgraded.query("SELECT 1 FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type='member.spawned'", [ownerId])).rowCount, 2);
 });

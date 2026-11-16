@@ -46,7 +46,7 @@
     "test:handoffs": "node --test tests/service/handoffs.test.ts",
     "test:usage": "node --test tests/service/usage.test.ts tests/service/usage-cost.test.ts",
     "test:usage:capture": "node --test tests/service/usage-capture.test.ts",
-    "test:child-targets": "node --test tests/service/child-targets.test.ts tests/service/child-target-workflow.test.ts",
+    "test:child-targets": "node --test tests/service/child-targets.test.ts tests/service/child-budget.test.ts tests/service/child-target-workflow.test.ts",
     "test:webhooks": "node --test tests/service/webhook-target.test.ts tests/service/webhooks.test.ts",
     "test:api:service": "node tests/proof/integration-api.mts",
     "test:recovery:coordinated": "node tests/proof/coordinated-recovery.mts",
