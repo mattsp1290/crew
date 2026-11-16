@@ -27,9 +27,23 @@ const suites={
       "restore-style activation reuses the canonical mutation atomically, and rollback leaves no control receipt or stop intent",
       "retirement stops every reserved child generation, preserves parent reservation, and refuses non-READ-COMMITTED commands",
       "an enable command from an old recovery instance cannot return a current enable receipt after restored disable",
-      "fresh native admission refuses unsupported transaction isolation instead of trusting a retained snapshot"
+      "fresh native admission refuses unsupported transaction isolation instead of trusting a retained snapshot",
+      "SQL-complete parents require positive fixtures; later evidence and enable never rewrite an existing cohort",
+      "the private positive writer refuses every mismatched authority and exact-result identity without creating evidence",
+      "one applicability predicate rejects changed and null current work and recovery identities",
+      "positive fixtures do not waive unfinished children, scope, or native reservations committed after observation",
+      "disable sees only committed positive facts in either writer commit order and keeps the selected cohort",
+      "duplicate positive writers serialize idempotently and rollback leaves no observation",
+      "a positive writer waiting for the parent lock rechecks the committed run, resume, reply and phase",
+      "parent observation locks conversation before recovery so restored activation can transfer authority without deadlock",
+      "freeze before observation refuses after its lock wait and same-instance thaw accepts unchanged exact history",
+      "a positive observation commits before a waiting freeze and remains applicable after same-instance thaw",
+      "the observation boundary rejects retained snapshots and malformed positive inputs",
+      "positive reply comparison is byte-exact for canonically equivalent Unicode text",
+      "disable waiting for control reads a newly committed positive observation after the lock",
+      "observation waiting for recovery rechecks installation and instance after the lock"
     ],
-    "count": 18
+    "count": 32
   },
   "store": {
     "file": "tests/service/delegation-control.test.ts",
