@@ -361,7 +361,8 @@ async function childRows(requestId: string) {
 async function delegation(tasks: z.infer<typeof taskSchema>[], profile = parentProfile) {
   const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
   const conversationId = randomUUID(), requestId = randomUUID();
-  const conversation = await members.open({ ownerId, memberId, conversationId });
+  const conversation = { ownerId, memberId, conversationId };
+  await members.open(conversation);
   const request = { ownerId, conversationId, requestId, text: "delegate " + JSON.stringify(tasks) };
   const workflowId = `birbcrew-ts/member/${memberId}/conversation/${conversationId}`;
   workflowIds.add(workflowId);
