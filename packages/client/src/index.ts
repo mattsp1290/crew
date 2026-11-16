@@ -3,6 +3,7 @@ import { connection, type ConnectionOptions } from "./config.js";
 import {
   approvalDetailIdentitySchema,
   conversationIdentitySchema,
+  createHandoffSchema,
   createMemberSchema,
   decideSchema,
   errorSchema,
@@ -16,6 +17,9 @@ import {
   type ApprovalDetailIdentity,
   type OwnerApprovalDetail,
   type CreateMember,
+  type CreateHandoff,
+  type CreateHandoffResponse,
+  type ConversationHandoff,
   type Decide,
   type ListGrants,
   type RevokeGrant,
@@ -29,6 +33,12 @@ export type {
   OwnerApprovalDetail,
   Engine,
   CreateMember,
+  CreateHandoff,
+  HandoffRecord,
+  CreateHandoffResponse,
+  ConversationHandoff,
+  HandoffsCapability,
+  HandoffsCapabilityV1,
   OpenConversation,
   SubmitRequest,
   RequestIdentity,
@@ -58,7 +68,11 @@ export interface CrewClientOptions extends ConnectionOptions {
 export interface CallOptions {
   readonly signal?: AbortSignal;
 }
+export type HandoffCommandIdentity = Readonly<
+  { kind: "handoff" } & z.output<typeof createHandoffSchema>
+>;
 export type CommandIdentity =
+  | HandoffCommandIdentity
   | { readonly kind: "member"; readonly requestId: string }
   | { readonly kind: "conversation"; readonly conversationId: string }
   | {
@@ -150,6 +164,7 @@ export class CrewClient {
       path: string;
       response: z.ZodType<T>;
       statuses: readonly number[];
+      unknownOutcomeErrors?: readonly { readonly status: number; readonly code: string }[];
     },
     input: {
       params?: Record<string, string>;
@@ -219,6 +234,8 @@ export class CrewClient {
         input.command &&
         (code === "retry_same_request" ||
           response.status >= 500 ||
+          route.unknownOutcomeErrors?.some((failure) =>
+            failure.status === response.status && failure.code === code) ||
           !parsed.success)
       ) {
         throw new CrewUnknownOutcomeError(input.command, failure);
@@ -324,6 +341,28 @@ export class CrewClient {
         expect: (value) => value.state.conversationId === params.conversationId,
       }),
     );
+  }
+  async createHandoff(input: CreateHandoff, options: CallOptions = {}): Promise<CreateHandoffResponse> {
+    const { conversationId, ...body } = createHandoffSchema.parse(input);
+    return this.#call(routes.createHandoff, {
+      ...options,
+      params: { conversationId },
+      body,
+      command: { kind: "handoff", conversationId, ...body },
+      expect: (record) => record.source.conversationId === conversationId
+        && record.requestId === body.requestId && record.target.memberId === body.memberId,
+    });
+  }
+  async handoff(
+    input: z.input<typeof conversationIdentitySchema>,
+    options: CallOptions = {},
+  ): Promise<ConversationHandoff> {
+    const params = conversationIdentitySchema.parse(input);
+    return this.#call(routes.handoff, {
+      ...options,
+      params,
+      expect: (chain) => chain.conversationId === params.conversationId,
+    });
   }
   async #receipt(
     route:

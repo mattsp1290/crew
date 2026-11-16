@@ -79,6 +79,54 @@ export const openConversationSchema = conversationIdentitySchema.extend({
 export const requestIdentitySchema = conversationIdentitySchema.extend({
   requestId: uuid,
 });
+export const createHandoffBodySchema = z.strictObject({
+  requestId: uuid,
+  memberId: uuid,
+});
+export const createHandoffSchema = createHandoffBodySchema.extend({
+  conversationId: uuid,
+});
+const handoffEndpointSchema = z.object({
+  conversationId: uuid,
+  memberId: uuid,
+  engine: engineSchema,
+});
+export const handoffRecordSchema = z.object({
+  handoffId: uuid,
+  requestId: uuid,
+  source: handoffEndpointSchema,
+  target: handoffEndpointSchema,
+  firstRequestId: uuid,
+  firstRequestAdmitted: z.boolean(),
+  carriedTurns: z.int().min(1).max(128),
+  omittedTurns: z.int().min(0).max(127),
+  uncertainTurns: z.int().min(0).max(128),
+  transcriptBytes: z.int().min(1).max(65_536),
+  transcriptDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  createdAt: z.iso.datetime(),
+}).refine((record) => record.source.conversationId !== record.target.conversationId, {
+  message: "Handoff source and target conversations must differ",
+}).refine((record) => record.carriedTurns + record.omittedTurns + record.uncertainTurns <= 128, {
+  message: "Handoff turn counts must total at most 128",
+}).meta({
+  description: "Source and target conversations must differ. The sum of carriedTurns, omittedTurns and uncertainTurns must be at most 128.",
+});
+export const createHandoffResponseSchema = handoffRecordSchema.safeExtend({
+  apiVersion: z.literal("1"),
+});
+export const conversationHandoffSchema = z.object({
+  apiVersion: z.literal("1"),
+  conversationId: uuid,
+  incoming: handoffRecordSchema.nullable(),
+  outgoing: handoffRecordSchema.nullable(),
+}).refine((chain) => chain.incoming !== null || chain.outgoing !== null, {
+  message: "A handoff read must contain an incoming or outgoing record",
+}).refine((chain) => (chain.incoming === null || chain.incoming.target.conversationId === chain.conversationId)
+  && (chain.outgoing === null || chain.outgoing.source.conversationId === chain.conversationId), {
+  message: "Handoff directions must match the envelope conversation",
+}).meta({
+  description: "At least one of incoming and outgoing is non-null. Incoming targets and outgoing sources must match conversationId.",
+});
 export const submitRequestSchema = requestIdentitySchema.extend({
   text: boundedText(promptBytes),
   approvalDeadlineSeconds: approvalDeadlineSeconds.optional(),
@@ -149,6 +197,24 @@ export const standingGrantsCapabilityV1Schema = z.looseObject({
 /** Unknown versions remain opaque metadata, never a supported v1 contract. */
 export const standingGrantsCapabilitySchema = z.union([
   standingGrantsCapabilityV1Schema,
+  z.looseObject({
+    version: z.int().positive().refine((version) => version !== 1)
+      .meta({ not: { const: 1 } }),
+  }),
+]);
+export const handoffsCapabilityV1Schema = z.looseObject({
+  version: z.literal(1),
+  route: z.literal("/v1/conversations/{conversationId}/handoffs"),
+  readRoute: z.literal("/v1/conversations/{conversationId}/handoff"),
+  delivery: z.literal("reserved-first-request"),
+  initiatorKind: z.literal("handoff"),
+  transcriptBytes: z.literal(65_536),
+  promptBytes: z.literal(promptBytes),
+  carried: z.literal("newest-whole-committed-turns"),
+  source: z.literal("sealed-readable"),
+});
+export const handoffsCapabilitySchema = z.union([
+  handoffsCapabilityV1Schema,
   z.looseObject({
     version: z.int().positive().refine((version) => version !== 1)
       .meta({ not: { const: 1 } }),
@@ -334,6 +400,7 @@ export const capabilitiesSchema = z.looseObject({
   initiatorKinds: z.array(z.string().min(1)),
   approvalDetails: approvalDetailsCapabilitySchema.optional(),
   standingGrants: standingGrantsCapabilitySchema.optional(),
+  handoffs: handoffsCapabilitySchema.optional(),
 });
 const dependencyStatus = z.enum(["ready", "unavailable"]);
 export const healthSchema = z.object({
@@ -356,6 +423,12 @@ export const errorSchema = z.object({
 });
 export type Engine = z.infer<typeof engineSchema>;
 export type CreateMember = z.input<typeof createMemberSchema>;
+export type CreateHandoff = z.input<typeof createHandoffSchema>;
+export type HandoffRecord = z.output<typeof handoffRecordSchema>;
+export type CreateHandoffResponse = z.output<typeof createHandoffResponseSchema>;
+export type ConversationHandoff = z.output<typeof conversationHandoffSchema>;
+export type HandoffsCapability = z.output<typeof handoffsCapabilitySchema>;
+export type HandoffsCapabilityV1 = z.output<typeof handoffsCapabilityV1Schema>;
 export type OpenConversation = z.input<typeof openConversationSchema>;
 export type SubmitRequest = z.input<typeof submitRequestSchema>;
 export type RequestIdentity = z.infer<typeof requestIdentitySchema>;
@@ -444,6 +517,22 @@ export const routes = {
     method: "GET",
     path: "/v1/conversations/{conversationId}",
     response: snapshotWireSchema,
+    statuses: [200],
+    command: false,
+  },
+  createHandoff: {
+    method: "POST",
+    path: handoffsCapabilityV1Schema.shape.route.value,
+    body: createHandoffBodySchema,
+    response: createHandoffResponseSchema,
+    statuses: [201],
+    command: true,
+    unknownOutcomeErrors: [{ status: 409, code: "update_rejected" }],
+  },
+  handoff: {
+    method: "GET",
+    path: handoffsCapabilityV1Schema.shape.readRoute.value,
+    response: conversationHandoffSchema,
     statuses: [200],
     command: false,
   },

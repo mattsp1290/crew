@@ -32,7 +32,7 @@ Receipt status, cancellation delivery, native termination and effects are indepe
 
 Member creation accepts optional instructions and ordered instruction-pack UUIDs, matching the server's eight-pack limit and duplicate rejection. Member creation and listing retain the attached pack IDs.
 
-Methods cover capabilities, health, member listing and creation, conversation opening and snapshot projection, submission, request status, cancellation, approval decisions, standing-grant listing and revocation. `decide` requires the member, request, invocation and approval identities supplied by the observation state. The domain snapshot exposes cursor, conversationId, memberId, engine, profile and phase. Official AG-UI observation owns message and tool interpretation.
+Methods cover capabilities, health, member listing and creation, conversation opening and snapshot projection, handoff creation and reading, submission, request status, cancellation, approval decisions, standing-grant listing and revocation. `decide` requires the member, request, invocation and approval identities supplied by the observation state. The domain snapshot exposes cursor, conversationId, memberId, engine, profile and phase. Official AG-UI observation owns message and tool interpretation.
 
 The same observer instance can reconnect to receive a fresh snapshot. Each run sends empty observation input.
 
@@ -45,7 +45,7 @@ await observer.runAgent();
 // observer.abortRun() only disconnects observation.
 ```
 
-`@birbcrew/client/openapi.json` is exported as OpenAPI 3.1 for the core integration endpoints, including bearer authentication, errors and SSE. It is not the complete Crew API. Its `x-excluded-routes` enumerates audit, routine, memory, instruction-pack, webhook, usage, instructions, handoff, conversation listing and legacy submission/cancellation routes outside this release. JSON snapshot message and tool fields are opaque JSON; use official AG-UI to interpret them. Runtime UTF-8 byte and control-character restrictions appear in schema extension annotations.
+`@birbcrew/client/openapi.json` is exported as OpenAPI 3.1 for the core integration endpoints, including bearer authentication, errors and SSE. It is not the complete Crew API. Its `x-excluded-routes` enumerates audit, routine, memory, instruction-pack, webhook, usage, instructions, conversation listing and legacy submission/cancellation routes outside this release. JSON snapshot message and tool fields are opaque JSON; use official AG-UI to interpret them. Runtime UTF-8 byte and control-character restrictions appear in schema extension annotations.
 
 The client requires Node 22 or newer, or a browser with fetch, Web Streams, TextEncoder, and String.prototype.isWellFormed.
 
@@ -66,3 +66,79 @@ Details remain readable after settlement. Reading them does not assert that a pr
 Both methods accept the existing optional abort signal. An unknown revoke outcome preserves `{ kind: "grant_revocation", memberId, grantId }` in `CrewUnknownOutcomeError.command`. A later list can show current permission state, but it cannot acknowledge the earlier command. The client never retries automatically.
 
 `capabilities().standingGrants` is optional. The `/contract` export `standingGrantsCapabilityV1Schema.safeParse(metadata)` identifies supported version 1 metadata, including choices, tools, policy version, initiator kinds, list history limit and revocation behavior. Absent metadata or an unknown version leaves standing grants unavailable to callers. Unknown-version metadata remains opaque and does not prevent ordinary chat. Callers still check that the desired tool, choice and initiator are advertised. This client increment adds no automatic standing choice or permission UI.
+
+`createHandoff({ conversationId, requestId, memberId }, options?)` creates a fresh successor for the owner's source conversation and target member. The target may be the source's member. The application supplies and saves all three IDs before dispatch, bound to the original service, authenticated owner and chat segment. The client allocates no IDs, selects no member and replays no interrupted owner prompt. These examples use application-owned `intents` storage and UI functions.
+
+```ts
+import { CrewUnknownOutcomeError, type CreateHandoff } from "@birbcrew/client";
+
+const intent: CreateHandoff = { conversationId, requestId, memberId };
+await intents.save(intent);
+try {
+	const created = await crew.createHandoff(intent, { signal });
+	await intents.recordCommitted(created);
+	showSuccessor(created.target.conversationId);
+} catch (error) {
+	if (!(error instanceof CrewUnknownOutcomeError) || error.command.kind !== "handoff") throw error;
+	await intents.recordUnknown(error.command);
+	showNeedsReconciliation();
+}
+```
+
+The result retains `apiVersion: "1"` and the committed handoff record. `firstRequestAdmitted` reports whether an admission record exists for the reserved target request. An admission may be rejected. An admitted request may fail or become uncertain. Read its receipt to learn execution status. Repeating the exact POST can drive delivery while that request remains unadmitted. After admission, repeating the POST sends no new target request.
+
+The handoff POST classifies exactly `409 update_rejected` as `CrewUnknownOutcomeError`, in addition to the ordinary command uncertainty cases. Its cause remains `CrewHttpError` with that status and code. Ordinary refusals such as `409 busy`, `409 conflict` and `409 handed_off` remain `CrewHttpError`. The frozen handoff error identity contains `{ kind: "handoff", conversationId, requestId, memberId }`, with lowercase UUIDs.
+
+On a separate reconciliation action, compare the outgoing record with every saved caller-known identity. A different outgoing command identifies another successor, not acknowledgement of this command. An incoming-only read or GET 404 leaves the earlier unknown POST unresolved. The POST may still commit after that read.
+
+```ts
+import { CrewHttpError, type HandoffCommandIdentity } from "@birbcrew/client";
+
+const command: HandoffCommandIdentity = await intents.loadUnknown();
+try {
+	const chain = await crew.handoff({ conversationId: command.conversationId });
+	const outgoing = chain.outgoing;
+	if (outgoing !== null
+		&& outgoing.source.conversationId === command.conversationId
+		&& outgoing.requestId === command.requestId
+		&& outgoing.target.memberId === command.memberId) {
+		await intents.recordReconciled(outgoing);
+	} else if (outgoing !== null) {
+		showOtherSuccessor(outgoing);
+	} else {
+		showStillUnknown();
+	}
+} catch (error) {
+	if (!(error instanceof CrewHttpError) || error.status !== 404) throw error;
+	showStillUnknown();
+}
+
+async function retrySavedHandoff(saved: HandoffCommandIdentity) {
+	return crew.createHandoff({
+		conversationId: saved.conversationId,
+		requestId: saved.requestId,
+		memberId: saved.memberId,
+	});
+}
+```
+
+Handoff inputs are strict. Reconstruct the three fields for an explicit retry because the error identity's `kind` is not an accepted input field. Preserve the same identity throughout reconciliation and retry. The client makes one HTTP attempt for each invocation and performs no capability preflight or automatic retry.
+
+`handoff({ conversationId }, options?)` returns `{ apiVersion: "1", conversationId, incoming, outgoing }`. At least one record is present on a successful read. Nested records omit `apiVersion`. The client checks the requested envelope identity, incoming target and outgoing source, as well as each record's bounds and distinct source and target conversations. Neither method returns transcript text.
+
+```ts
+const chain = await crew.handoff({ conversationId }, { signal });
+renderBoundaries(chain.incoming, chain.outgoing);
+const edge = chain.outgoing ?? chain.incoming;
+if (edge !== null && edge.firstRequestAdmitted) {
+	const receipt = await crew.requestStatus({
+		conversationId: edge.target.conversationId,
+		requestId: edge.firstRequestId,
+	});
+	renderReservedRequest(receipt);
+}
+```
+
+The handoff command's `requestId` and the reserved target's `firstRequestId` identify separate roles. The server chooses the reserved ID. `CreateHandoff`, `HandoffRecord`, `CreateHandoffResponse`, `ConversationHandoff`, `HandoffsCapability` and `HandoffsCapabilityV1` are schema-derived exports at the root and `/contract` entry points. `HandoffCommandIdentity` is exported at the root. The `/contract` entry point also exports the shared schemas.
+
+`capabilities().handoffs` is optional. Use `/contract`'s `handoffsCapabilityV1Schema.safeParse(metadata)` to recognize supported version 1 routes, delivery and transcript limits. Absent metadata or an unknown positive version leaves handoffs unsupported for feature discovery. Unknown versions remain opaque metadata. Malformed advertised version 1 metadata fails validation. Capability discovery is an explicit application call.
