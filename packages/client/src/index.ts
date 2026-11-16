@@ -7,6 +7,8 @@ import {
   decideSchema,
   errorSchema,
   listMembersSchema,
+  listGrantsSchema,
+  revokeGrantSchema,
   openConversationSchema,
   requestIdentitySchema,
   routes,
@@ -15,6 +17,8 @@ import {
   type OwnerApprovalDetail,
   type CreateMember,
   type Decide,
+  type ListGrants,
+  type RevokeGrant,
   type OpenConversation,
   type RequestIdentity,
   type SubmitRequest,
@@ -40,6 +44,13 @@ export type {
   ConversationSnapshot,
   Capabilities,
   Health,
+  StandingGrantsCapability,
+  StandingGrantsCapabilityV1,
+  PublicGrant,
+  GrantList,
+  ListGrants,
+  RevokeGrant,
+  RevokeGrantResponse,
 } from "./contract.js";
 export interface CrewClientOptions extends ConnectionOptions {
   readonly fetch?: typeof globalThis.fetch;
@@ -54,6 +65,11 @@ export type CommandIdentity =
       readonly kind: "request";
       readonly conversationId: string;
       readonly requestId: string;
+    }
+  | {
+      readonly kind: "grant_revocation";
+      readonly memberId: string;
+      readonly grantId: string;
     }
   | {
       readonly kind: "decision";
@@ -253,6 +269,22 @@ export class CrewClient {
     return this.#call(routes.listMembers, {
       ...options,
       query: query.toString(),
+    });
+  }
+  async listGrants(input: ListGrants, options: CallOptions = {}) {
+    const params = listGrantsSchema.parse(input);
+    return this.#call(routes.listGrants, {
+      ...options, params,
+      expect: (list) => list.memberId === params.memberId,
+    });
+  }
+  async revokeGrant(input: RevokeGrant, options: CallOptions = {}) {
+    const params = revokeGrantSchema.parse(input);
+    return this.#call(routes.revokeGrant, {
+      ...options, params, body: {},
+      command: { kind: "grant_revocation", ...params },
+      expect: ({ grant }) => grant.memberId === params.memberId
+        && grant.grantId === params.grantId,
     });
   }
   async createMember(input: CreateMember, options: CallOptions = {}) {

@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import test from "node:test";
 import { CrewClient, CrewHttpError, CrewProtocolError, CrewTransportError, CrewUnknownOutcomeError } from "@birbcrew/client";
-import { recordWorkItemArgumentsSchema, capabilitiesSchema, requestInitiator, serverRequestReceiptSchema, requestReceiptResponseSchema } from "@birbcrew/client/contract";
+import { standingGrantsCapabilityV1Schema, grantListResponseSchema, recordWorkItemArgumentsSchema, capabilitiesSchema, requestInitiator, serverRequestReceiptSchema, requestReceiptResponseSchema } from "@birbcrew/client/contract";
 
 const conversationId = randomUUID(), requestId = randomUUID(), memberId = randomUUID();
 const key = { conversationId, requestId };
@@ -255,4 +255,96 @@ test("approval detail capability is optional and represents unsupported future v
     const approvalDetails = { version, tools: ["record_work_item", "future_tool"] };
     assert.deepEqual(capabilitiesSchema.parse({ ...base, approvalDetails }).approvalDetails, approvalDetails);
   }
+});
+
+const grant = {
+  grantId: randomUUID(), memberId, conversationId, scope: "conversation", choice: "allow_conversation",
+  toolName: "record_work_item", policyVersion: 1, approvalId: randomUUID(),
+  createdAt: "2026-11-16T12:00:00.123456Z", status: "active",
+};
+const revokedGrant = { ...grant, status: "revoked", revokedAt: "2026-11-16T12:01:00.123456Z", revocationReason: "owner" };
+
+test("grant methods use exact authenticated routes, empty revoke body and all active rows", async () => {
+  const active = Array.from({ length: 25 }, () => ({ ...grant, grantId: randomUUID() }));
+  const inactive = [
+    { ...revokedGrant, grantId: randomUUID() },
+    { ...revokedGrant, grantId: randomUUID(), scope: "member", conversationId: null, choice: "allow_always", revocationReason: "recovery_restore" },
+    { ...grant, grantId: randomUUID(), status: "conversation_closed" },
+  ];
+  const list = { apiVersion: "1", memberId, active, inactive };
+  const s = await serve((request, response) => json(response, request.method === "POST"
+    ? { apiVersion: "1", grant: revokedGrant } : list));
+  try {
+    assert.deepEqual(await s.client.listGrants({ memberId: memberId.toUpperCase() }), list);
+    assert.deepEqual(await s.client.revokeGrant({ memberId, grantId: grant.grantId }), { apiVersion: "1", grant: revokedGrant });
+    assert.deepEqual(s.seen, [
+      { path: `/v1/members/${memberId}/grants`, method: "GET", auth: "Bearer secret-token", body: "" },
+      { path: `/v1/members/${memberId}/grants/${grant.grantId}/revoke`, method: "POST", auth: "Bearer secret-token", body: "{}" },
+    ]);
+    await assert.rejects(s.client.listGrants({ memberId: "../other" }));
+    await assert.rejects(s.client.revokeGrant({ memberId, grantId: "invalid" }));
+    await assert.rejects(s.client.revokeGrant({ memberId, grantId: grant.grantId }, { signal: AbortSignal.abort("stop") }), error => error === "stop");
+    assert.equal(s.seen.length, 2);
+  } finally { await s.close(); }
+});
+
+test("grant list rejects identity, scope, state and history inconsistencies without hiding errors", async () => {
+  const list = { apiVersion: "1", memberId, active: [grant], inactive: [] };
+  let reply: unknown = list;
+  const s = await serve((_, response) => json(response, reply));
+  try {
+    for (reply of [
+      { ...list, memberId: randomUUID(), active: [] },
+      { ...list, active: [{ ...grant, memberId: randomUUID() }] },
+      { ...list, active: [grant, grant] },
+      { ...list, inactive: [revokedGrant] },
+      { ...list, active: [{ ...grant, scope: "member" }] },
+      { ...list, active: [{ ...grant, choice: "allow_always" }] },
+      { ...list, active: [{ ...grant, conversationId: null }] },
+      { ...list, active: [{ ...grant, revokedAt: revokedGrant.revokedAt }] },
+      { ...list, active: [revokedGrant] },
+      { ...list, active: [], inactive: [grant] },
+      { ...list, active: [], inactive: [{ ...grant, status: "conversation_closed", scope: "member", conversationId: null, choice: "allow_always" }] },
+      { ...list, active: [], inactive: Array.from({ length: 21 }, () => ({ ...revokedGrant, grantId: randomUUID() })) },
+      { ...list, active: [{ ...grant, policyVersion: 2 }] },
+    ]) await assert.rejects(s.client.listGrants({ memberId }), CrewProtocolError);
+    assert.equal(grantListResponseSchema.safeParse({ ...list, inactive: [{ ...revokedGrant, grantId: randomUUID(), revocationReason: undefined }] }).success, false);
+  } finally { await s.close(); }
+  const unavailable = await serve(request => request.socket.destroy());
+  try { await assert.rejects(unavailable.client.listGrants({ memberId }), CrewTransportError); }
+  finally { await unavailable.close(); }
+});
+
+test("unknown revoke acknowledgement retains original normalized identity without inferring acknowledgement from a list", async () => {
+  let reply: unknown = { apiVersion: "1", grant: revokedGrant };
+  const s = await serve((request, response) => request.method === "GET"
+    ? json(response, { apiVersion: "1", memberId, active: [], inactive: [revokedGrant] })
+    : reply === null ? request.socket.destroy() : json(response, reply));
+  try {
+    for (reply of [null, { apiVersion: "1", grant: { ...revokedGrant, grantId: randomUUID() } },
+      { apiVersion: "1", grant: { ...revokedGrant, memberId: randomUUID() } }, { apiVersion: "1", grant }]) {
+      await assert.rejects(s.client.revokeGrant({ memberId: memberId.toUpperCase(), grantId: grant.grantId.toUpperCase() }), error => {
+        assert.ok(error instanceof CrewUnknownOutcomeError);
+        assert.deepEqual(error.command, { kind: "grant_revocation", memberId, grantId: grant.grantId });
+        return true;
+      });
+    }
+    assert.equal((await s.client.listGrants({ memberId })).active.length, 0);
+    assert.deepEqual(s.seen.map(request => request.method), ["POST", "POST", "POST", "POST", "GET"]);
+  } finally { await s.close(); }
+});
+
+test("standing grant capability is optional and future versions stay opaque without breaking capabilities", () => {
+  const base = { apiVersion: "1", requestContract: "sql-admission-temporal-queue-v1",
+    observation: { protocol: "AG-UI", mode: "snapshot-and-bounded-tail" }, initiatorKinds: ["owner"] };
+  const standingGrants = { version: 1, choices: ["allow_conversation", "allow_always"], cardField: "standingChoices",
+    stateField: "grantedCalls", tools: ["record_work_item"], policyVersion: 1, initiatorKinds: ["owner"],
+    route: "/v1/members/{memberId}/grants", inactiveListLimit: 20, revocation: "later-proposals-only" };
+  assert.equal(capabilitiesSchema.parse(base).standingGrants, undefined);
+  assert.deepEqual(capabilitiesSchema.parse({ ...base, standingGrants }).standingGrants, standingGrants);
+  const future = { version: 2, policyVersion: "changed", tools: { different: true } };
+  const observed = capabilitiesSchema.parse({ ...base, standingGrants: future }).standingGrants;
+  assert.deepEqual(observed, future);
+  assert.equal(standingGrantsCapabilityV1Schema.safeParse(observed).success, false);
+  assert.equal(capabilitiesSchema.safeParse({ ...base, standingGrants: { ...standingGrants, revocation: "retroactive" } }).success, false);
 });

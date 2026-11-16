@@ -27,6 +27,9 @@ for (const [id, value] of Object.entries({
   Capabilities: routes.capabilities.response,
   Health: routes.health.response,
   MemberPage: routes.listMembers.response,
+  GrantList: routes.listGrants.response,
+  RevokeGrantResponse: routes.revokeGrant.response,
+  RevokeGrant: routes.revokeGrant.body,
   ConversationSnapshot: routes.conversation.response,
   RequestReceipt: routes.requestStatus.response,
   OwnerApprovalDetail: routes.approvalDetail.response,
@@ -113,6 +116,12 @@ for (const [operationId, route] of Object.entries(routes)) {
   if (operationId === "approvalDetail")
     operation.description =
       "Owner-only immutable complete record_work_item proposal, retained after settlement. Exact conversation, member, request, invocation, approval and decision version required. Unknown or repeated query parameters are rejected. Unsupported tools and scope mismatches return not_found. This read does not claim actionability or change approvals, grants, deadlines or effects. Responses use Cache-Control: no-store.";
+  if (operationId === "listGrants")
+    operation.description =
+      "Every active grant for the authenticated owner's member, plus at most twenty inactive rows. No pagination or active-result truncation. A read does not acknowledge an earlier revoke command.";
+  if (operationId === "revokeGrant")
+    operation.description =
+      "Idempotently revoke the exact member/grant identity for later proposals only. Requires an empty JSON object. Already approved calls remain approved. Lost acknowledgement remains an unknown command outcome.";
   if (operationId === "submit")
     operation.description =
       "One admission attempt. Preserve requestId and exact UTF-8 text for reconciliation. Acceptance does not prove completion or effects.";
@@ -182,7 +191,6 @@ const document = {
     "/v1/instruction-packs and descendants",
     "/v1/webhooks and descendants",
     "/v1/usage and descendants",
-    "/v1/members/{memberId}/grants and descendants",
     "/v1/members/{memberId}/instructions",
     "/v1/conversations/{conversationId}/handoff",
     "/v1/conversations/{conversationId}/handoffs",
