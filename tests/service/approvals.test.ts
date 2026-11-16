@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { Pool } from "pg";
+import { fixedRoles } from "@birbcrew/pi-subagents";
 import { ApprovalStore, type Approval } from "../../src/service/approvals.ts";
 import { ChildStore } from "../../src/service/children.ts";
 import { publishObservation, readSnapshot } from "../../src/service/observation.ts";
@@ -166,7 +167,8 @@ for (const child of [false, true]) {
         const children = new ChildStore(pool);
         const conversation = await members.getConversation({ ownerId: scope.ownerId, conversationId: scope.conversationId });
         const [key] = await children.delegate(conversation, scope.requestId, token, [{ nativeCallId: "delegate", task: "record",
-          profile: { role: "recorder", version: 1, instructions: "Record the work item.", model: "fixture", tools: ["record_work_item"] } }], checkpoint);
+          profile: { role: "recorder", version: 1, instructions: fixedRoles.recorder.instructions, model: "fixture",
+            tools: [...fixedRoles.recorder.tools] } }], checkpoint);
         const started = await children.begin(key, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 });
         assert.equal(started.kind, "start");
         invocationId = key.childId;
