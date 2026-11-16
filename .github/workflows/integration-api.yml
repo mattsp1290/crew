@@ -5,7 +5,7 @@ on:
       source_sha:
         description: Exact immutable feature commit to qualify
         required: true
-        default: 222fbdd75fb07d809c825e65fb3de4ed38dc1f82
+        default: 86c44da8678d95e26b93a8665b15415b1256ad96
         type: string
       suites:
         description: JSON suite selection. Use ["rollback"] for the retained rollback experiment.

@@ -66,9 +66,16 @@ const suites={
       "actual CLI change and status work with unreachable Temporal and unreadable TLS files",
       "actual CLI rejects extra fields, malformed JSON and unknown operations without disclosing private input",
       "unconfirmed native stop stays pending until an authoritative stopped fact permits retry",
-      "reconciliation retries incomplete parent and native facts after enable but excludes fully settled history"
+      "reconciliation retries incomplete parent and native facts after enable but excludes fully settled history",
+      "SQL completion remains selected until an adapter-fixture positive is persisted and cached drain stays read-only",
+      "cyclic historical discovery advances past every nonpositive adapter fixture and revisits never-retired parents",
+      "duplicate adapter-fixture managers persist one exact fact and SQL clients are released before observation",
+      "positive adapter fixtures cannot persist across a changed exact run, resume activity or reply",
+      "in-flight adapter-fixture positives retain exact recovery authority across freeze, thaw and identity transfer",
+      "recovery freeze refuses adapter-fixture writes while same-instance thaw accepts and replacement instance reobserves",
+      "SQL settlement failures reject reconciliation after independent parent discovery instead of reporting native pending"
     ],
-    "count": 19
+    "count": 26
   },
   "workflow": {
     "file": "tests/service/delegation-control-workflow.test.ts",
@@ -79,9 +86,10 @@ const suites={
       "an approved resumed recorder keeps its committed receipt while control retires its native continuation",
       "target disable names the unaffected waiting recorder and global disable later retires it",
       "a real restarted worker reconciles a pre-target waiting history after missed wake and re-enable",
-      "disable retains a SQL-settled delegation until its actual parent workflow observes the completed follow-up"
+      "disable retains a SQL-settled delegation until its actual parent workflow observes the completed follow-up",
+      "an actual worker stops healthy heartbeats on blocked control discovery, recovers, and shuts down with discovery still blocked"
     ],
-    "count": 7
+    "count": 8
   },
   "restore": {
     "file": "tests/service/recovery.test.ts",
