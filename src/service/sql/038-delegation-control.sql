@@ -52,6 +52,69 @@ CREATE TRIGGER recovery_write_barrier BEFORE INSERT OR UPDATE OR DELETE OR TRUNC
 CREATE TRIGGER recovery_write_barrier BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON birbcrew_ts.delegation_control_children
  FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.require_active_installation();
 
+CREATE TABLE birbcrew_ts.delegation_parent_observations (
+ installation_id uuid NOT NULL,
+ instance_id uuid NOT NULL,
+ conversation_id uuid NOT NULL,
+ request_id uuid NOT NULL,
+ workflow_run_id text NOT NULL CHECK(octet_length(workflow_run_id)>0),
+ resume_activity_id text NOT NULL CHECK(octet_length(resume_activity_id)>0),
+ reply text NOT NULL CHECK(octet_length(reply) BETWEEN 1 AND 65536),
+ observed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ PRIMARY KEY(installation_id,instance_id,conversation_id,request_id),
+ FOREIGN KEY(conversation_id,request_id) REFERENCES birbcrew_ts.delegations(conversation_id,request_id)
+);
+CREATE TRIGGER recovery_write_barrier BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON birbcrew_ts.delegation_parent_observations
+ FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.require_active_installation();
+
+CREATE FUNCTION birbcrew_ts.delegation_parent_result_observed(cid uuid, rid uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(SELECT 1 FROM birbcrew_ts.delegation_parent_observations o
+  JOIN birbcrew_ts.recovery_control r ON r.singleton AND r.phase='active'
+   AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
+  JOIN birbcrew_ts.turns t USING(conversation_id,request_id)
+  JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
+  WHERE (o.conversation_id,o.request_id)=(cid,rid) AND t.phase='committed'
+   AND (o.workflow_run_id COLLATE "C",o.resume_activity_id COLLATE "C",o.reply COLLATE "C")
+    =(t.workflow_run_id,d.resume_activity_id,t.reply));
+$$;
+
+CREATE FUNCTION birbcrew_ts.record_delegation_parent_observation(p_installation uuid, p_instance uuid,
+ p_conversation uuid, p_request uuid, p_run text, p_resume text, p_reply text)
+ RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
+DECLARE recovery birbcrew_ts.recovery_control;
+BEGIN
+ IF current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'Parent observation writes require READ COMMITTED' USING ERRCODE='55000';
+ END IF;
+ IF p_installation IS NULL OR p_instance IS NULL OR p_conversation IS NULL OR p_request IS NULL
+  OR p_run IS NULL OR octet_length(p_run)=0 OR p_resume IS NULL OR octet_length(p_resume)=0
+  OR p_reply IS NULL OR octet_length(p_reply) NOT BETWEEN 1 AND 65536 THEN
+  RAISE EXCEPTION 'Invalid parent observation identity' USING ERRCODE='22023';
+ END IF;
+ PERFORM 1 FROM birbcrew_ts.conversations WHERE conversation_id=p_conversation FOR UPDATE;
+ IF NOT FOUND THEN RETURN false; END IF;
+ PERFORM 1 FROM birbcrew_ts.recovery_control WHERE singleton FOR SHARE;
+ IF NOT FOUND THEN RETURN false; END IF;
+ SELECT * INTO STRICT recovery FROM birbcrew_ts.recovery_control WHERE singleton;
+ IF recovery.phase<>'active'
+  OR (recovery.installation_id,recovery.instance_id) IS DISTINCT FROM (p_installation,p_instance) THEN
+  RETURN false;
+ END IF;
+ PERFORM 1 FROM birbcrew_ts.turns t JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
+  WHERE (t.conversation_id,t.request_id)=(p_conversation,p_request) AND t.phase='committed'
+   AND (t.workflow_run_id COLLATE "C",d.resume_activity_id COLLATE "C",t.reply COLLATE "C")=(p_run,p_resume,p_reply);
+ IF NOT FOUND THEN RETURN false; END IF;
+ INSERT INTO birbcrew_ts.delegation_parent_observations AS o
+  (installation_id,instance_id,conversation_id,request_id,workflow_run_id,resume_activity_id,reply)
+  VALUES(p_installation,p_instance,p_conversation,p_request,p_run,p_resume,p_reply)
+  ON CONFLICT(installation_id,instance_id,conversation_id,request_id) DO UPDATE
+   SET workflow_run_id=EXCLUDED.workflow_run_id,resume_activity_id=EXCLUDED.resume_activity_id,
+    reply=EXCLUDED.reply,observed_at=EXCLUDED.observed_at
+   WHERE (o.workflow_run_id COLLATE "C",o.resume_activity_id COLLATE "C",o.reply COLLATE "C")
+    IS DISTINCT FROM (EXCLUDED.workflow_run_id,EXCLUDED.resume_activity_id,EXCLUDED.reply);
+ RETURN true;
+END $$;
+
 CREATE FUNCTION birbcrew_ts.delegation_child_scope(cid uuid, role_profile jsonb) RETURNS jsonb LANGUAGE plpgsql VOLATILE AS $$
 DECLARE target jsonb := role_profile->'target'; parent_profile text;
 BEGIN
@@ -200,6 +263,7 @@ BEGIN
    SELECT command,j.child_id,j.outcome IS NULL FROM birbcrew_ts.pi_children j
    JOIN birbcrew_ts.delegations d USING(conversation_id,request_id) JOIN birbcrew_ts.turns t USING(conversation_id,request_id)
    WHERE (j.outcome IS NULL OR d.resume_activity_id IS NULL OR t.phase<>'committed' OR t.reply IS NULL
+    OR NOT birbcrew_ts.delegation_parent_result_observed(j.conversation_id,j.request_id)
     OR EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n
      WHERE (n.conversation_id,n.request_id)=(j.conversation_id,j.request_id) AND NOT n.stopped))
     AND (scope->>'kind'='global' OR COALESCE(birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile)=scope,true));
