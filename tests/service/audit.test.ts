@@ -1,3 +1,5 @@
+import { publishObservation } from "../../src/service/observation.ts";
+import { migrateThrough, spawnHistoricalMember, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -382,13 +384,13 @@ test("a page never skips an event that an earlier transaction commits late, and 
     await writer.query(`INSERT INTO birbcrew_ts.audit_events (owner_id,actor_kind,actor_id,initiator_kind,initiator_id,event_type,member_id,payload)
       VALUES ($1,'owner',$1,'owner',$1,'member.spawned',$2,$3)`, [f.ownerId, inserted.member_id,
       JSON.stringify({ spawnRequestId: early, engine: "pi", profile })]);
-    await store.spawn({ ownerId: f.ownerId, requestId: late, engine: "pi", profile }); // higher ID, committed first
+    await store.spawn({ ownerId: f.ownerId, requestId: late, engine: "pi", profile: profile + "-late" });
     let settled = false;
     const reading = f.audit().then(page => { settled = true; return page; });
     // A filtered read keeps the same horizon.
     const filtered = f.audit("?eventType=member.spawned&actorKind=owner").then(page => { settled = true; return page; });
     await delay(100);
-    await store.spawn({ ownerId: f.ownerId, requestId: during, engine: "pi", profile }); // not queued behind the reader
+    await store.spawn({ ownerId: f.ownerId, requestId: during, engine: "pi", profile: profile + "-during" });
     await delay(100);
     assert.equal(settled, false, "the reader waits for the open writer instead of paging past its ID");
     await writer.query("COMMIT");
@@ -590,7 +592,7 @@ const sql = new URL("../../src/service/sql/", import.meta.url);
 async function databaseAt(t: TestContext, version: number) {
   const source = new URL(url!);
   const admin = new Pool({ connectionString: source.href });
-  const database = "audit_upgrade_" + randomUUID().replaceAll("-", "");
+  const database = testDatabaseName("audit_upgrade_");
   await admin.query("CREATE DATABASE " + database);
   source.pathname = "/" + database;
   const upgraded = new Pool({ connectionString: source.href });
@@ -648,11 +650,12 @@ test("migration 21 upgrades a v20 database with rows while a native turn holds i
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   const launch = { ownerId, conversationId, requestId, text, token: start.token, execution };
   await withNativeAdmission(upgraded, launch, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 21).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 21 must not wait for a running native turn");
     // The turn's own conversation writes are not queued behind the upgrade either.
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   // Pre-existing conversations bind audit rows like new ones.
   await current.recordAcceptance({ ownerId, conversationId, requestId: randomUUID(), text: "after upgrade" }, ownerInitiator);
@@ -720,11 +723,12 @@ test("migration 23 records a v21 database's admissions as owner-initiated withou
       { relation: "native_launches", mode: "AccessShareLock" }, { relation: "native_stop_requests", mode: "AccessShareLock" },
       { relation: "recovery_control", mode: "AccessShareLock" }, { relation: "turns", mode: "RowShareLock" },
     ]);
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 23).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 23 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: running.requestId, token: start.token },
       running.requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   const { rows: admissions } = await upgraded.query(`SELECT initiator_kind AS kind, initiator_id AS id, count(*)::integer AS n
     FROM birbcrew_ts.request_admissions GROUP BY 1,2`);
@@ -769,7 +773,7 @@ test("migration 24 adds standing grants to a v23 database without rewriting or s
   const upgraded = await databaseAt(t, 23);
   const current = new MemberStore(upgraded);
   const ownerId = "owner-" + randomUUID(), conversationId = randomUUID();
-  const { memberId } = await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  const { memberId } = await spawnHistoricalMember(current, { ownerId, requestId: randomUUID(), engine: "pi", profile });
   // Seeded in SQL: this release's open and admission read tables a later migration adds.
   await upgraded.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)", [ownerId, memberId, conversationId]);
   const running = { ownerId, conversationId, requestId: randomUUID(), text: "running at upgrade" };
@@ -812,11 +816,12 @@ test("migration 24 adds standing grants to a v23 database without rewriting or s
   }
 
   await withNativeAdmission(upgraded, { ...running, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 24).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 24 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: running.requestId, token: start.token },
       running.requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   const { rows: constraints } = await upgraded.query(`SELECT conrelid::regclass::text AS "table", conname AS name, convalidated AS validated
     FROM pg_constraint WHERE conname IN ('deferred_calls_grant_scope_check','deferred_calls_grant_id_check','deferred_calls_grant_id_fkey',
@@ -1351,7 +1356,7 @@ test("migration 30 indexes a version-29 trail without queueing for an open audit
   const upgraded = await databaseAt(t, 29);
   const current = new MemberStore(upgraded);
   const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID(), text = "running at upgrade";
-  const { memberId } = await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  const { memberId } = await spawnHistoricalMember(current, { ownerId, requestId: randomUUID(), engine: "pi", profile });
   // Opened and admitted by the previous release, in SQL: this release's open also reads the packs 033
   // adds, and its admission the budgets 031 adds.
   await current.transaction(async db => {
@@ -1397,7 +1402,7 @@ test("migration 30 indexes a version-29 trail without queueing for an open audit
       }
       await appendAudit(holder, { type: "conversation.opened", ownerId, memberId, conversationId: opening, payload: {} });
       let migrated = false;
-      const migrating = current.migrate().then(() => { migrated = true; });
+      const migrating = migrateThrough(current, 30).then(() => { migrated = true; });
       for (let i = 0; i < 10; i++) {
         await delay(30);
         const { rows: waiting } = await upgraded.query(`SELECT pid FROM pg_locks WHERE NOT granted
@@ -1414,6 +1419,7 @@ test("migration 30 indexes a version-29 trail without queueing for an open audit
     } finally { holder.release(); }
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   const { rows: indexes } = await upgraded.query(`SELECT indexname AS name FROM pg_indexes WHERE schemaname='birbcrew_ts'
     AND indexname IN ('audit_events_member_page','audit_events_type_page','audit_events_initiator_page') ORDER BY 1`);
@@ -1432,7 +1438,7 @@ test("migration 30 indexes a version-29 trail without queueing for an open audit
 test("migration 36 preserves old child history without inventing admission facts", async t => {
   const upgraded = await databaseAt(t, 35), current = new MemberStore(upgraded), children = new ChildStore(upgraded);
   const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID();
-  const { memberId } = await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  const { memberId } = await spawnHistoricalMember(current, { ownerId, requestId: randomUUID(), engine: "pi", profile });
   await current.openConversation({ ownerId, memberId, conversationId });
   const request = { ownerId, conversationId, requestId, text: "legacy delegation" };
   const turn = await current.beginTurn(request, { workflowRunId: randomUUID(), activityId: "parent", attempt: 1 });
@@ -1442,7 +1448,16 @@ test("migration 36 preserves old child history without inventing admission facts
   const proposals = [0, 1].map(n => ({ nativeCallId: "legacy_" + n, task: "private legacy task", profile: {
     role: "analyst" as const, version: 1 as const, instructions: "Answer the task", model: "fixture", tools: [],
   } }));
-  const [complete, running] = await children.delegate(turn.conversation, requestId, turn.token, proposals, checkpoint);
+  const historical = proposals.map(() => ({ ...turn.conversation, requestId, childId: randomUUID() }));
+  const [complete, running] = historical;
+  await current.transaction(async db => {
+    await db.query("INSERT INTO birbcrew_ts.delegations(conversation_id,request_id,parent_checkpoint) VALUES($1,$2,$3)", [conversationId, requestId, checkpoint]);
+    for (const [ordinal, proposal] of proposals.entries()) {
+      await db.query(`INSERT INTO birbcrew_ts.pi_children(child_id,conversation_id,request_id,native_call_id,ordinal,task,role_profile)
+        VALUES($1,$2,$3,$4,$5,$6,$7)`, [historical[ordinal].childId, conversationId, requestId, proposal.nativeCallId, ordinal, proposal.task, proposal.profile]);
+    }
+    await publishObservation(db, conversationId, { kind: "delegation", requestId, children: historical.map(({ childId }) => ({ childId, role: "analyst" })) });
+  });
   const generation = randomUUID(), completed = { kind: "completed", nativeCallId: proposals[0].nativeCallId, text: "legacy reply" };
   await upgraded.query(`UPDATE birbcrew_ts.pi_children SET phase='complete',outcome=$2 WHERE child_id=$1`, [complete.childId, JSON.stringify(completed)]);
   await upgraded.query(`UPDATE birbcrew_ts.pi_children SET phase='running',generation=$2 WHERE child_id=$1`, [running.childId, generation]);

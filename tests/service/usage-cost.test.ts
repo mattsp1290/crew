@@ -1,3 +1,4 @@
+import { migrateThrough } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -10,7 +11,7 @@ import type { TrustedNativeProfile } from "../../src/service/trusted-native.ts";
 import { runTrustedRequest } from "../../src/service/trusted-runner.ts";
 import { recordSegmentUsage, recordTrustedUsage, UsageApi } from "../../src/service/usage.ts";
 import type { PriceTable } from "../../src/service/usage-prices.ts";
-import { conversation, databaseAt, gateway, launched, member, migrationNumbers, pool, reported, spend, sql, store } from "./usage-fixtures.ts";
+import { conversation, databaseAt, gateway, launched, member, memberBeforeTargets, migrationNumbers, pool, reported, spend, sql, store } from "./usage-fixtures.ts";
 
 // Estimated cost, the trusted-context lane's metering and migration 35 (docs/usage-metering.md).
 before(() => store.migrate());
@@ -185,7 +186,7 @@ test("a trusted-context request is metered once in its own lane, as the owner's,
 test("migration 035 adds the estimate and the trusted lane without a rewrite or a scan, never queues, and leaves earlier rows unestimated", async (t) => {
   const upgraded = await databaseAt(t, 34);
   const current = new MemberStore(upgraded);
-  const owner = await member(current, undefined, "claude");
+  const owner = await memberBeforeTargets(current, "claude");
   const conversationId = await conversation(current, owner);
   // A row recorded before the upgrade, as release 34 wrote it.
   const earlier = await launched(current, owner.ownerId, conversationId, "before the upgrade");
@@ -250,13 +251,14 @@ test("migration 035 adds the estimate and the trusted lane without a rewrite or 
 test("migration 035 completes while a trusted-context turn holds its lease", async (t) => {
   const upgraded = await databaseAt(t, 34);
   const current = new MemberStore(upgraded);
-  const owner = await member(current, undefined, "claude");
+  const owner = await memberBeforeTargets(current, "claude");
   const { trusted, claim } = await trustedStart(current, owner);
   // A trusted native turn reads its request under its lease's transaction for the whole turn.
   await trusted.admitted(claim, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 35).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 035 must not wait for a running trusted turn");
   });
+  await current.migrate();
   await recordTrustedUsage(upgraded, claim, reported(3, 4));
   assert.equal((await upgraded.query("SELECT count(*)::integer AS n FROM birbcrew_ts.usage_ledger WHERE trusted_request_id IS NOT NULL")).rows[0].n, 1);
 });

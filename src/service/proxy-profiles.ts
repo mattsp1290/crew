@@ -2,6 +2,7 @@ import { createProvider, InMemoryCredentialStore, InMemoryModelsStore, type Mode
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { MemberProfile } from "./profiles.ts";
+import { providerHost } from "./provider-identity.ts";
 import { startProxyRelay } from "./proxy-relay.ts";
 
 type RelayOptions = Parameters<typeof startProxyRelay>[0];
@@ -20,8 +21,11 @@ export async function createProxyProfile(options: ProxyProfileOptions) {
     throw new Error("Invalid proxy engine, protocol, model, account or tool configuration");
   }
   // Snapshot trusted routing before any invocation can use it.
-  const relayOptions = { ...options, headers: options.headers && { ...options.headers } };
+  const relayOptions = Object.freeze({ ...options, headers: options.headers && Object.freeze({ ...options.headers }) });
+  const upstreamHost = providerHost(relayOptions.endpoint);
   const relay = await startProxyRelay(relayOptions);
+  const upstreamIdentity = Object.freeze({ model: relayOptions.model, providerHost: upstreamHost,
+    relayHost: relayOptions.engine === "codex" ? null : providerHost(relay.baseUrl) });
   const active = new Set<() => Promise<void>>();
   let closed = false;
   const close = async () => {
@@ -31,18 +35,19 @@ export async function createProxyProfile(options: ProxyProfileOptions) {
   };
   try {
     const profile: MemberProfile = {
-      accountId: options.accountId,
-      ...(options.protectedTool && { protectedTool: options.protectedTool }),
-      ...(options.humanTool && { humanTool: options.humanTool }),
+      accountId: relayOptions.accountId,
+      upstreamIdentity: Object.freeze({ [relayOptions.engine]: upstreamIdentity }),
+      ...(relayOptions.protectedTool && { protectedTool: relayOptions.protectedTool }),
+      ...(relayOptions.humanTool && { humanTool: relayOptions.humanTool }),
     };
-    if (options.engine === "claude") {
-      profile.claude = { model: options.model, baseUrl: relay.baseUrl, apiKey: relay.apiKey };
-    } else if (options.engine === "codex") {
+    if (relayOptions.engine === "claude") {
+      profile.claude = { model: relayOptions.model, baseUrl: relay.baseUrl, apiKey: relay.apiKey };
+    } else if (relayOptions.engine === "codex") {
       // The native SDK may settle its abort before its socket closes. Bind the
       // upstream lifetime to the host turn signal, with a separate listener/token
       // per invocation so cancelling one turn cannot cancel another.
       await relay.close();
-      profile.codex = { model: options.model, proxyTransport: async signal => {
+      profile.codex = { model: relayOptions.model, proxyTransport: async signal => {
         signal.throwIfAborted();
         if (closed) throw new Error("Proxy profile is closed");
         const transport = await startProxyRelay(relayOptions);
@@ -65,7 +70,7 @@ export async function createProxyProfile(options: ProxyProfileOptions) {
       } };
     } else {
       const model: Model<"openai-completions"> = {
-        id: options.model, name: options.model, provider: "birbcrew-proxy", api: "openai-completions",
+        id: relayOptions.model, name: relayOptions.model, provider: "birbcrew-proxy", api: "openai-completions",
         baseUrl: relay.baseUrl, reasoning: false, input: ["text"], contextWindow: 32_768, maxTokens: 4096,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         compat: { supportsDeveloperRole: false, supportsStore: false },

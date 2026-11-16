@@ -21,7 +21,7 @@ const receiptSchema = z.looseObject({
   role: z.literal("toolResult"), toolName: z.literal(delegationToolName), toolCallId: nativeCallId,
   isError: z.literal(false), content: z.tuple([]),
 });
-const roles = {
+export const fixedRoles = {
   analyst: { instructions: "Answer the assigned question using only the supplied task context.", tools: [] },
   recorder: { instructions: "Complete the assigned task. Request owner approval to record a work item when asked.",
     tools: ["record_work_item"] },
@@ -79,7 +79,7 @@ export function createDelegationBatch({ model, allowRecordWorkItem }: Policy) {
       if (!confirmedIds.delete(call.id) || executed?.role !== role || executed.task !== task) {
         throw new Error("Delegation did not match its native receipt");
       }
-      const { instructions, tools } = roles[role];
+      const { instructions, tools } = fixedRoles[role];
       return { nativeCallId: call.id, task, profile: { role, version: 1 as const, instructions, model: pinnedModel, tools: [...tools] } };
     });
   }

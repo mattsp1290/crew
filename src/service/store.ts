@@ -5,6 +5,7 @@ import { requestNativeStop } from "./native-admission.ts";
 import { textProjection } from "./text-stream.ts";
 import { publishObservation } from "./observation.ts";
 import type { ChildOutcome } from "@birbcrew/pi-subagents";
+import { memberSubagents, type MemberSubagents } from "./child-target.ts";
 import { childrenFor } from "./children.ts";
 import { savedProposal, type Approval } from "./approvals.ts";
 import { appendAudit } from "./audit.ts";
@@ -25,12 +26,10 @@ import {
   type BeginTurn, type Conversation, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 
-type SpawnedMember = Member & { instructions?: InstructionsSummary; instructionPacks?: string[] };
+type SpawnedMember = Member & { subagents: MemberSubagents; instructions?: InstructionsSummary; instructionPacks?: string[] };
 const memberColumns = `owner_id AS "ownerId", member_id AS "memberId", engine, profile`;
-/** The spawn response, the same for the first spawn and its replays: the instructions summary and
- * the pack IDs only when the member has them. */
-function spawnedMember(member: Member, stored: InstructionsSummary | null, packs: string[]): SpawnedMember {
-  return { ...member, ...(stored ? { instructions: { bytes: stored.bytes, digest: stored.digest } } : {}),
+function spawnedMember(member: Member, stored: InstructionsSummary | null, packs: string[], subagents: MemberSubagents): SpawnedMember {
+  return { ...member, subagents, ...(stored ? { instructions: { bytes: stored.bytes, digest: stored.digest } } : {}),
     ...(packs.length ? { instructionPacks: packs } : {}) };
 }
 
@@ -163,7 +162,7 @@ export class MemberStore {
       await db.query("CREATE SCHEMA IF NOT EXISTS birbcrew_ts");
       await db.query("CREATE TABLE IF NOT EXISTS birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
       const migrations = [[1, "001-members.sql"], [2, "002-approvals.sql"], [3, "003-native-launches.sql"],
-      [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"]] as const;
+      [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"], [37, "037-named-child-targets.sql"]] as const;
       // Number a new migration above every one already released.
       const { rows: [{ latest }] } = await db.query<{ latest: number | null }>("SELECT max(version) AS latest FROM birbcrew_ts.schema_versions");
       for (const [version, name] of migrations) {
@@ -191,10 +190,6 @@ export class MemberStore {
         [ownerId, requestId, engine, profile],
       );
       if (created) {
-        // This call made the member: it writes what it was given, then records it. Only
-        // attachPacks reads a table it did not write (instruction_packs, to check and lock the
-        // named packs), so a spawn without packs or instructions works on a database migrated
-        // before them.
         if (instructions !== undefined) await db.query(
           "INSERT INTO birbcrew_ts.member_instructions (owner_id, member_id, body) VALUES ($1, $2, $3)",
           [ownerId, created.memberId, instructions]);
@@ -206,7 +201,7 @@ export class MemberStore {
           payload: { digest: stored.digest, bytes: stored.bytes } });
         if (instructionPacks.length) await appendAudit(db, { type: "member.instruction_packs_attached", ownerId,
           memberId: created.memberId, payload: { packIds: instructionPacks } });
-        return spawnedMember(created, stored, instructionPacks);
+        return spawnedMember(created, stored, instructionPacks, await this.memberSubagents(db, created));
       }
       // A replay writes nothing, and must name exactly what the first spawn named.
       const { rows: [member] } = await db.query<Member>(
@@ -217,8 +212,16 @@ export class MemberStore {
       const packs = await packIdsOf(db, member);
       if (member.engine !== engine || member.profile !== profile || stored?.text !== instructions
         || packs.join() !== instructionPacks.join()) throw new MemberStoreError("conflict");
-      return spawnedMember(member, stored, packs);
+      return spawnedMember(member, stored, packs, await this.memberSubagents(db, member));
     });
+  }
+
+  private async memberSubagents(db: PoolClient, member: Member): Promise<MemberSubagents> {
+    const { rows: [row] } = await db.query<{ consent: unknown; seal: unknown; active: string[] | null }>(
+      `SELECT m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active
+       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
+       WHERE m.owner_id=$1 AND m.member_id=$2`, [member.ownerId, member.memberId]);
+    return memberSubagents(member.engine, row.consent, row.seal, row.active);
   }
 
   openConversation(input: z.input<typeof openSchema>): Promise<Conversation> {

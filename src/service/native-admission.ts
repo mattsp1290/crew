@@ -1,7 +1,7 @@
 import {acquireRecoveryNativeLease,requireRecoveryActive} from "./recovery-admission.ts";
 import { lockChildAdmission } from "./supervisor-child.ts";
 import { createHash } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { TurnRequest } from "./domain.ts";
 import type { Launch } from "./supervisor.ts";
 
@@ -50,7 +50,7 @@ export async function requestNativeStop(pool: Pool, request: StopRequest, stop: 
 }
 
 export async function withNativeAdmission<T>(
-  pool: Pool, launch: Launch, signal: AbortSignal, run: (signal: AbortSignal) => Promise<T>,
+  pool: Pool, launch: Launch, signal: AbortSignal, run: (signal: AbortSignal, db: PoolClient) => Promise<T>,
 ): Promise<T> {
   const db = await pool.connect();
   const controller = new AbortController();
@@ -90,7 +90,7 @@ export async function withNativeAdmission<T>(
     }, 100);
     try {
       bounded.throwIfAborted();
-      return await run(bounded);
+      return await run(bounded, db);
     } finally {
       clearInterval(timer);
       db.off("error", disconnected);

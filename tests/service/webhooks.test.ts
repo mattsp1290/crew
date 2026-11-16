@@ -1,3 +1,4 @@
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -40,7 +41,7 @@ const webhookVersion = Number(webhookMigration.split("-")[0]);
 /** A fresh database, migrated up to `version`, dropped after the test. Every test that enables an
  * endpoint uses its own, so no other suite's gateway finds one to deliver to. */
 async function databaseAt(t: TestContext, version = Infinity) {
-  const name = "webhooks_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("webhooks_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -1215,10 +1216,11 @@ test("the webhook migration completes while a native turn holds its admission", 
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, webhookVersion).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "the webhook migration must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
   await current.commitTurn({ ownerId, conversationId, requestId, token: start.token, reply: "still running", checkpoint: { version: 1, engine: "pi", state: {} } });
   const { rows } = await upgraded.query("SELECT event_type FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [ownerId]);
   assert.deepEqual(rows.map(row => row.event_type), ["request.finished"]);

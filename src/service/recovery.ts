@@ -48,6 +48,7 @@ async function settleRestoredState(db:PoolClient,activate:()=>Promise<boolean>) 
  await db.query(`SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id IN
   (SELECT conversation_id FROM birbcrew_ts.tool_grants WHERE revoked_at IS NULL) ORDER BY conversation_id FOR UPDATE`);
  if(!await activate()) return;
+ await db.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE child_target_seal->>'mode'='named'");
  const {rows}=await db.query<{grant_id:string;owner_id:string;member_id:string;conversation_id:string|null}>(`WITH revoked AS
   (UPDATE birbcrew_ts.tool_grants SET revoked_at=clock_timestamp(),revocation_reason='recovery_restore' WHERE revoked_at IS NULL
    RETURNING grant_id,owner_id,member_id,conversation_id,created_at)

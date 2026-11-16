@@ -8,13 +8,10 @@ import type { ChildOutcome, Delegation } from "@birbcrew/pi-subagents";
 import { ApprovalStore, confirmedApproval, type Approval } from "./approvals.ts";
 import { appendAudit } from "./audit.ts";
 import { overBudget } from "./usage.ts";
-import { childTarget, ChildTargetError, holdsChildTools, keyTarget, proposedTarget, runsChild, storedTarget, type ChildProfile,
+import { childTarget, ChildTargetError, childConsentSchema, fixedProposal, keyTarget, sameDestination, storedTarget, type ChildProfile,
   type ChildTarget } from "./child-target.ts";
 import { checkpointSchema, MemberStoreError, type Conversation, type Checkpoint, type TurnRequest } from "./domain.ts";
 
-type PersistedDelegation = Omit<Delegation, "profile"> & {
-  profile: Omit<ChildProfile, "instructions"> & {instructions:string};
-};
 
 export interface ChildKey {
   ownerId: string;
@@ -95,32 +92,21 @@ export async function childrenFor(db: PoolClient, conversation: Conversation, re
   });
 }
 
-/** Whether a target can run a child, as far as the profiles table shows: the target must run children
- * under the rule its Pi driver applies at launch (runsChild). That driver checks only the profile that
- * runs the child, so the parent must hold the child's tools too, as an untargeted child's launch checks.
- * The model pin, always the parent's, is checked only at launch: the table has no model column. */
-async function eligibleTarget(db: PoolClient, target: ChildTarget, parentProfile: string, child: Pick<ChildProfile, "tools">) {
-  const { rows: [facts] } = await db.query<{ delegate_task: boolean; protected_tool: string | null; parent_tool: string | null }>(
-    `SELECT t.delegate_task,t.protected_tool,p.protected_tool AS parent_tool FROM birbcrew_ts.profiles t
-      LEFT JOIN birbcrew_ts.profiles p ON p.name=$3 AND p.engine='pi' WHERE t.name=$1 AND t.engine=$2`,
-    [target.profile, target.engine, parentProfile]);
-  return !!facts && runsChild({ delegateTask: facts.delegate_task, protectedTool: facts.protected_tool }, child)
-    && holdsChildTools(facts.parent_tool, child);
-}
-
 export class ChildStore {
   private readonly pool: Pool;
   private readonly ledger: ApprovalStore;
   constructor(pool: Pool) { this.pool = pool; this.ledger = new ApprovalStore(pool); }
 
-  async delegate(conversation: Conversation, requestId: string, token: string, proposals: PersistedDelegation[], rawCheckpoint: unknown) {
+  async delegate(conversation: Conversation, requestId: string, token: string, rawProposals: readonly unknown[], rawCheckpoint: unknown) {
+    const proposals = rawProposals.map(fixedProposal);
     if (proposals.length < 1 || proposals.length > 2 || new Set(proposals.map(p => p.nativeCallId)).size !== proposals.length) {
       throw new MemberStoreError("input_limit");
     }
     const checkpoint = checkpointSchema.parse(rawCheckpoint);
     if (checkpoint.engine !== "pi") throw new MemberStoreError("conflict");
-    const planned = proposals.map(proposal => ({ proposal, target: proposedTarget(proposal.profile.target) }));
     return transaction(this.pool, async db => {
+      const active = await db.query("SELECT 1 FROM birbcrew_ts.recovery_control WHERE singleton AND phase='active' FOR SHARE");
+      if (!active.rowCount) throw new Error("Installation is held for recovery");
       const parent = await lockParent(db, { ...conversation, requestId });
       const args = [conversation.conversationId, requestId];
       // Only the parent turn's own token delegates: a child's launch generation is never a turn
@@ -128,15 +114,29 @@ export class ChildStore {
       const admitted = await db.query(`SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2
         AND token=$3 AND phase='started'`, [...args, token]);
       if (!admitted.rowCount) throw new MemberStoreError("stale");
-      for (const { proposal, target } of planned) {
-        if (target && !(await eligibleTarget(db, target, parent.profile, proposal.profile))) throw new ChildTargetError("ineligible_target");
-      }
+      await db.query("SELECT birbcrew_ts.lock_child_authority($1,$2)", [parent.engine, parent.profile]);
+      const { rows: [authority] } = await db.query<{ consent: unknown; seal: unknown; active: string[] | null }>(
+        `SELECT m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active
+         FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
+         WHERE m.owner_id=$1 AND m.member_id=$2`, [parent.ownerId, parent.memberId]);
+      const consent = childConsentSchema.parse(authority.consent);
+      const planned = proposals.map(proposal => {
+        if (consent.mode === "legacy") return proposal;
+        const seal = childConsentSchema.parse(authority.seal);
+        const role = proposal.profile.role;
+        const destination = consent.roles[role];
+        if (!destination || seal.mode !== "named" || !authority.active?.includes(role) || !sameDestination(destination, seal.roles[role])) {
+          throw new ChildTargetError("ineligible_target");
+        }
+        if (destination.engine !== "pi") throw new ChildTargetError("unsupported_engine");
+        return { ...proposal, profile: { ...proposal.profile, model: destination.model, target: { version: 1, ...destination } } };
+      });
       await db.query(`INSERT INTO birbcrew_ts.delegations (conversation_id,request_id,parent_checkpoint)
         VALUES ($1,$2,$3)`, [...args, JSON.stringify(checkpoint)]);
-      for (const [index, { proposal, target }] of planned.entries()) {
+      for (const [index, proposal] of planned.entries()) {
         await db.query(`INSERT INTO birbcrew_ts.pi_children (conversation_id,request_id,native_call_id,ordinal,task,role_profile)
           VALUES ($1,$2,$3,$4,$5,$6)`, [...args, proposal.nativeCallId, index, proposal.task,
-          JSON.stringify(target ? { ...proposal.profile, target } : proposal.profile)]);
+          JSON.stringify(proposal.profile)]);
       }
       const children = await childrenFor(db, conversation, requestId);
       await publishObservation(db, conversation.conversationId, {kind:"delegation",requestId,

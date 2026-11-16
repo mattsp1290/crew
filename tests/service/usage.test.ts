@@ -1,3 +1,4 @@
+import { migrateThrough } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -712,9 +713,10 @@ test("migration 031 completes while a native turn holds its admission", async (t
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   const launch: Launch = { ownerId, conversationId, requestId, text, token: start.token, execution };
   await withNativeAdmission(upgraded, launch, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 31).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 031 must not wait for a running native turn");
   });
+  await current.migrate();
   await recordSegmentUsage(upgraded, launch, reported(3, 4));
   assert.equal((await upgraded.query("SELECT count(*)::integer AS n FROM birbcrew_ts.usage_ledger")).rows[0].n, 1);
 });
