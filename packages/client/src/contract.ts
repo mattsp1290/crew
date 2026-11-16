@@ -133,6 +133,77 @@ export const approvalDetailsCapabilitySchema = z.looseObject({
   version: z.int().positive(),
   tools: z.array(z.string().min(1)),
 });
+/** Version 1 metadata for the existing owner-only standing-grant routes. */
+export const standingGrantsCapabilityV1Schema = z.looseObject({
+  version: z.literal(1),
+  choices: z.array(standingChoice),
+  cardField: z.literal("standingChoices"),
+  stateField: z.literal("grantedCalls"),
+  tools: z.array(z.string().min(1)),
+  policyVersion: z.literal(1),
+  initiatorKinds: z.array(z.string().min(1)),
+  route: z.literal("/v1/members/{memberId}/grants"),
+  inactiveListLimit: z.literal(20),
+  revocation: z.literal("later-proposals-only"),
+});
+/** Unknown versions remain opaque metadata, never a supported v1 contract. */
+export const standingGrantsCapabilitySchema = z.union([
+  standingGrantsCapabilityV1Schema,
+  z.looseObject({
+    version: z.int().positive().refine((version) => version !== 1)
+      .meta({ not: { const: 1 } }),
+  }),
+]);
+export const listGrantsSchema = z.strictObject({ memberId: uuid });
+export const revokeGrantSchema = listGrantsSchema.extend({ grantId: uuid });
+const grantBase = {
+  grantId: uuid,
+  memberId: uuid,
+  toolName: z.literal("record_work_item"),
+  policyVersion: z.literal(1),
+  approvalId: uuid,
+  createdAt: z.iso.datetime(),
+};
+const grantScopeSchema = z.discriminatedUnion("scope", [
+  z.object({ ...grantBase, scope: z.literal("conversation"),
+    conversationId: uuid, choice: z.literal("allow_conversation") }),
+  z.object({ ...grantBase, scope: z.literal("member"),
+    conversationId: z.null(), choice: z.literal("allow_always") }),
+]);
+const unrevokedFields = {
+  revokedAt: z.never().optional(),
+  revocationReason: z.never().optional(),
+};
+export const activeGrantSchema = z.intersection(grantScopeSchema, z.object({
+  status: z.literal("active"), ...unrevokedFields,
+}));
+export const revokedGrantSchema = z.intersection(grantScopeSchema, z.object({
+  status: z.literal("revoked"),
+  revokedAt: z.iso.datetime(),
+  revocationReason: z.enum(["owner", "recovery_restore"]),
+}));
+const closedGrantSchema = z.object({
+  ...grantBase, scope: z.literal("conversation"), conversationId: uuid,
+  choice: z.literal("allow_conversation"), status: z.literal("conversation_closed"),
+  ...unrevokedFields,
+});
+export const publicGrantSchema = z.union([
+  activeGrantSchema, revokedGrantSchema, closedGrantSchema,
+]);
+/** All active grants, with at most twenty inactive historical rows. */
+export const grantListResponseSchema = z.object({
+  apiVersion: z.literal("1"),
+  memberId: uuid,
+  active: z.array(activeGrantSchema),
+  inactive: z.array(z.union([revokedGrantSchema, closedGrantSchema])).max(20),
+}).refine((list) => {
+  const grants = [...list.active, ...list.inactive];
+  return grants.every((grant) => grant.memberId === list.memberId)
+    && new Set(grants.map((grant) => grant.grantId)).size === grants.length;
+}, { message: "Grant identities must be unique and belong to the listed member" });
+export const revokeGrantResponseSchema = z.object({
+  apiVersion: z.literal("1"), grant: revokedGrantSchema,
+});
 export const decisionReceiptSchema = z.object({
   approvalId: z.uuid(),
   decision: decisionChoice,
@@ -262,6 +333,7 @@ export const capabilitiesSchema = z.looseObject({
   }),
   initiatorKinds: z.array(z.string().min(1)),
   approvalDetails: approvalDetailsCapabilitySchema.optional(),
+  standingGrants: standingGrantsCapabilitySchema.optional(),
 });
 const dependencyStatus = z.enum(["ready", "unavailable"]);
 export const healthSchema = z.object({
@@ -302,6 +374,13 @@ export type MemberPage = z.infer<typeof memberPageSchema>;
 export type RecordWorkItemArguments = z.infer<typeof recordWorkItemArgumentsSchema>;
 export type ApprovalDetailIdentity = z.infer<typeof approvalDetailIdentitySchema>;
 export type OwnerApprovalDetail = z.infer<typeof ownerApprovalDetailSchema>;
+export type StandingGrantsCapability = z.infer<typeof standingGrantsCapabilitySchema>;
+export type StandingGrantsCapabilityV1 = z.infer<typeof standingGrantsCapabilityV1Schema>;
+export type PublicGrant = z.infer<typeof publicGrantSchema>;
+export type GrantList = z.infer<typeof grantListResponseSchema>;
+export type ListGrants = z.input<typeof listGrantsSchema>;
+export type RevokeGrant = z.input<typeof revokeGrantSchema>;
+export type RevokeGrantResponse = z.infer<typeof revokeGrantResponseSchema>;
 export type Decide = z.input<typeof decideSchema>;
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
@@ -329,6 +408,21 @@ export const routes = {
     query: listMembersSchema,
     statuses: [200],
     command: false,
+  },
+  listGrants: {
+    method: "GET",
+    path: "/v1/members/{memberId}/grants",
+    response: grantListResponseSchema,
+    statuses: [200],
+    command: false,
+  },
+  revokeGrant: {
+    method: "POST",
+    path: "/v1/members/{memberId}/grants/{grantId}/revoke",
+    body: z.strictObject({}),
+    response: revokeGrantResponseSchema,
+    statuses: [200],
+    command: true,
   },
   createMember: {
     method: "POST",

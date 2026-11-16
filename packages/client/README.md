@@ -32,7 +32,7 @@ Receipt status, cancellation delivery, native termination and effects are indepe
 
 Member creation accepts optional instructions and ordered instruction-pack UUIDs, matching the server's eight-pack limit and duplicate rejection. Member creation and listing retain the attached pack IDs.
 
-Methods cover capabilities, health, member listing and creation, conversation opening and snapshot projection, submission, request status, cancellation and approval decisions. `decide` requires the member, request, invocation and approval identities supplied by the observation state. The domain snapshot exposes cursor, conversationId, memberId, engine, profile and phase. Official AG-UI observation owns message and tool interpretation.
+Methods cover capabilities, health, member listing and creation, conversation opening and snapshot projection, submission, request status, cancellation, approval decisions, standing-grant listing and revocation. `decide` requires the member, request, invocation and approval identities supplied by the observation state. The domain snapshot exposes cursor, conversationId, memberId, engine, profile and phase. Official AG-UI observation owns message and tool interpretation.
 
 The same observer instance can reconnect to receive a fresh snapshot. Each run sends empty observation input.
 
@@ -45,7 +45,7 @@ await observer.runAgent();
 // observer.abortRun() only disconnects observation.
 ```
 
-`@birbcrew/client/openapi.json` is exported as OpenAPI 3.1 for the core integration endpoints, including bearer authentication, errors and SSE. It is not the complete Crew API. Its `x-excluded-routes` enumerates audit, routine, memory, instruction-pack, webhook, usage, grant, instructions, handoff, conversation listing and legacy submission/cancellation routes outside this release. JSON snapshot message and tool fields are opaque JSON; use official AG-UI to interpret them. Runtime UTF-8 byte and control-character restrictions appear in schema extension annotations.
+`@birbcrew/client/openapi.json` is exported as OpenAPI 3.1 for the core integration endpoints, including bearer authentication, errors and SSE. It is not the complete Crew API. Its `x-excluded-routes` enumerates audit, routine, memory, instruction-pack, webhook, usage, instructions, handoff, conversation listing and legacy submission/cancellation routes outside this release. JSON snapshot message and tool fields are opaque JSON; use official AG-UI to interpret them. Runtime UTF-8 byte and control-character restrictions appear in schema extension annotations.
 
 The client requires Node 22 or newer, or a browser with fetch, Web Streams, TextEncoder, and String.prototype.isWellFormed.
 
@@ -58,3 +58,11 @@ The response includes the exact proposed `arguments`, policy version and every r
 The documented GET route is `/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}` with required `memberId`, `invocationId` and integer `version` query parameters. Unknown or repeated parameters are rejected. Foreign owners, mismatched identities and unsupported tools return the same bounded `not_found` response. All responses use `Cache-Control: no-store`.
 
 Details remain readable after settlement. Reading them does not assert that a proposal is pending or actionable, reserve an approval, extend a deadline, create a grant or execute a tool. The existing decision endpoint remains the authority for whether a choice can execute.
+
+`listGrants({ memberId }, options?)` reads every active grant for the authenticated owner's member, plus at most twenty inactive rows. The result is `{ apiVersion: "1", memberId, active, inactive }`. There is no pagination or active-result truncation. The client checks member identity, unique grant IDs, scope, conversation, choice and status consistency. Invalid responses and transport failures reject instead of returning empty permission lists.
+
+`revokeGrant({ memberId, grantId }, options?)` posts `{}` to `/v1/members/{memberId}/grants/{grantId}/revoke` and returns `{ apiVersion: "1", grant }`. The client requires the exact requested member and grant IDs and a revoked status. Revocation affects later proposals only. Calls already approved remain approved. Repeated revocation returns the revoked grant, including an existing `recovery_restore` revocation reason.
+
+Both methods accept the existing optional abort signal. An unknown revoke outcome preserves `{ kind: "grant_revocation", memberId, grantId }` in `CrewUnknownOutcomeError.command`. A later list can show current permission state, but it cannot acknowledge the earlier command. The client never retries automatically.
+
+`capabilities().standingGrants` is optional. The `/contract` export `standingGrantsCapabilityV1Schema.safeParse(metadata)` identifies supported version 1 metadata, including choices, tools, policy version, initiator kinds, list history limit and revocation behavior. Absent metadata or an unknown version leaves standing grants unavailable to callers. Unknown-version metadata remains opaque and does not prevent ordinary chat. Callers still check that the desired tool, choice and initiator are advertised. This client increment adds no automatic standing choice or permission UI.
