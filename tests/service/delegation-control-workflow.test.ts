@@ -639,8 +639,11 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
   const tasks = [{ role: "analyst" as const, task: "remember " + randomUUID() }];
   const parentPrompt = "delegate " + JSON.stringify(tasks), holdKey = "parent/" + digest(parentPrompt);
   const observer = new TemporalDelegationWorkflows(temporal);
+  const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
   let parentKey: z.infer<typeof parentResultKeySchema> | undefined;
   let command: ControlReceipt | undefined;
+  let originalCohort: z.infer<typeof cohortSchema> | undefined;
+  let retainedUnobservedParent = false;
   parentHolds.add(digest(parentPrompt));
   try {
     const baselinePids = new Set((await runnerLoads()).map(row => row.pid));
@@ -690,24 +693,35 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     }, "actual Temporal executeTurn completion without a workflow worker to process it");
     const children = await childRows(value.request.requestId);
     const observation = await observer.observeParentResult(key);
+    const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+      "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed",
+      [key.conversationId, key.requestId])).rows[0]);
     assert.ok(requests.every(request => request.responseFinished && request.responseClosed), "Every actual provider response finished and closed");
     await evidence("sql-settled-parent-unobserved-history", history.raw);
     await evidence("sql-settled-parent-unobserved-before-disable", { parent, children, launches, knownRunners, admission,
       providerRequests: requests, scheduledEventId: history.scheduledEventId, completedEventId: history.completedEventId,
-      postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, workflowWorker: "stopped", activityWorkers: "running" });
+      postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, applicable,
+      workflowWorker: "stopped", activityWorkers: "running" });
     assert.ok(children.every(child => child.phase === "complete" && child.outcome?.kind === "completed"));
     assert.equal(history.postCompletionWorkflowTasks.length, 0, "No workflow task completed after the actual follow-up activity completion");
     assert.deepEqual(observation, { kind: "pending" }, "Actual Temporal history still lacks parent workflow observation");
+    assert.equal(applicable.observed, false, "The pending actual history has no applicable positive SQL evidence");
     command = await change(false);
-    const cohort = (await pool.query("SELECT * FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id", [command.commandId])).rows;
+    const cohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+      FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+    originalCohort = cohort;
     const report = await control.drain(command.commandId);
     await evidence("sql-settled-parent-unobserved-disable", { requestId: value.request.requestId, childId: value.rows[0].childId,
       command, cohort, report, observation, workflowWorker: "stopped", activityWorkers: "running" });
     assert.equal(report.complete, false, "Disable must wait for the actual parent workflow to observe its already committed follow-up");
+    assert.deepEqual(cohort.find(row => row.childId === value.rows[0].childId), {
+      commandId: command.commandId, childId: value.rows[0].childId, retire: false,
+    }, "The terminal child remains selected without retiring its completed work");
     assert.ok(report.children.some(child => child.childId === value.rows[0].childId), "The disable cohort retains this terminal child");
     assert.ok(report.parents.some(parent => parent.requestId === value.request.requestId && parent.workflow.kind === "pending"));
     assert.ok(report.blockers.some(blocker => blocker.kind === "parent_workflow" && blocker.requestId === value.request.requestId
       && blocker.observation.kind === "pending"), "The report names this unobserved parent workflow as a blocker");
+    retainedUnobservedParent = true;
   } finally {
     held.get(holdKey)?.release(); parentHolds.delete(digest(parentPrompt));
     try {
@@ -721,6 +735,73 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
         await evidence("sql-settled-parent-unobserved-recovered", { parentKey: key, observation, report });
         assert.equal(observation.kind, "observed");
         if (report) assert.equal(report.complete, true, "Drain completes after the parent workflow actually observes its result");
+        if (retainedUnobservedParent && command && originalCohort) {
+          const noLaunchBaseline = await countSnapshot();
+          const positiveSchema = parentResultKeySchema.omit({ memberId: true }).extend({
+            workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
+            resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(),
+            reply: parentResultKeySchema.shape.reply.unwrap(),
+            installationId: z.uuid(), instanceId: z.uuid(), observedAt: z.iso.datetime(),
+          });
+          const positive = await until(async () => {
+            await control.flush();
+            const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+              "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed",
+              [key.conversationId, key.requestId])).rows[0]);
+            if (!applicable.observed) return undefined;
+            const rows = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
+              o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
+              o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply,
+              to_char(o.observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "observedAt"
+              FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
+                ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
+              WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+            assert.equal(rows.length, 1, "The actual controller persisted one current-instance parent observation");
+            return rows[0];
+          }, "actual controller flush persists applicable exact parent-result evidence", 120_000);
+          const fresh = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
+          const current = await fresh.status();
+          const { observedAt, ...identity } = positive;
+          assert.deepEqual(identity, { installationId: current.installationId, instanceId: current.instanceId,
+            conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
+            resumeActivityId: key.resumeActivityId, reply: key.reply });
+          assert.equal(current.installationId, command.installationId);
+          assert.equal(current.instanceId, command.instanceId);
+          const persistedReport = await fresh.drain(command.commandId);
+          assert.equal(persistedReport.complete, true, "A new manager drains the original command with durable evidence");
+          const cohortAfterPositive = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+          assert.deepEqual(cohortAfterPositive, originalCohort, "Recording the positive preserves original cohort membership and retirement");
+          const { reply: observedReply, ...positiveIdentity } = positive;
+          const { reply: parentReply, ...parentIdentity } = key;
+          assert.equal(observedReply, parentReply);
+          const positiveProof = { ...positiveIdentity, replyDigest: digest(observedReply) };
+          await evidence("sql-settled-parent-observed-positive", { observation, positive: positiveProof, applicable: true,
+            source: "actual-Temporal-adapter-through-controller-flush", freshManagerState: current, originalCommand: command,
+            originalCohort, cohortAfterPositive, report: persistedReport });
+          const enabled = await fresh.change({ commandId: randomUUID(), expectedRevision: current.revision,
+            scope: { kind: "global" }, enabled: true, actor: "actual-pi-temporal-fixture", reason: "re-enable after actual parent observation" });
+          const later = await fresh.change({ commandId: randomUUID(), expectedRevision: (await fresh.status()).revision,
+            scope: { kind: "global" }, enabled: false, actor: "actual-pi-temporal-fixture", reason: "exclude durably observed exact parent result" });
+          const laterCohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [later.commandId])).rows);
+          const originalChildren = new Set(persistedReport.children.filter(child => child.requestId === key.requestId).map(child => child.childId));
+          assert.equal(originalChildren.size, tasks.length, "The original cohort identifies every child from this exact request");
+          assert.ok(laterCohort.every(row => !originalChildren.has(row.childId)), "The later disable excludes this durably observed request's children");
+          const laterReport = await fresh.drain(later.commandId);
+          assert.ok(laterReport.children.every(child => child.requestId !== key.requestId));
+          assert.ok(laterReport.parents.every(parent => parent.requestId !== key.requestId));
+          assert.ok(laterReport.siblings.every(sibling => sibling.requestId !== key.requestId));
+          const cohortAfterLaterDisable = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+          assert.deepEqual(cohortAfterLaterDisable, originalCohort, "Re-enable and later disable preserve the original immutable cohort");
+          const noLaunchAfter = await countSnapshot();
+          assert.deepEqual(noLaunchAfter, noLaunchBaseline, "Positive persistence, manager restart and later control changes launch no additional SDK or provider work");
+          await evidence("sql-settled-parent-observed-later-disable", { parentKey: parentIdentity, positive: positiveProof, observedAt, enabled, later,
+            noLaunchBaseline, noLaunchAfter,
+            originalCohort, cohortAfterLaterDisable, laterCohort, laterReport,
+            exclusionScope: "this-exact-request-only-other-history-may-remain-selected" });
+        }
       }
     } finally { try { await activities.stop(); } finally { await workflow?.stop(); } }
   }

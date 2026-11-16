@@ -13,6 +13,10 @@ import { childTarget, ChildTargetError, childConsentSchema, fixedProposal, keyTa
 import { checkpointSchema, MemberStoreError, type Conversation, type Checkpoint, type TurnRequest } from "./domain.ts";
 
 
+export class ChildNativeStopUnconfirmed extends Error {
+  constructor() { super("Child native stop unconfirmed"); this.name = "ChildNativeStopUnconfirmed"; }
+}
+
 export interface ChildKey {
   ownerId: string;
   memberId: string;
@@ -50,6 +54,7 @@ type ChildStart =
 
 async function transaction<T>(pool: Pool, body: (db: PoolClient) => Promise<T>, bounded = false) {
   const db = await pool.connect();
+  let failed = false;
   try {
     await db.query("BEGIN");
     if (bounded) {
@@ -60,10 +65,12 @@ async function transaction<T>(pool: Pool, body: (db: PoolClient) => Promise<T>, 
     await db.query("COMMIT");
     return result;
   } catch (error) {
-    await db.query("ROLLBACK");
+    failed = true;
+    try { await db.query("ROLLBACK"); }
+    catch (rollbackError) { throw new AggregateError([error, rollbackError], "Child transaction and rollback failed", { cause: error }); }
     throw error;
   } finally {
-    db.release();
+    db.release(failed);
   }
 }
 async function lockParent(db: PoolClient, key: Omit<ChildKey, "childId">) {
@@ -261,13 +268,15 @@ export class ChildStore {
   }
 
   async waitStopped(key: ChildKey, token: string) {
-    for (let i = 0; i < 60; i++) {
+    const deadline = performance.now() + 6000;
+    while (performance.now() < deadline) {
       const { rows: [launch] } = await this.pool.query<{stopped:boolean}>(
-        "SELECT stopped FROM birbcrew_ts.native_launches WHERE child_id=$1 AND token=$2", [key.childId,token]);
+        "SELECT stopped FROM birbcrew_ts.native_launches WHERE child_id=$1 AND token=$2", [key.childId, token]);
       if (!launch || launch.stopped) return;
-      await delay(100);
+      const remaining = deadline - performance.now();
+      if (remaining > 0) await delay(Math.min(100, remaining));
     }
-    throw new Error("Child native stop unconfirmed");
+    throw new ChildNativeStopUnconfirmed();
   }
 
   private async cancel(key: ChildKey) {
