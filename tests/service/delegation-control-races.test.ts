@@ -24,7 +24,11 @@ const receiptSchema = z.object({ commandId: z.uuid(), installationId: z.uuid(), 
   revision: z.string(), scope: scopeSchema, enabled: z.boolean() });
 type Db = Pool | PoolClient;
 type Scope = z.infer<typeof scopeSchema>;
+const parentObservationSchema = z.object({ installationId: z.uuid(), instanceId: z.uuid(), conversationId: z.uuid(),
+  requestId: z.uuid(), workflowRunId: z.string().min(1), resumeActivityId: z.string().min(1), reply: z.string().min(1) });
+type ParentObservation = z.infer<typeof parentObservationSchema>;
 type ProofObservation =
+  | { kind: "parent_observation_sql_fixture"; case: string; accepted: boolean; applicable: boolean }
   | { kind: "native_boundary"; enabled: boolean; callbacks: number; refusal: string | null }
   | { kind: "native_isolation"; isolation: string; oldAdmissionRows: number | null; freshAdmissionRows: number | null }
   | { kind: "lock_wait"; case: string; waiter: number; holder: number; wait_event_type: string | null; wait_event: string | null; blockers: number[] }
@@ -62,7 +66,7 @@ after(async () => {
   const directory = process.env.BIRBCREW_CONTROL_PROOF_DIR;
   if (directory) {
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "sql-first-observations.json"), JSON.stringify({ scope: "SQL-only; no runner or provider invoked by harness", observations }, null, 2) + "\n");
+    await writeFile(join(directory, "sql-first-observations.json"), JSON.stringify({ scope: "SQL-only; positive parent facts are seeded fixtures, not actual Temporal evidence; no runner or provider invoked by harness", observations }, null, 2) + "\n");
   }
 });
 async function revision(db: Db = pool) {
@@ -188,6 +192,35 @@ async function lockConversation(db: PoolClient, conversationId: string) {
 async function stopped(f: Awaited<ReturnType<typeof fixture>>) {
   assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_stop_requests WHERE conversation_id=$1 AND request_id=$2 AND token=$3",
     [f.conversationId, f.requestId, f.token])).rowCount, 1);
+}
+
+async function parentCandidate(f: { conversationId: string; requestId: string }, db: Db = pool) {
+  return parentObservationSchema.parse((await db.query(`SELECT r.installation_id AS "installationId",r.instance_id AS "instanceId",
+    t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
+    d.resume_activity_id AS "resumeActivityId",t.reply FROM birbcrew_ts.turns t
+    JOIN birbcrew_ts.delegations d USING(conversation_id,request_id) CROSS JOIN birbcrew_ts.recovery_control r
+    WHERE (t.conversation_id,t.request_id)=($1,$2) AND r.singleton`, [f.conversationId, f.requestId])).rows[0]);
+}
+async function recordParent(o: ParentObservation, db: Db = pool) {
+  return z.object({ accepted: z.boolean() }).parse((await db.query(`SELECT birbcrew_ts.record_delegation_parent_observation(
+    $1,$2,$3,$4,$5,$6,$7) AS accepted`, [o.installationId, o.instanceId, o.conversationId, o.requestId,
+    o.workflowRunId, o.resumeActivityId, o.reply])).rows[0]).accepted;
+}
+async function applicable(f: { conversationId: string; requestId: string }, db: Db = pool) {
+  return z.object({ observed: z.boolean() }).parse((await db.query(
+    "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [f.conversationId, f.requestId])).rows[0]).observed;
+}
+async function completedFixture() {
+  const f = await fixture(); await f.start(); await f.reserve(); await f.finish();
+  await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1", [f.conversationId]);
+  await pool.query("UPDATE birbcrew_ts.delegations SET resume_activity_id='followup' WHERE conversation_id=$1", [f.conversationId]);
+  await pool.query(`UPDATE birbcrew_ts.turns SET phase='committed',reply='done',checkpoint=$2,workflow_run_id=$3,activity_id='followup'
+    WHERE conversation_id=$1`, [f.conversationId, checkpoint, randomUUID()]);
+  return { ...f, observation: await parentCandidate(f) };
+}
+async function selected(commandId: string, childId: string, expected: boolean, retire = false, db: Db = pool) {
+  assert.deepEqual((await db.query("SELECT retire FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 AND child_id=$2",
+    [commandId, childId])).rows, expected ? [{ retire }] : []);
 }
 
 async function freshAdmission(db: PoolClient, childId: string) {
@@ -454,8 +487,10 @@ test("fixed cohort retains completed-child pending-parent and late-native window
     if (f !== lateNative) await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE child_id=$1", [f.childId]);
     if (f !== missingResume) await pool.query("UPDATE birbcrew_ts.delegations SET resume_activity_id='followup' WHERE conversation_id=$1", [f.conversationId]);
     if (f === uncertain) await pool.query("UPDATE birbcrew_ts.turns SET phase='uncertain' WHERE conversation_id=$1", [f.conversationId]);
-    else if (f !== pendingParent) await pool.query("UPDATE birbcrew_ts.turns SET phase='committed',reply='done',checkpoint=$2 WHERE conversation_id=$1", [f.conversationId, checkpoint]);
+    else if (f !== pendingParent) await pool.query(`UPDATE birbcrew_ts.turns SET phase='committed',reply='done',checkpoint=$2,
+      workflow_run_id=$3,activity_id='followup' WHERE conversation_id=$1`, [f.conversationId, checkpoint, randomUUID()]);
   }
+  for (const f of [lateNative, lateParent, complete]) assert.equal(await recordParent(await parentCandidate(f)), true);
   const receipt = await change({ kind: "global" });
   const membership = await pool.query<{ child_id: string; retire: boolean }>(`SELECT child_id,retire FROM birbcrew_ts.delegation_control_children
     WHERE command_id=$1 AND child_id=ANY($2::uuid[])`, [receipt.commandId, [pendingParent, lateNative, lateParent, uncertain, missingResume, complete].map(f => f.childId)]);
@@ -469,8 +504,9 @@ test("fixed cohort retains completed-child pending-parent and late-native window
 test("target-only cohort leaves an unaffected sibling eligible; later global disable retires it permanently", async () => {
   const f = await fixture({ sibling: true, primaryRole: "analyst" }), sibling = await f.insertChild(pool, "recorder");
   const target = await change(f.targetScope);
-  assert.deepEqual((await pool.query("SELECT child_id FROM birbcrew_ts.delegation_control_children WHERE command_id=$1", [target.commandId])).rows,
+  assert.deepEqual((await pool.query("SELECT child_id FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 AND child_id=ANY($2::uuid[])", [target.commandId, [f.childId, sibling]])).rows,
     [{ child_id: f.childId }]);
+  await selected(target.commandId, historical.childId, true);
   assert.equal((await pool.query("UPDATE birbcrew_ts.pi_children SET phase='running',generation=gen_random_uuid() WHERE child_id=$1", [sibling])).rowCount, 1);
   const approval = randomUUID();
   await f.propose(pool, sibling, approval);
@@ -572,4 +608,259 @@ test("fresh native admission refuses unsupported transaction isolation instead o
       await db.query("ROLLBACK");
     }
   });
+});
+
+test("SQL-complete parents require positive fixtures; later evidence and enable never rewrite an existing cohort", async t => {
+  const f = await completedFixture();
+  assert.equal(await applicable(f), false);
+  const before = await change(f.targetScope);
+  await selected(before.commandId, f.childId, true);
+  assert.equal(await recordParent(f.observation), true);
+  assert.equal(await applicable(f), true);
+  record({ kind: "parent_observation_sql_fixture", case: t.name, accepted: true, applicable: true });
+  const enabled = await change(f.targetScope, true);
+  await selected(enabled.commandId, f.childId, false);
+  assert.equal(await applicable(f), true);
+  const after = await change(f.targetScope);
+  await selected(after.commandId, f.childId, false);
+  await selected(before.commandId, f.childId, true);
+  await assert.rejects(pool.query("DELETE FROM birbcrew_ts.delegation_control_children WHERE command_id=$1", [before.commandId]), { code: "23514" });
+  assert.equal((await pool.query("SELECT workflow_run_id FROM birbcrew_ts.turns WHERE conversation_id=$1", [historical.conversationId])).rows[0].workflow_run_id, null);
+  assert.equal(await applicable(historical), false);
+  await selected(after.commandId, historical.childId, true);
+});
+
+test("the private positive writer refuses every mismatched authority and exact-result identity without creating evidence", async t => {
+  const f = await completedFixture();
+  const mismatches: ParentObservation[] = [
+    { ...f.observation, installationId: randomUUID() }, { ...f.observation, instanceId: randomUUID() },
+    { ...f.observation, conversationId: randomUUID() }, { ...f.observation, requestId: randomUUID() },
+    { ...f.observation, workflowRunId: randomUUID() }, { ...f.observation, resumeActivityId: "other-resume" },
+    { ...f.observation, reply: "different exact reply" },
+  ];
+  for (const candidate of mismatches) {
+    assert.equal(await recordParent(candidate), false);
+    assert.equal(await applicable(f), false);
+    record({ kind: "parent_observation_sql_fixture", case: t.name, accepted: false, applicable: false });
+  }
+  assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1", [f.conversationId])).rowCount, 0);
+  await selected((await change(f.targetScope)).commandId, f.childId, true);
+});
+
+test("one applicability predicate rejects changed and null current work and recovery identities", async () => {
+  const f = await completedFixture();
+  assert.equal(await recordParent(f.observation), true);
+  const mutations = [
+    "UPDATE birbcrew_ts.turns SET workflow_run_id='different-run' WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.turns SET workflow_run_id=NULL,activity_id=NULL WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.delegations SET resume_activity_id='different-resume' WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.delegations SET resume_activity_id=NULL WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.turns SET reply='different reply' WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.turns SET phase='started',reply=NULL,checkpoint=NULL WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.turns SET phase='uncertain',reply=NULL,checkpoint=NULL WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.recovery_control SET installation_id=$1 WHERE singleton",
+    "UPDATE birbcrew_ts.recovery_control SET instance_id=$1 WHERE singleton",
+  ];
+  for (const mutation of mutations) await sessions(async db => {
+    await begin(db); await lockConversation(db, f.conversationId);
+    await db.query(mutation, [mutation.includes("recovery_control") ? randomUUID() : f.conversationId]);
+    assert.equal(await applicable(f, db), false);
+    assert.equal(await recordParent(f.observation, db), false);
+    const receipt = await change(f.targetScope, false, db);
+    await selected(receipt.commandId, f.childId, true, false, db);
+  });
+  assert.equal(await applicable(f), true);
+});
+
+test("positive fixtures do not waive unfinished children, scope, or native reservations committed after observation", async () => {
+  const f = await completedFixture(), outside = await completedFixture();
+  assert.equal(await recordParent(f.observation), true);
+  const lateToken = randomUUID();
+  await f.reserve(pool, lateToken, null);
+  const first = await change(f.targetScope);
+  await selected(first.commandId, f.childId, true);
+  await selected(first.commandId, outside.childId, false);
+  await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE token=$1", [lateToken]);
+  await selected((await change(f.targetScope)).commandId, f.childId, false);
+  await selected(first.commandId, f.childId, true);
+  const pending = await fixture();
+  await pool.query("UPDATE birbcrew_ts.delegations SET resume_activity_id='followup' WHERE conversation_id=$1", [pending.conversationId]);
+  await pool.query(`UPDATE birbcrew_ts.turns SET workflow_run_id=$2,activity_id='followup',phase='committed',reply='done',checkpoint=$3
+    WHERE conversation_id=$1`, [pending.conversationId, randomUUID(), checkpoint]);
+  assert.equal(await recordParent(await parentCandidate(pending)), true);
+  await selected((await change(pending.targetScope)).commandId, pending.childId, true, true);
+});
+
+test("disable sees only committed positive facts in either writer commit order and keeps the selected cohort", { timeout: 30_000 }, async () => {
+  for (const writerCommitsFirst of [false, true]) {
+    const f = await completedFixture();
+    await sessions(async (writer, setter) => {
+      await begin(writer); await begin(setter);
+      assert.equal(await recordParent(f.observation, writer), true);
+      if (writerCommitsFirst) await writer.query("COMMIT");
+      const receipt = await change(f.targetScope, false, setter);
+      await setter.query("COMMIT");
+      await selected(receipt.commandId, f.childId, !writerCommitsFirst);
+      if (!writerCommitsFirst) await writer.query("COMMIT");
+      assert.equal(await applicable(f), true);
+      await selected(receipt.commandId, f.childId, !writerCommitsFirst);
+      await selected((await change(f.targetScope)).commandId, f.childId, false);
+    });
+  }
+});
+
+test("duplicate positive writers serialize idempotently and rollback leaves no observation", { timeout: 30_000 }, async t => {
+  const f = await completedFixture();
+  await sessions(async (a, b) => {
+    await begin(a); await begin(b);
+    assert.equal(await recordParent(f.observation, a), true);
+    const initial = (await a.query("SELECT observed_at FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1", [f.conversationId])).rows;
+    const pending = observed(recordParent(f.observation, b)); await blocked(b, a, t);
+    await a.query("COMMIT"); assert.equal(await accepted(pending), true); await b.query("COMMIT");
+    assert.deepEqual((await pool.query("SELECT observed_at FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1", [f.conversationId])).rows, initial);
+    assert.equal(await recordParent(f.observation), true);
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1", [f.conversationId])).rowCount, 1);
+  });
+  const rolledBack = await completedFixture();
+  await sessions(async writer => {
+    await begin(writer); assert.equal(await recordParent(rolledBack.observation, writer), true);
+    assert.equal(await applicable(rolledBack), false);
+    await writer.query("ROLLBACK");
+  });
+  assert.equal(await applicable(rolledBack), false);
+  assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1", [rolledBack.conversationId])).rowCount, 0);
+  await selected((await change(rolledBack.targetScope)).commandId, rolledBack.childId, true);
+});
+
+test("a positive writer waiting for the parent lock rechecks the committed run, resume, reply and phase", { timeout: 45_000 }, async t => {
+  for (const mutation of [
+    "UPDATE birbcrew_ts.turns SET workflow_run_id='replacement-run' WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.delegations SET resume_activity_id='replacement-resume' WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.turns SET reply='replacement reply' WHERE conversation_id=$1",
+    "UPDATE birbcrew_ts.turns SET phase='uncertain',reply=NULL,checkpoint=NULL WHERE conversation_id=$1",
+  ]) {
+    const f = await completedFixture();
+    await sessions(async (parent, writer) => {
+      await begin(parent); await lockConversation(parent, f.conversationId); await begin(writer);
+      const pending = observed(recordParent(f.observation, writer)); await blocked(writer, parent, t);
+      await parent.query(mutation, [f.conversationId]); await parent.query("COMMIT");
+      assert.equal(await accepted(pending), false); await writer.query("COMMIT");
+      assert.equal(await applicable(f), false);
+    });
+  }
+});
+
+test("parent observation locks conversation before recovery so restored activation can transfer authority without deadlock", { timeout: 30_000 }, async t => {
+  const f = await completedFixture();
+  assert.equal(await recordParent(f.observation), true);
+  await sessions(async (restore, writer) => {
+    await begin(restore); await lockConversation(restore, f.conversationId); await begin(writer);
+    const pending = observed(recordParent(f.observation, writer)); await blocked(writer, restore, t);
+    await restore.query("UPDATE birbcrew_ts.recovery_control SET phase='restored',generation=gen_random_uuid() WHERE singleton");
+    await restore.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL,instance_id=gen_random_uuid() WHERE singleton");
+    const receipt = await change({ kind: "global" }, false, restore);
+    await selected(receipt.commandId, f.childId, true, false, restore);
+    await restore.query("COMMIT"); assert.equal(await accepted(pending), false); await writer.query("COMMIT");
+  });
+  assert.equal(await applicable(f), false);
+  assert.equal(await recordParent(f.observation), false);
+  assert.equal(await recordParent(await parentCandidate(f)), true);
+  assert.equal(await applicable(f), true);
+  await change({ kind: "global" }, true);
+});
+
+test("freeze before observation refuses after its lock wait and same-instance thaw accepts unchanged exact history", { timeout: 30_000 }, async t => {
+  const f = await completedFixture();
+  await sessions(async (freeze, writer) => {
+    await begin(freeze); await begin(writer);
+    await freeze.query("UPDATE birbcrew_ts.recovery_control SET phase='frozen',generation=gen_random_uuid() WHERE singleton");
+    const pending = observed(recordParent(f.observation, writer)); await blocked(writer, freeze, t);
+    await freeze.query("COMMIT"); assert.equal(await accepted(pending), false); await writer.query("COMMIT");
+  });
+  try {
+    assert.equal(await recordParent(f.observation), false);
+    assert.equal(await applicable(f), false);
+    await assert.rejects(pool.query(`INSERT INTO birbcrew_ts.delegation_parent_observations
+      (installation_id,instance_id,conversation_id,request_id,workflow_run_id,resume_activity_id,reply)
+      VALUES($1,$2,$3,$4,$5,$6,$7)`, [f.observation.installationId, f.observation.instanceId, f.conversationId,
+      f.requestId, f.observation.workflowRunId, f.observation.resumeActivityId, f.observation.reply]), { code: "55000" });
+  } finally { await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL WHERE singleton"); }
+  assert.equal(await recordParent(f.observation), true);
+  assert.equal(await applicable(f), true);
+});
+
+test("a positive observation commits before a waiting freeze and remains applicable after same-instance thaw", { timeout: 30_000 }, async t => {
+  const f = await completedFixture();
+  await sessions(async (writer, freeze) => {
+    await begin(writer); await begin(freeze); assert.equal(await recordParent(f.observation, writer), true);
+    const pending = observed(freeze.query("UPDATE birbcrew_ts.recovery_control SET phase='frozen',generation=gen_random_uuid() WHERE singleton"));
+    await blocked(freeze, writer, t); await writer.query("COMMIT"); await accepted(pending); await freeze.query("COMMIT");
+  });
+  try { assert.equal(await applicable(f), false); assert.equal(await recordParent(f.observation), false); }
+  finally { await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL WHERE singleton"); }
+  assert.equal(await applicable(f), true);
+  assert.equal(await recordParent(f.observation), true);
+  await selected((await change(f.targetScope)).commandId, f.childId, false);
+});
+
+test("the observation boundary rejects retained snapshots and malformed positive inputs", async () => {
+  const f = await completedFixture();
+  for (const isolation of ["REPEATABLE READ", "SERIALIZABLE"]) await sessions(async db => {
+    await db.query(`BEGIN ISOLATION LEVEL ${isolation}`);
+    await assert.rejects(recordParent(f.observation, db), { code: "55000" });
+  });
+  const fields = [f.observation.installationId, f.observation.instanceId, f.conversationId, f.requestId,
+    f.observation.workflowRunId, f.observation.resumeActivityId, f.observation.reply];
+  for (let index = 0; index < fields.length; index++) {
+    const invalid: (string | null)[] = [...fields]; invalid[index] = null;
+    await assert.rejects(pool.query("SELECT birbcrew_ts.record_delegation_parent_observation($1,$2,$3,$4,$5,$6,$7)", invalid), { code: "22023" });
+  }
+  for (const invalid of [{ ...f.observation, workflowRunId: "" }, { ...f.observation, resumeActivityId: "" },
+    { ...f.observation, reply: "" }, { ...f.observation, reply: "x".repeat(65537) }]) {
+    await assert.rejects(recordParent(invalid), { code: "22023" });
+  }
+  assert.equal(await applicable(f), false);
+});
+
+test("positive reply comparison is byte-exact for canonically equivalent Unicode text", async () => {
+  const f = await completedFixture();
+  const composed = "caf\u00e9", decomposed = "cafe\u0301";
+  assert.equal(composed.normalize("NFD"), decomposed);
+  await pool.query("UPDATE birbcrew_ts.turns SET reply=$2 WHERE conversation_id=$1", [f.conversationId, composed]);
+  const candidate = await parentCandidate(f);
+  assert.equal(await recordParent({ ...candidate, reply: decomposed }), false);
+  assert.equal(await recordParent(candidate), true);
+  await pool.query("UPDATE birbcrew_ts.turns SET reply=$2 WHERE conversation_id=$1", [f.conversationId, decomposed]);
+  assert.equal(await applicable(f), false);
+  await selected((await change(f.targetScope)).commandId, f.childId, true);
+  assert.equal(await recordParent(await parentCandidate(f)), true);
+  assert.equal(await applicable(f), true);
+});
+
+test("disable waiting for control reads a newly committed positive observation after the lock", { timeout: 30_000 }, async t => {
+  const f = await completedFixture();
+  await sessions(async (holder, setter) => {
+    await begin(holder); await begin(setter);
+    await holder.query("SELECT 1 FROM birbcrew_ts.delegation_control WHERE singleton FOR UPDATE");
+    const pending = observed(change(f.targetScope, false, setter)); await blocked(setter, holder, t);
+    assert.equal(await recordParent(f.observation), true);
+    await holder.query("COMMIT"); const receipt = await accepted(pending); await setter.query("COMMIT");
+    await selected(receipt.commandId, f.childId, false);
+  });
+});
+
+test("observation waiting for recovery rechecks installation and instance after the lock", { timeout: 30_000 }, async t => {
+  for (const column of ["installation_id", "instance_id"]) {
+    const f = await completedFixture();
+    await sessions(async (transfer, writer) => {
+      await begin(transfer); await begin(writer);
+      await transfer.query(`UPDATE birbcrew_ts.recovery_control SET ${column}=gen_random_uuid() WHERE singleton`);
+      const pending = observed(recordParent(f.observation, writer)); await blocked(writer, transfer, t);
+      await transfer.query("COMMIT"); assert.equal(await accepted(pending), false); await writer.query("COMMIT");
+    });
+    assert.equal(await applicable(f), false);
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1", [f.conversationId])).rowCount, 0);
+    assert.equal(await recordParent(await parentCandidate(f)), true);
+    assert.equal(await applicable(f), true);
+  }
 });
