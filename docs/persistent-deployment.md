@@ -48,8 +48,9 @@ Node 24.22.3 base only that workflow's amd64 build and smoke run are verified.
 
 ## Processes
 
-Both commands run from `/app`. Every process applies the `birbcrew_ts`
-migrations at startup (see [Database role](#database-role)).
+Both commands run from `/app` and apply the `birbcrew_ts` migrations at startup
+(see [Database role](#database-role)). The private
+[delegation-control CLI](delegation-control.md) uses an already migrated database.
 
 | Process | Command | Notes |
 | --- | --- | --- |
@@ -175,7 +176,7 @@ to fail (**unverified** on a cluster).
 
 ## Database role
 
-Each gateway, worker and CLI process calls `MemberStore.migrate()` at startup
+Each gateway, worker and members CLI process calls `MemberStore.migrate()` at startup
 with the `BIRBCREW_DATABASE_URL` role. That role runs the `birbcrew_ts`
 migrations, under an advisory lock, and owns the schema it creates. Give Crew
 its own database and role, separate from Temporal persistence.
@@ -255,6 +256,12 @@ table (see [outbound webhooks](webhooks.md#upgrade)). Migration 35 (estimated co
 `usage_ledger` in `ACCESS EXCLUSIVE` and `trusted_requests` in `SHARE ROW EXCLUSIVE` with
 `NOWAIT` and retries like 25 to 33, and a running trusted turn's lease never delays it (see
 [usage metering](usage-metering.md#upgrade-and-recovery)).
+Migration 38 installs delegation-control tables and write guards using normal
+PostgreSQL DDL locks in the migration transaction. It has no migration-specific
+`NOWAIT` retry loop. Stop all previous-release processes before applying it. For
+the exact retained-state rollback floor and required global disable, drain, and
+process shutdown sequence, follow
+[delegation control](delegation-control.md#upgrade-or-roll-back-with-retained-state).
 From the release that adds migration 31 on, every gateway, worker and CLI process
 refuses to start with
 `Migration N would apply after migration M` when it would apply a migration numbered 27
@@ -400,7 +407,8 @@ livenessProbe:
 Set `BIRBCREW_WORKER_HEARTBEAT_FILE` to an absolute path, for example
 `/tmp/crew-worker.heartbeat`. The worker refuses to start if the path is
 relative or its directory is not writable. It touches the file when it starts
-its Temporal workers, then every 5 seconds until shutdown begins. A touch
+its Temporal workers, then every 5 seconds while all workers report `RUNNING`
+and delegation-control reconciliation is healthy, until shutdown begins. A touch
 creates the file if needed and never truncates it. If a touch fails, the worker
 logs `Cannot update BIRBCREW_WORKER_HEARTBEAT_FILE` once and keeps running.
 
@@ -415,6 +423,14 @@ marks a worker `RUNNING` as soon as `run()` is called, before its first poll.
 The file also does not detect an activity or the SDK supervisor child that
 hangs without blocking the event loop. A supervisor that exits does stop the
 worker.
+
+The worker logs `delegation_control_pending` when retirement settlement remains
+pending or a workflow wake is unavailable. It logs `delegation_control_failed`
+when the reconciliation pass fails. A failed pass or unavailable wake suppresses
+heartbeat touches until a healthy pass. Pending native teardown alone does not
+suppress them, and the initial touch can precede the first pass result. Use the
+private [delegation drain](delegation-control.md#observe-the-drain) to confirm
+child closure, parent delivery, and native stops.
 
 Startup runs migrations, connects to Temporal and bundles workflow code before
 the first touch, so give it a startup probe:
