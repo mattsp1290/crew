@@ -3027,8 +3027,8 @@
       "sha256": "400dbf8696c0bd5a74b2fa6bac834972c65a53777b7020272eb8532e772d40ed"
     },
     ".gitattributes": {
-      "sha256": "64c319c3e4d85add8cdb1d66483b6a65ee1fe981e72f6fddddb570989b9d5c58",
-      "gitBlob": "378e66c51489866b9a8e7738a8b4129c91166e29",
+      "sha256": "320d7d1e6deeac2421f3c38c2084f5b69c16a57398d70d870e9be01f98b6c1c5",
+      "gitBlob": "f75d8bb82ef8092f0814b0ed850ab35c04cd0bae",
       "mode": "100644"
     },
     ".github/workflows/conversation-rollover.yml": {

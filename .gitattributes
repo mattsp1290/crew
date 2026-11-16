@@ -1,1 +1,2 @@
+tests/proof/member-report.mts export-subst
 vendor/opentelemetry/otlp-exporter-base-0.208.0-crew.1/source.patch -whitespace
