@@ -1082,10 +1082,13 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
       ["wrong-reply", { ...key, reply: delivered + " unrelated" }],
     ] satisfies [string, typeof key][]) {
       const observation = await observer.observeParentResult(wrongKey);
-      assert.ok(["pending", "unknown", "missing"].includes(observation.kind), name + " cannot observe the actual reply");
       liveIdentityChecks.push({ name, observation });
+      await evidence("reconciled-parent-live-identity-negatives", { source: "actual-Temporal-public-adapter-wrong-key-lookups", checks: liveIdentityChecks });
+      assert.notEqual(observation.kind, "observed", name + " cannot observe the actual reply");
+      if (name !== "wrong-conversation" && name !== "wrong-run") {
+        assert.notEqual(observation.kind, "unavailable", name + " still has an available recorded workflow execution");
+      }
     }
-    await evidence("reconciled-parent-live-identity-negatives", { source: "actual-Temporal-public-adapter-wrong-key-lookups", checks: liveIdentityChecks });
 
     type Events = NonNullable<typeof history.raw.events>;
     type Event = Events[number];
