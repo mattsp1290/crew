@@ -23,7 +23,7 @@
     "test:live": "node tests/proof/live-members.ts",
     "test:proxy": "node --test tests/proxy-relay.test.ts tests/service/proxy-credential.test.ts tests/service/proxy-members.test.ts tests/service/proxy-scope.test.ts",
     "test:trusted": "node --test tests/service/trusted-*.test.ts",
-    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts",
+    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts tests/service/telemetry-exporter-*.test.ts",
     "test:proxy:restart": "node tests/proof/proxy-restart.mts",
     "recovery": "node src/service/recovery-cli.ts",
     "test:recovery": "node --test tests/service/recovery.test.ts",
@@ -77,6 +77,7 @@
     "@openai/codex-sdk": "0.167.1",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.208.0",
+    "@opentelemetry/otlp-exporter-base": "file:vendor/opentelemetry/opentelemetry-otlp-exporter-base-0.208.0-crew.1.tgz",
     "@opentelemetry/resources": "2.2.0",
     "@opentelemetry/sdk-trace-base": "2.2.0",
     "@temporalio/activity": "1.25.0",
@@ -102,5 +103,8 @@
   "homepage": "https://github.com/mattsp1290/crew#readme",
   "bugs": {
     "url": "https://github.com/mattsp1290/crew/issues"
+  },
+  "overrides": {
+    "@opentelemetry/otlp-exporter-base": "$@opentelemetry/otlp-exporter-base"
   }
 }

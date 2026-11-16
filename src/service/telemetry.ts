@@ -120,9 +120,9 @@ if (endpoint) {
   // rate-limited warning.
   processors.push(new BatchSpanProcessor({
     export: (spans, done) => {
-      // node:http starts the request timeout only once connected, so a dropped connection attempt would report
-      // nothing until the operating system gives up, minutes later. The batch processor abandons the export at
-      // exportTimeoutMs; report it then. Unreferenced, so it never holds a process open.
+      // The exporter owns the total deadline, including connection setup and response-body consumption.
+      // Keep warning delivery within the batch processor's matching budget even if its export wait expires first.
+      // Unreferenced, so this reporting timer never holds a process open.
       let reported = false;
       const report = (error: unknown) => { if (!reported) { reported = true; warn(error); } };
       const timer = setTimeout(() => report(new Error("Request Timeout")), exportTimeoutMs).unref();
@@ -141,9 +141,8 @@ if (endpoint) {
 const provider = processors.length ? new BasicTracerProvider({
   resource: resourceFromAttributes(resource),
   spanProcessors: processors,
-  // Bounds only the flush wait. An export it abandons can still hold a returning process (the worker) open: for
-  // about exportTimeoutMs once connected, but until the operating system gives up when a connection attempt is
-  // never answered, because node:http starts its timeout only on connect. The turn runner ends it with process.exit.
+  // Bounds the provider's flush wait. An export can outlive that wait, but the exporter's total deadline
+  // still cancels it at exportTimeoutMs. Callers can use a smaller flush budget on their critical path.
   forceFlushTimeoutMillis: 1_000,
   idGenerator: {
     generateTraceId: () => active.getStore()?.traceId ?? randomBytes(16).toString("hex"),
