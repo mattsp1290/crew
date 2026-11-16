@@ -1,3 +1,4 @@
+import type { Pool } from "pg";
 import { progressActivity } from "./progress-activity.ts";
 import { answerLive, cancelLive } from "./codex-calls.ts";
 import { open } from "node:fs/promises";
@@ -29,18 +30,37 @@ export function memberQueueActivities(store: MemberStore) {
     expireApproval: expiryActivity(store) };
 }
 
-export async function runMemberWorker(store: MemberStore, temporal: TemporalSettings, profiles: ReadonlyMap<string, MemberProfile>,
-  configPath: string, stateDir: string, heartbeat?: string) {
-  const connection = await NativeConnection.connect(await temporalConnectionOptions(temporal));
+export async function runMemberWorker({ store, temporal, profiles, configPath, stateDir, heartbeat, controlPool }: {
+  store: MemberStore; temporal: TemporalSettings; profiles: ReadonlyMap<string, MemberProfile>;
+  configPath: string; stateDir: string; heartbeat?: string; controlPool: Pool;
+}) {
   const { namespace } = temporal;
   const workers: Worker[] = [];
+  const running: Promise<void>[] = [];
+  let connection: NativeConnection | undefined;
   let supervisor;
   let clientConnection: Connection | undefined;
+  let lastSuccessfulPassAt: number | undefined;
+  let pass: Promise<void> | undefined;
+  let reconciliation: ReturnType<typeof setInterval> | undefined;
+  let beats: ReturnType<typeof setInterval> | undefined;
+  const failed = () => {
+    lastSuccessfulPassAt = undefined;
+    console.error(JSON.stringify({ event: "delegation_control_failed" }));
+  };
+  controlPool.on("error", failed);
+  const serve = (worker: Worker) => {
+    workers.push(worker);
+    const run = worker.run();
+    void run.catch(() => {});
+    running.push(run);
+  };
   try {
+    connection = await NativeConnection.connect(await temporalConnectionOptions(temporal));
     clientConnection = await Connection.connect(await temporalConnectionOptions(temporal));
-    const control = new DelegationControl({ pool: store.pool, workflows: new TemporalDelegationWorkflows(
+    const control = new DelegationControl({ pool: controlPool, workflows: new TemporalDelegationWorkflows(
       new Client({ connection: clientConnection, namespace })) });
-    workers.push(await Worker.create({
+    serve(await Worker.create({
       connection, namespace, taskQueue: memberTaskQueue, activities: memberQueueActivities(store),
       workflowsPath: fileURLToPath(new URL("./workflow.ts", import.meta.url)),
     }));
@@ -49,53 +69,50 @@ export async function runMemberWorker(store: MemberStore, temporal: TemporalSett
       for (const engine of engineSchema.options) {
         if (!engines[engine]) continue;
         const activities = memberActivities(store, supervisor, profiles, stateDir, engine);
-        workers.push(await Worker.create({
+        serve(await Worker.create({
           connection, namespace, activities, taskQueue: activityQueue(engine, profile),
           ...(engine === "codex" && { maxConcurrentActivityTaskExecutions: 2 }),
         }));
       }
     }
     if (workers.length === 1) throw new Error("No member engines configured");
-    const running = workers.map((worker) => worker.run());
     let reported = false;
-    let controlHealthy = true;
-    let pass: Promise<void> | undefined;
     const reconcile = () => {
       if (pass) return;
       pass = control.flush().then(result => {
-        controlHealthy = !result.children.some(child => child.wake.kind === "unavailable");
-        if (!controlHealthy || result.children.some(child => child.settlement === "pending")) {
+        const healthy = !result.children.some(child => child.wake.kind === "unavailable");
+        lastSuccessfulPassAt = healthy ? performance.now() : undefined;
+        if (!healthy || result.children.some(child => child.settlement === "pending")) {
           console.error(JSON.stringify({ event: "delegation_control_pending", ...result }));
         }
-      }, () => {
-        controlHealthy = false;
-        console.error(JSON.stringify({ event: "delegation_control_failed" }));
-      }).finally(() => { pass = undefined; });
+      }, failed).finally(() => { pass = undefined; });
     };
     reconcile();
-    const reconciliation = setInterval(reconcile, 2000);
+    reconciliation = setInterval(reconcile, 2000);
     const beat = () => {
-      if (!controlHealthy || heartbeat === undefined || !workers.every((worker) => worker.getState() === "RUNNING")) return;
+      if (lastSuccessfulPassAt === undefined || performance.now() - lastSuccessfulPassAt > 60_000
+        || heartbeat === undefined || !workers.every((worker) => worker.getState() === "RUNNING")) return;
       void touch(heartbeat).catch(() => {
         if (!reported) console.error("Cannot update BIRBCREW_WORKER_HEARTBEAT_FILE");
         reported = true;
       });
     };
-    beat();
-    const beats = heartbeat === undefined ? undefined : setInterval(beat, 5000);
-    try {
-      await Promise.race([Promise.all(running), supervisor.exited.then(() => { throw new Error("SDK supervisor stopped"); })]);
-    } finally {
-      clearInterval(beats);
-      clearInterval(reconciliation);
-      for (const worker of workers) if (worker.getState() === "RUNNING") worker.shutdown();
-      await pass;
-      await Promise.allSettled(running);
-    }
+    beats = heartbeat === undefined ? undefined : setInterval(beat, 5000);
+    await Promise.race([Promise.all(running), supervisor.exited.then(() => { throw new Error("SDK supervisor stopped"); })]);
   } finally {
-    try { await supervisor?.close(); }
-    finally {
-      try { await clientConnection?.close(); } finally { await connection.close(); }
+    clearInterval(beats);
+    clearInterval(reconciliation);
+    try {
+      const shutdown = await Promise.allSettled(workers.filter(worker => worker.getState() === "RUNNING")
+        .map(async worker => { worker.shutdown(); }));
+      try { await pass; } finally { await Promise.allSettled(running); }
+      const errors = shutdown.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Member worker shutdown failed");
+    } finally {
+      try { await supervisor?.close(); }
+      finally {
+        try { await clientConnection?.close(); } finally { await connection?.close(); }
+      }
     }
   }
 }

@@ -27,6 +27,7 @@ const members = new MemberStore(pool), children = new ChildStore(pool), approval
 const checkpoint = { version: 1, engine: "pi", state: {} };
 const directory = await mkdtemp(join(tmpdir(), "crew-control-store-"));
 type ChildExecutionKey = Parameters<ChildWorkflowControl["observe"]>[0];
+type ParentResultKey = Parameters<ChildWorkflowControl["observeParentResult"]>[0];
 type DelegationCleanup = {
   keys: Awaited<ReturnType<ChildStore["delegate"]>>;
   request: Parameters<MemberStore["beginResume"]>[0];
@@ -35,15 +36,16 @@ type DelegationCleanup = {
 const fixtures: DelegationCleanup[] = [];
 const observations: { case: string; observedAt: string; value: unknown }[] = [];
 function record(name: string, value: unknown) { observations.push({ case: name, observedAt: new Date().toISOString(), value }); }
-function workflowFixture() {
+function workflowFixture(controlPool: Pool = pool) {
   const signals: ChildExecutionKey[] = [];
+  const parentObservations: ParentResultKey[] = [];
   const workflows: ChildWorkflowControl = {
     async signalDecision(key) { signals.push(key); return { kind: "accepted" }; },
     async observe(key) { return key.workflowRunId === null ? { kind: "not_started" }
       : { kind: "closed", runId: key.workflowRunId, status: "COMPLETED" }; },
-    async observeParentResult() { return { kind: "observed" }; },
+    async observeParentResult(key) { parentObservations.push(key); return { kind: "observed" }; },
   };
-  return { workflows, signals, control: new DelegationControl({ pool, workflows }) };
+  return { workflows, signals, parentObservations, control: new DelegationControl({ pool: controlPool, workflows }) };
 }
 const forbiddenWorkflowCalls: string[] = [];
 function faultWorkflows(): ChildWorkflowControl {
@@ -128,7 +130,8 @@ async function childState(key: ChildKey) {
 }
 afterEach(async () => {
   const failures: unknown[] = [];
-  for (const fixture of fixtures.splice(0)) {
+  const completed = fixtures.splice(0);
+  for (const fixture of completed) {
     for (const key of fixture.keys) {
       try { await children.closeExitedChild(key, false); }
       catch (error) { failures.push(error); }
@@ -136,6 +139,8 @@ afterEach(async () => {
     try { await finishParent(fixture); }
     catch (error) { failures.push(error); }
   }
+  try { await observeParents(workflowFixture(), completed.map(fixture => fixture.request.requestId)); }
+  catch (error) { failures.push(error); }
   if (failures.length) throw new AggregateError(failures, "Delegation store fixture cleanup failed");
 });
 async function finishParent(fixture: DelegationCleanup) {
@@ -146,6 +151,30 @@ async function finishParent(fixture: DelegationCleanup) {
   const { ownerId, conversationId, requestId } = fixture.request;
   await members.commitTurn({ ownerId, conversationId, requestId, token: resume.token, checkpoint, reply: "Fixture outcomes delivered" });
   return execution;
+}
+async function parentObserved(requestId: string) {
+  return z.object({ observed: z.boolean() }).parse((await pool.query(`SELECT
+    birbcrew_ts.delegation_parent_result_observed(conversation_id,request_id) AS observed
+    FROM birbcrew_ts.delegations WHERE request_id=$1`, [requestId])).rows[0]).observed;
+}
+async function discoveryPasses() {
+  const { count } = z.object({ count: z.number() }).parse((await pool.query(
+    "SELECT count(*)::int AS count FROM birbcrew_ts.delegations")).rows[0]);
+  return Math.ceil(count / 4) + 2;
+}
+async function observeParents(worker: ReturnType<typeof workflowFixture>, requestIds: string[]) {
+  const limit = await discoveryPasses();
+  for (let pass = 0; pass < limit; pass++) {
+    if ((await Promise.all(requestIds.map(parentObserved))).every(Boolean)) return;
+    await worker.control.flush();
+  }
+  assert.fail("Bounded adapter-fixture reconciliation did not persist every exact positive parent observation");
+}
+async function completedDelegation() {
+  const f = await delegation(), [key] = f.keys, started = await running(key);
+  await children.finish(key, started.generation, { text: "Completed fixture child", checkpoint });
+  await finishParent(f);
+  return f;
 }
 
 test("strict operator input rejects malformed commands without changing durable permission", async () => {
@@ -386,6 +415,9 @@ test("completed selected child remains in the cohort until parent and all retain
       [{ childId: key.childId, retire: false }]);
     assert.ok(beforeParent.blockers.some(blocker => blocker.kind === "parent_pending"));
     await finishParent(f);
+    await worker.control.drain(receipt.commandId);
+    assert.equal(await parentObserved(key.requestId), false, "Read-only drain does not save its adapter fixture observation");
+    await observeParents(worker, [key.requestId]);
     const lateNativeReceipt = await change(targetScope(f.profile));
     const nativePending = await worker.control.drain(lateNativeReceipt.commandId);
     assert.deepEqual(nativePending.children.map(child => ({ childId: child.childId, retire: child.retire })),
@@ -396,6 +428,7 @@ test("completed selected child remains in the cohort until parent and all retain
     assert.deepEqual(onePending.blockers, [{ kind: "native_unconfirmed", requestId: key.requestId, tokens: [parentTokens[1]] }]);
     await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND token=$2", [key.conversationId, parentTokens[1]]);
     assert.equal((await worker.control.drain(lateNativeReceipt.commandId)).complete, true);
+    assert.equal(await parentObserved(key.requestId), true, "A cached parent positive never waived either unstopped native attempt");
     const quiescentReceipt = await change(targetScope(f.profile));
     assert.deepEqual((await worker.control.drain(quiescentReceipt.commandId)).children, []);
     record("database-only retained launch accounting", { childId: key.childId, tokens: parentTokens,
@@ -619,6 +652,9 @@ test("reconciliation retries incomplete parent and native facts after enable but
     const pendingNative = workflowFixture();
     assert.equal((await flushChild(pendingNative, key.childId)).wake.kind, "accepted");
     assert.deepEqual(pendingNative.signals.map(signal => signal.childId), [key.childId]);
+    await observeParents(pendingNative, [key.requestId]);
+    assert.equal(await parentObserved(key.requestId), true, "Only the explicit positive adapter fixture permits historical exclusion");
+    assert.deepEqual(pendingNative.parentObservations.map(parent => parent.requestId), [key.requestId]);
     await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND token=$2", [key.conversationId, f.token]);
     const restarted = workflowFixture();
     const quiescent = await restarted.control.flush();
@@ -633,4 +669,232 @@ test("reconciliation retries incomplete parent and native facts after enable but
   } finally {
     await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND token=$2", [key.conversationId, f.token]);
   }
+});
+
+test("SQL completion remains selected until an adapter-fixture positive is persisted and cached drain stays read-only", async () => {
+  const f = await completedDelegation(), [key] = f.keys, worker = workflowFixture();
+  worker.workflows.observeParentResult = async () => ({ kind: "pending" });
+  const receipt = await change(targetScope(f.profile));
+  const pending = await worker.control.drain(receipt.commandId);
+  assert.deepEqual(pending.children.map(child => ({ childId: child.childId, retire: child.retire })),
+    [{ childId: key.childId, retire: false }]);
+  assert.deepEqual(pending.blockers, [{ kind: "parent_workflow", requestId: key.requestId, observation: { kind: "pending" } }]);
+  assert.equal(await parentObserved(key.requestId), false);
+  worker.workflows.observeParentResult = async parent => {
+    assert.deepEqual(parent, { memberId: f.member.memberId, conversationId: key.conversationId, requestId: key.requestId,
+      workflowRunId: f.execution.workflowRunId, resumeActivityId: "parent-followup", reply: "Fixture outcomes delivered" });
+    return { kind: "observed" };
+  };
+  assert.equal((await worker.control.drain(receipt.commandId)).complete, true);
+  assert.equal(await parentObserved(key.requestId), false, "A positive live drain remains a read-only observation");
+  await observeParents(worker, [key.requestId]);
+  const evidence = await pool.query("SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [key.requestId]);
+  assert.equal(evidence.rowCount, 1);
+  const restarted = workflowFixture();
+  restarted.workflows.observeParentResult = async () => { assert.fail("Applicable persisted evidence avoids unavailable parent history"); };
+  const cached = await restarted.control.drain(receipt.commandId);
+  assert.equal(cached.complete, true);
+  assert.deepEqual(cached.parents[0].workflow, { kind: "observed" });
+  assert.equal(JSON.stringify(cached).includes("Fixture outcomes delivered"), false);
+  assert.deepEqual(Object.keys(cached.parents[0]).sort(), ["memberId", "conversationId", "requestId", "workflowRunId",
+    "resumeActivityId", "phase", "unstoppedLaunches", "workflow"].sort());
+  assert.deepEqual((await pool.query("SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [key.requestId])).rows, evidence.rows);
+  restarted.workflows.observe = async () => ({ kind: "missing" });
+  assert.deepEqual((await restarted.control.drain(receipt.commandId)).blockers,
+    [{ kind: "child_workflow", childId: key.childId, observation: { kind: "missing" } }]);
+  const later = await change(targetScope(f.profile));
+  assert.deepEqual((await restarted.control.drain(later.commandId)).children, []);
+  assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 AND child_id=$2",
+    [receipt.commandId, key.childId])).rowCount, 1, "The earlier immutable cohort retains its completed child");
+  record("adapter-fixture positive producer and read-only cached consumer", { requestId: key.requestId, pending, cached, later });
+});
+
+test("cyclic historical discovery advances past every nonpositive adapter fixture and revisits never-retired parents", async () => {
+  const variants = ["pending", "missing", "unknown", "unavailable", "malformed", "throws"] as const;
+  const negative = new Map<string, typeof variants[number]>(), visits = new Map<string, number>();
+  for (const kind of variants) negative.set((await completedDelegation()).request.requestId, kind);
+  const healthy = await completedDelegation(), unready = await delegation(), worker = workflowFixture();
+  const allRequests = [...negative.keys(), healthy.request.requestId, unready.request.requestId];
+  assert.equal((await pool.query(`SELECT 1 FROM birbcrew_ts.delegation_control_children m JOIN birbcrew_ts.pi_children j USING(child_id)
+    WHERE j.request_id=ANY($1::uuid[])`, [allRequests])).rowCount, 0, "Historical discovery does not depend on prior retirement");
+  let calls = 0, failedPasses = 0, failureExpected = false;
+  worker.workflows.observeParentResult = async parent => {
+    calls++; visits.set(parent.requestId, (visits.get(parent.requestId) ?? 0) + 1);
+    const kind = negative.get(parent.requestId);
+    if (kind === "throws" || kind === "malformed" || kind === "unavailable") failureExpected = true;
+    if (kind === "throws") throw new Error("Controlled adapter fixture transport failure");
+    if (kind === "malformed") return { kind: "observed", unexpected: true };
+    if (kind) return { kind };
+    return { kind: "observed" };
+  };
+  async function historicalPass() {
+    const before = calls;
+    failureExpected = false;
+    let failure: unknown;
+    try { await worker.control.flush(); } catch (error) { failure = error; }
+    if (failureExpected) { assert.ok(failure instanceof AggregateError); failedPasses++; }
+    else assert.equal(failure, undefined);
+    assert.ok(calls - before <= 4, "One pass examines at most four raw parent keys");
+  }
+  for (let pass = 0, limit = await discoveryPasses() * 3; pass < limit; pass++) await historicalPass();
+  for (const [requestId, kind] of negative) {
+    assert.ok((visits.get(requestId) ?? 0) >= 2, "Cyclic discovery revisits " + kind + " history");
+    assert.equal(await parentObserved(requestId), false, kind + " cannot authorize future cohort exclusion");
+  }
+  assert.equal(await parentObserved(healthy.request.requestId), true, "Failing earlier keys do not starve a healthy parent");
+  assert.equal(visits.has(unready.request.requestId), false, "An unready raw key advances without reading parent history");
+  assert.ok(failedPasses > 0, "Unavailable, malformed and throwing adapters fail reconciliation");
+  await children.closeExitedChild(unready.keys[0], false);
+  await finishParent(unready);
+  for (let pass = 0, limit = await discoveryPasses(); pass < limit && !await parentObserved(unready.request.requestId); pass++) {
+    await historicalPass();
+  }
+  assert.equal(await parentObserved(unready.request.requestId), true, "An unready key is discovered after becoming ready");
+  record("adapter-fixture historical fairness", { visits: Object.fromEntries(visits), failedPasses });
+});
+
+test("duplicate adapter-fixture managers persist one exact fact and SQL clients are released before observation", async () => {
+  const f = await completedDelegation();
+  const boundedPool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 1000,
+    statement_timeout: 2000, query_timeout: 3000, application_name: "control-store-observation-one-client" });
+  try {
+    const first = workflowFixture(boundedPool), second = workflowFixture(boundedPool);
+    for (const worker of [first, second]) worker.workflows.observeParentResult = async parent => {
+      assert.equal((await boundedPool.query("SELECT 1")).rowCount, 1, "Adapter can acquire the only controller SQL client");
+      assert.equal(parent.requestId, f.request.requestId);
+      return { kind: "observed" };
+    };
+    for (let pass = 0, limit = await discoveryPasses(); pass < limit && !await parentObserved(f.request.requestId); pass++) {
+      await Promise.all([first.control.flush(), second.control.flush()]);
+    }
+    assert.equal(await parentObserved(f.request.requestId), true);
+    const saved = await pool.query("SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [f.request.requestId]);
+    assert.equal(saved.rowCount, 1);
+    await observeParents(workflowFixture(boundedPool), [f.request.requestId]);
+    assert.deepEqual((await pool.query("SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [f.request.requestId])).rows, saved.rows);
+  } finally { await boundedPool.end(); }
+});
+
+test("positive adapter fixtures cannot persist across a changed exact run, resume activity or reply", async () => {
+  for (const mutate of [
+    "UPDATE birbcrew_ts.turns SET workflow_run_id=$2 WHERE request_id=$1",
+    "UPDATE birbcrew_ts.delegations SET resume_activity_id=$2 WHERE request_id=$1",
+    "UPDATE birbcrew_ts.turns SET reply=$2 WHERE request_id=$1",
+  ]) {
+    const f = await completedDelegation(), worker = workflowFixture();
+    try {
+      worker.workflows.observeParentResult = async parent => {
+        if (parent.requestId === f.request.requestId) await pool.query(mutate, [parent.requestId, "replacement-" + randomUUID()]);
+        return { kind: "observed" };
+      };
+      for (let pass = 0, limit = await discoveryPasses(); pass < limit; pass++) await worker.control.flush();
+      assert.equal(await parentObserved(f.request.requestId), false, "An observation cannot certify the replaced SQL identity");
+      const receipt = await change(targetScope(f.profile));
+      assert.deepEqual((await workflowFixture().control.drain(receipt.commandId)).children.map(child => child.childId), [f.keys[0].childId]);
+      await observeParents(workflowFixture(), [f.request.requestId]);
+      await pool.query(mutate, [f.request.requestId, "another-replacement-" + randomUUID()]);
+      const fallback = workflowFixture();
+      fallback.workflows.observeParentResult = async () => ({ kind: "pending" });
+      assert.deepEqual((await fallback.control.drain(receipt.commandId)).blockers,
+        [{ kind: "parent_workflow", requestId: f.request.requestId, observation: { kind: "pending" } }]);
+      assert.equal(await parentObserved(f.request.requestId), false, "A cached positive does not certify a later different identity");
+    } finally {
+      await pool.query("UPDATE birbcrew_ts.turns SET workflow_run_id=$2,reply='Fixture outcomes delivered' WHERE request_id=$1",
+        [f.request.requestId, f.execution.workflowRunId]);
+      await pool.query("UPDATE birbcrew_ts.delegations SET resume_activity_id='parent-followup' WHERE request_id=$1", [f.request.requestId]);
+    }
+    await observeParents(workflowFixture(), [f.request.requestId]);
+  }
+});
+
+test("in-flight adapter-fixture positives retain exact recovery authority across freeze, thaw and identity transfer", async () => {
+  const initial = await control.status();
+  for (const column of ["installation_id", "instance_id"] as const) {
+    const f = await completedDelegation(), worker = workflowFixture();
+    let transferred = false;
+    worker.workflows.observeParentResult = async parent => {
+      if (parent.requestId === f.request.requestId && !transferred) {
+        transferred = true;
+        await pool.query(`UPDATE birbcrew_ts.recovery_control SET ${column}=gen_random_uuid() WHERE singleton`);
+      }
+      return { kind: "observed" };
+    };
+    try {
+      for (let pass = 0, limit = await discoveryPasses(); pass < limit && !transferred; pass++) await worker.control.flush();
+      assert.equal(transferred, true);
+      assert.equal(await parentObserved(f.request.requestId), false, "A positive captured under the old " + column + " is refused");
+      assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [f.request.requestId])).rowCount, 0);
+    } finally {
+      await pool.query("UPDATE birbcrew_ts.recovery_control SET installation_id=$1,instance_id=$2 WHERE singleton",
+        [initial.installationId, initial.instanceId]);
+    }
+    await observeParents(workflowFixture(), [f.request.requestId]);
+  }
+  const f = await completedDelegation(), worker = workflowFixture();
+  worker.workflows.observeParentResult = async () => {
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='frozen',generation=gen_random_uuid() WHERE singleton");
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL WHERE singleton");
+    return { kind: "observed" };
+  };
+  await observeParents(worker, [f.request.requestId]);
+  assert.equal(await parentObserved(f.request.requestId), true, "Same-instance freeze and thaw preserve an in-flight monotone positive");
+});
+
+test("recovery freeze refuses adapter-fixture writes while same-instance thaw accepts and replacement instance reobserves", async () => {
+  const f = await completedDelegation(), worker = workflowFixture(), initial = await control.status();
+  let observed = false;
+  worker.workflows.observeParentResult = async parent => {
+    if (parent.requestId === f.request.requestId) {
+      observed = true;
+      await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='frozen',generation=gen_random_uuid() WHERE singleton");
+    }
+    return { kind: "observed" };
+  };
+  try {
+    for (let pass = 0, limit = await discoveryPasses(); pass < limit && !observed; pass++) await worker.control.flush();
+    assert.equal(observed, true);
+    assert.equal(await parentObserved(f.request.requestId), false);
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [f.request.requestId])).rowCount, 0);
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL WHERE singleton");
+    await observeParents(workflowFixture(), [f.request.requestId]);
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='frozen',generation=gen_random_uuid() WHERE singleton");
+    assert.equal(await parentObserved(f.request.requestId), false);
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL WHERE singleton");
+    assert.equal(await parentObserved(f.request.requestId), true, "Same-instance thaw retains the monotone exact positive fact");
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET instance_id=gen_random_uuid() WHERE singleton");
+    assert.equal(await parentObserved(f.request.requestId), false, "A restored instance cannot reuse old evidence");
+    const receipt = await change(targetScope(f.profile)), restarted = workflowFixture();
+    restarted.workflows.observeParentResult = async () => ({ kind: "missing" });
+    const missing = await restarted.control.drain(receipt.commandId);
+    assert.deepEqual(missing.blockers, [{ kind: "parent_workflow", requestId: f.request.requestId, observation: { kind: "missing" } }]);
+    await observeParents(workflowFixture(), [f.request.requestId]);
+    assert.equal((await workflowFixture().control.drain(receipt.commandId)).complete, true);
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [f.request.requestId])).rowCount, 2);
+  } finally {
+    await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL,instance_id=$1 WHERE singleton", [initial.instanceId]);
+  }
+});
+
+test("SQL settlement failures reject reconciliation after independent parent discovery instead of reporting native pending", async () => {
+  const retired = await delegation(), healthy = await completedDelegation(), worker = workflowFixture();
+  const key = retired.keys[0], fault = "control_store_failure_" + randomUUID().replaceAll("-", "");
+  await change(targetScope(retired.profile));
+  await pool.query(`CREATE FUNCTION birbcrew_ts.${fault}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'Controlled database settlement failure' USING ERRCODE='55000'; END $$`);
+  await pool.query(`CREATE TRIGGER ${fault} BEFORE UPDATE ON birbcrew_ts.pi_children
+    FOR EACH ROW WHEN (OLD.child_id='${key.childId}'::uuid) EXECUTE FUNCTION birbcrew_ts.${fault}()`);
+  let failed = 0;
+  try {
+    for (let pass = 0, limit = await discoveryPasses(); pass < limit; pass++) {
+      await assert.rejects(worker.control.flush()); failed++;
+    }
+    assert.equal(await parentObserved(healthy.request.requestId), true, "The parent lane completes despite child settlement failure");
+    assert.equal((await childState(key)).phase, "ready");
+    assert.deepEqual(worker.signals, [], "A database settlement failure cannot signal a settled child");
+  } finally {
+    await pool.query(`DROP TRIGGER ${fault} ON birbcrew_ts.pi_children`);
+    await pool.query(`DROP FUNCTION birbcrew_ts.${fault}()`);
+  }
+  assert.equal((await flushChild(worker, key.childId)).settlement, "settled");
+  record("actual PostgreSQL settlement failure is not expected native pending", { childId: key.childId, rejectedPasses: failed });
 });

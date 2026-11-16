@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as portProbe } from "node:net";
 import { tmpdir } from "node:os";
@@ -139,7 +139,7 @@ async function until<T>(check: () => Promise<T | undefined>, label: string, time
   throw new Error("Timed out waiting for " + label);
 }
 
-function owned(scope: string, program: string, args: string[], env = process.env) {
+function owned(scope: string, program: string, args: string[], env = process.env, shutdown: "group" | "process" = "group") {
   const logPath = join(directory, scope + ".log");
   const log = durableLog(logPath);
   const child = spawn(program, args, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -151,7 +151,7 @@ function owned(scope: string, program: string, args: string[], env = process.env
   void closed.catch(() => {});
   let stopping: Promise<void> | undefined;
   const stop = () => stopping ??= (async () => {
-    if (scope === "restarted-worker") child.kill("SIGTERM");
+    if (shutdown === "process") child.kill("SIGTERM");
     else signalOwnedChild(child, "SIGTERM");
     try { await before(closed, now() + 20_000, scope + " owned process close"); }
     catch (error) { signalOwnedChild(child, "SIGKILL"); await before(closed, now() + 3_000, scope + " forced close"); throw error; }
@@ -162,7 +162,7 @@ function owned(scope: string, program: string, args: string[], env = process.env
     observation.stopped = true;
   })();
   cleanupSteps.push(stop);
-  return { child, stop };
+  return { child, stop, logPath };
 }
 
 async function temporalServer() {
@@ -615,7 +615,7 @@ test("a real restarted worker reconciles a pre-target waiting history after miss
     const heartbeat = join(directory, "restarted-worker-heartbeat");
     restarted = owned("restarted-worker", process.execPath, ["src/service/cli.ts", "worker", config], {
       ...process.env, BIRBCREW_STATE_DIR: stateDir, BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat,
-    });
+    }, "process");
     await until(async () => { try { await readFile(heartbeat); return true; } catch { return undefined; } }, "actual restarted worker heartbeat");
     await committed(value);
     const report = await until(async () => {
@@ -639,8 +639,11 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
   const tasks = [{ role: "analyst" as const, task: "remember " + randomUUID() }];
   const parentPrompt = "delegate " + JSON.stringify(tasks), holdKey = "parent/" + digest(parentPrompt);
   const observer = new TemporalDelegationWorkflows(temporal);
+  const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
   let parentKey: z.infer<typeof parentResultKeySchema> | undefined;
   let command: ControlReceipt | undefined;
+  let originalCohort: z.infer<typeof cohortSchema> | undefined;
+  let retainedUnobservedParent = false;
   parentHolds.add(digest(parentPrompt));
   try {
     const baselinePids = new Set((await runnerLoads()).map(row => row.pid));
@@ -690,24 +693,35 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     }, "actual Temporal executeTurn completion without a workflow worker to process it");
     const children = await childRows(value.request.requestId);
     const observation = await observer.observeParentResult(key);
+    const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+      "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed",
+      [key.conversationId, key.requestId])).rows[0]);
     assert.ok(requests.every(request => request.responseFinished && request.responseClosed), "Every actual provider response finished and closed");
     await evidence("sql-settled-parent-unobserved-history", history.raw);
     await evidence("sql-settled-parent-unobserved-before-disable", { parent, children, launches, knownRunners, admission,
       providerRequests: requests, scheduledEventId: history.scheduledEventId, completedEventId: history.completedEventId,
-      postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, workflowWorker: "stopped", activityWorkers: "running" });
+      postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, applicable,
+      workflowWorker: "stopped", activityWorkers: "running" });
     assert.ok(children.every(child => child.phase === "complete" && child.outcome?.kind === "completed"));
     assert.equal(history.postCompletionWorkflowTasks.length, 0, "No workflow task completed after the actual follow-up activity completion");
     assert.deepEqual(observation, { kind: "pending" }, "Actual Temporal history still lacks parent workflow observation");
+    assert.equal(applicable.observed, false, "The pending actual history has no applicable positive SQL evidence");
     command = await change(false);
-    const cohort = (await pool.query("SELECT * FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id", [command.commandId])).rows;
+    const cohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+      FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+    originalCohort = cohort;
     const report = await control.drain(command.commandId);
     await evidence("sql-settled-parent-unobserved-disable", { requestId: value.request.requestId, childId: value.rows[0].childId,
       command, cohort, report, observation, workflowWorker: "stopped", activityWorkers: "running" });
     assert.equal(report.complete, false, "Disable must wait for the actual parent workflow to observe its already committed follow-up");
+    assert.deepEqual(cohort.find(row => row.childId === value.rows[0].childId), {
+      commandId: command.commandId, childId: value.rows[0].childId, retire: false,
+    }, "The terminal child remains selected without retiring its completed work");
     assert.ok(report.children.some(child => child.childId === value.rows[0].childId), "The disable cohort retains this terminal child");
     assert.ok(report.parents.some(parent => parent.requestId === value.request.requestId && parent.workflow.kind === "pending"));
     assert.ok(report.blockers.some(blocker => blocker.kind === "parent_workflow" && blocker.requestId === value.request.requestId
       && blocker.observation.kind === "pending"), "The report names this unobserved parent workflow as a blocker");
+    retainedUnobservedParent = true;
   } finally {
     held.get(holdKey)?.release(); parentHolds.delete(digest(parentPrompt));
     try {
@@ -721,7 +735,209 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
         await evidence("sql-settled-parent-unobserved-recovered", { parentKey: key, observation, report });
         assert.equal(observation.kind, "observed");
         if (report) assert.equal(report.complete, true, "Drain completes after the parent workflow actually observes its result");
+        if (retainedUnobservedParent && command && originalCohort) {
+          const noLaunchBaseline = await countSnapshot();
+          const positiveSchema = parentResultKeySchema.omit({ memberId: true }).extend({
+            workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
+            resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(),
+            reply: parentResultKeySchema.shape.reply.unwrap(),
+            installationId: z.uuid(), instanceId: z.uuid(), observedAt: z.iso.datetime(),
+          });
+          const positive = await until(async () => {
+            await control.flush();
+            const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+              "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed",
+              [key.conversationId, key.requestId])).rows[0]);
+            if (!applicable.observed) return undefined;
+            const rows = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
+              o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
+              o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply,
+              to_char(o.observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "observedAt"
+              FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
+                ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
+              WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+            assert.equal(rows.length, 1, "The actual controller persisted one current-instance parent observation");
+            return rows[0];
+          }, "actual controller flush persists applicable exact parent-result evidence", 120_000);
+          const fresh = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
+          const current = await fresh.status();
+          const { observedAt, ...identity } = positive;
+          assert.deepEqual(identity, { installationId: current.installationId, instanceId: current.instanceId,
+            conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
+            resumeActivityId: key.resumeActivityId, reply: key.reply });
+          assert.equal(current.installationId, command.installationId);
+          assert.equal(current.instanceId, command.instanceId);
+          const persistedReport = await fresh.drain(command.commandId);
+          assert.equal(persistedReport.complete, true, "A new manager drains the original command with durable evidence");
+          const cohortAfterPositive = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+          assert.deepEqual(cohortAfterPositive, originalCohort, "Recording the positive preserves original cohort membership and retirement");
+          const { reply: observedReply, ...positiveIdentity } = positive;
+          const { reply: parentReply, ...parentIdentity } = key;
+          assert.equal(observedReply, parentReply);
+          const positiveProof = { ...positiveIdentity, replyDigest: digest(observedReply) };
+          await evidence("sql-settled-parent-observed-positive", { observation, positive: positiveProof, applicable: true,
+            source: "actual-Temporal-adapter-through-controller-flush", freshManagerState: current, originalCommand: command,
+            originalCohort, cohortAfterPositive, report: persistedReport });
+          const enabled = await fresh.change({ commandId: randomUUID(), expectedRevision: current.revision,
+            scope: { kind: "global" }, enabled: true, actor: "actual-pi-temporal-fixture", reason: "re-enable after actual parent observation" });
+          const later = await fresh.change({ commandId: randomUUID(), expectedRevision: (await fresh.status()).revision,
+            scope: { kind: "global" }, enabled: false, actor: "actual-pi-temporal-fixture", reason: "exclude durably observed exact parent result" });
+          const laterCohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [later.commandId])).rows);
+          const originalChildren = new Set(persistedReport.children.filter(child => child.requestId === key.requestId).map(child => child.childId));
+          assert.equal(originalChildren.size, tasks.length, "The original cohort identifies every child from this exact request");
+          assert.ok(laterCohort.every(row => !originalChildren.has(row.childId)), "The later disable excludes this durably observed request's children");
+          const laterReport = await fresh.drain(later.commandId);
+          assert.ok(laterReport.children.every(child => child.requestId !== key.requestId));
+          assert.ok(laterReport.parents.every(parent => parent.requestId !== key.requestId));
+          assert.ok(laterReport.siblings.every(sibling => sibling.requestId !== key.requestId));
+          const cohortAfterLaterDisable = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+          assert.deepEqual(cohortAfterLaterDisable, originalCohort, "Re-enable and later disable preserve the original immutable cohort");
+          const noLaunchAfter = await countSnapshot();
+          assert.deepEqual(noLaunchAfter, noLaunchBaseline, "Positive persistence, manager restart and later control changes launch no additional SDK or provider work");
+          await evidence("sql-settled-parent-observed-later-disable", { parentKey: parentIdentity, positive: positiveProof, observedAt, enabled, later,
+            noLaunchBaseline, noLaunchAfter,
+            originalCohort, cohortAfterLaterDisable, laterCohort, laterReport,
+            exclusionScope: "this-exact-request-only-other-history-may-remain-selected" });
+        }
       }
     } finally { try { await activities.stop(); } finally { await workflow?.stop(); } }
+  }
+});
+
+test("an actual worker stops healthy heartbeats on blocked control discovery, recovers, and shuts down with discovery still blocked", { timeout: 240_000 }, async () => {
+  assert.equal(manualWorkers.size, 0, "Earlier fixture workflow and activity workers have stopped before CLI startup");
+  const scope = "worker-health-" + randomUUID();
+  const heartbeat = join(directory, scope + "-heartbeat");
+  const baselinePids = new Set((await runnerLoads()).map(row => row.pid));
+  const worker = owned(scope, process.execPath, ["src/service/cli.ts", "worker", config], {
+    ...process.env, PGAPPNAME: scope, BIRBCREW_STATE_DIR: stateDir, BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat,
+  }, "process");
+  const sessionSchema = z.looseObject({ pid: z.int().positive(), application_name: z.string(), state: z.string().nullable(),
+    wait_event_type: z.string().nullable(), wait_event: z.string().nullable(), query: z.string(), blockingPids: z.array(z.int().positive()) });
+  async function sessions() {
+    return z.array(sessionSchema).parse((await pool.query(`SELECT pid,application_name,state,wait_event_type,wait_event,query,
+      pg_blocking_pids(pid) AS "blockingPids" FROM pg_stat_activity
+      WHERE datname=current_database() AND application_name=$1 ORDER BY pid`, [scope])).rows);
+  }
+  async function heartbeatStamp() {
+    try { return (await stat(heartbeat)).mtimeMs; }
+    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
+  }
+  const eventSchema = z.looseObject({ event: z.string() });
+  async function failures() {
+    const events: z.infer<typeof eventSchema>[] = [];
+    for (const line of (await readFile(worker.logPath, "utf8")).split("\n")) {
+      let value: unknown;
+      try { value = JSON.parse(line); } catch { continue; }
+      const parsed = eventSchema.safeParse(value);
+      if (parsed.success && parsed.data.event === "delegation_control_failed") events.push(parsed.data);
+    }
+    return events.length;
+  }
+  function alive() {
+    assert.equal(worker.child.exitCode, null, "Owned health worker has not exited");
+    assert.equal(worker.child.signalCode, null, "Owned health worker has not been signalled");
+  }
+  const blocker = await pool.connect();
+  let locked = false;
+  try {
+    const queues = [{ name: memberTaskQueue, type: 1 }, { name: memberTaskQueue, type: 2 },
+      ...[parentProfile, legacyProfile, analystProfile, recorderProfile].map(profile => ({ name: activityQueue("pi", profile), type: 2 }))];
+    const pollers = await until(async () => {
+      alive();
+      const observations = await Promise.all(queues.map(async queue => ({ ...queue,
+        observation: await connection.workflowService.describeTaskQueue({ namespace: "default", taskQueue: { name: queue.name }, taskQueueType: queue.type }),
+      })));
+      return observations.every(row => row.observation.pollers?.some(poller => poller.identity?.startsWith(worker.child.pid + "@")))
+        ? observations : undefined;
+    }, "the owned CLI worker's workflow and every configured activity queue poller");
+    const initialHeartbeat = await until(async () => { alive(); return heartbeatStamp(); }, "owned CLI healthy heartbeat after startup");
+    const ownedLoads = (await runnerLoads()).filter(row => !baselinePids.has(row.pid));
+    assert.ok(ownedLoads.some(row => row.pid === worker.child.pid && row.loadedBy === "cli.ts"));
+    const workerPid = z.int().positive().parse(worker.child.pid);
+    const directChildPids = z.array(z.coerce.number().int().positive()).parse((await readFile(
+      `/proc/${workerPid}/task/${workerPid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean));
+    const directChildren = await Promise.all(directChildPids.map(async pid => {
+      const bytes = await readFile(`/proc/${pid}/cmdline`);
+      assert.ok(bytes.length < 32 * 1024, "Bounded owned child command line");
+      return { pid, arguments: bytes.toString("utf8").split("\0").filter(Boolean) };
+    }));
+    const supervisorPath = fileURLToPath(new URL("../../src/service/supervisor-host.ts", import.meta.url));
+    const supervisors = directChildren.filter(child => child.arguments.includes(supervisorPath));
+    assert.equal(supervisors.length, 1, "The CLI owns the observed actual native supervisor process");
+    const knownPids = [...new Set([workerPid, ...supervisors.map(row => row.pid), ...ownedLoads.map(row => row.pid)])];
+    const startupSessions = await sessions();
+    assert.ok(startupSessions.length > 0, "The worker's unique application name identifies owned database sessions");
+    await evidence("worker-health-startup", { scope, workerPid, initialHeartbeat, pollers, ownedLoads, supervisors, sessions: startupSessions });
+    const blockerPid = z.int().positive().parse((await blocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+    async function blockDiscovery(label: string) {
+      await blocker.query("BEGIN");
+      locked = true;
+      await blocker.query("SET LOCAL lock_timeout='5s'");
+      await blocker.query("LOCK TABLE birbcrew_ts.pi_children IN ACCESS EXCLUSIVE MODE");
+      const discovery = await until(async () => {
+        alive();
+        return (await sessions()).find(row => row.state === "active" && row.wait_event_type === "Lock"
+          && row.blockingPids.includes(blockerPid) && /^SELECT\s+c\.owner_id/.test(row.query)
+          && row.query.includes("FROM birbcrew_ts.pi_children j"));
+      }, label + " actual controller discovery SELECT blocked by the owned backend", 20_000);
+      await evidence("worker-health-" + label + "-blocked", { blockerPid, discovery, heartbeat: await heartbeatStamp(), observedAt: new Date().toISOString() });
+      return discovery;
+    }
+    const baselineFailures = await failures();
+    const firstBlocked = await blockDiscovery("failure");
+    const failedAt = now();
+    const firstFailureCount = await until(async () => {
+      alive(); const count = await failures(); return count > baselineFailures ? count : undefined;
+    }, "failed-control log while discovery remains blocked", 20_000);
+    const failedHeartbeat = await heartbeatStamp();
+    assert.ok(failedHeartbeat !== undefined);
+    const secondBlocked = await until(async () => {
+      alive();
+      assert.equal(await heartbeatStamp(), failedHeartbeat, "A failed control pass must not publish healthy heartbeats");
+      return (await sessions()).find(row => row.state === "active" && row.wait_event_type === "Lock"
+        && row.blockingPids.includes(blockerPid) && /^SELECT\s+c\.owner_id/.test(row.query)
+        && row.query.includes("FROM birbcrew_ts.pi_children j"));
+    }, "another actual controller discovery pass blocked after failure", 20_000);
+    const repeatedFailureCount = await until(async () => {
+      alive();
+      assert.equal(await heartbeatStamp(), failedHeartbeat, "The healthy heartbeat remains frozen through the next failed pass");
+      const count = await failures(); return count > firstFailureCount ? count : undefined;
+    }, "a second failed-control log with unchanged heartbeat", 20_000);
+    await evidence("worker-health-failed", { scope, blockerPid, firstBlocked, secondBlocked, baselineFailures,
+      firstFailureCount, repeatedFailureCount, failedHeartbeat, observedBlockedIntervalMs: now() - failedAt,
+      heartbeatAfterRepeatedFailure: await heartbeatStamp(), sessions: await sessions() });
+    await blocker.query("ROLLBACK"); locked = false;
+    const recoveredHeartbeat = await until(async () => {
+      alive(); const stamp = await heartbeatStamp(); return stamp !== undefined && stamp > failedHeartbeat ? stamp : undefined;
+    }, "fresh healthy heartbeat after the discovery lock is released", 20_000);
+    await evidence("worker-health-recovered", { scope, failedHeartbeat, recoveredHeartbeat, failureCount: await failures(), sessions: await sessions() });
+    const shutdownBlocked = await blockDiscovery("shutdown");
+    const stopAt = now();
+    await worker.stop();
+    assert.equal(worker.child.exitCode, 0, "The real CLI worker completes graceful shutdown without a forced signal");
+    assert.equal(worker.child.signalCode, null);
+    const heldLock = z.looseObject({ held: z.boolean() }).parse((await blocker.query(`SELECT EXISTS(SELECT 1 FROM pg_locks
+      WHERE pid=pg_backend_pid() AND relation='birbcrew_ts.pi_children'::regclass AND mode='AccessExclusiveLock' AND granted) AS held`)).rows[0]);
+    assert.equal(heldLock.held, true, "The owned table lock remains held until after the worker has closed");
+    const closedSessions = await until(async () => { const rows = await sessions(); return rows.length === 0 ? rows : undefined; },
+      "all uniquely named worker database sessions close", 5000);
+    const knownProcesses = await until(async () => {
+      const rows = knownPids.map(pid => ({ pid, absent: absent(pid) }));
+      return rows.every(row => row.absent) ? rows : undefined;
+    }, "the known CLI and supervisor PIDs exit", 5000);
+    await evidence("worker-health-shutdown", { scope, workerPid: worker.child.pid, shutdownBlocked, blockerPid,
+      blockerLockStillHeld: heldLock.held, observedShutdownMs: now() - stopAt, exitCode: worker.child.exitCode,
+      signalCode: worker.child.signalCode, sessions: closedSessions, knownProcesses, ancestry: "unproven" });
+  } catch (error) {
+    await evidence("worker-health-failure", { scope, workerPid: worker.child.pid, heartbeat: await heartbeatStamp(),
+      failures: await failures(), sessions: await sessions(), error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  } finally {
+    try { if (locked) await blocker.query("ROLLBACK"); }
+    finally { blocker.release(); await worker.stop(); }
   }
 });

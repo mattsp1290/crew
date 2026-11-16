@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { ChildStore } from "./children.ts";
-import { engineSchema, spawnSchema } from "./domain.ts";
+import { ChildNativeStopUnconfirmed, ChildStore } from "./children.ts";
+import { commitSchema, engineSchema, spawnSchema } from "./domain.ts";
 
 const revision = z.string().max(19).regex(/^(0|[1-9][0-9]*)$/).refine(value => (value.length < 19 || value <= "9223372036854775807"));
 const privateText = (bytes: number) => z.string().min(1).refine(value => value.isWellFormed() && !value.includes("\0") && Buffer.byteLength(value) <= bytes);
@@ -46,6 +46,15 @@ const phaseSchema = z.enum(["ready", "running", "waiting", "resuming", "complete
 const childSnapshotSchema = childExecutionKeySchema.extend({ retire: z.boolean(), phase: phaseSchema, terminal: z.boolean(),
   target: controlScopeSchema.options[1].nullable(), approvalId: z.uuid().nullable(), cardClosed: z.boolean() });
 const parentSnapshotSchema = parentResultKeySchema.extend({ phase: z.string(), unstoppedLaunches: z.array(z.uuid()) });
+const parentEvidenceSnapshotSchema = parentSnapshotSchema.extend({ observed: z.boolean() });
+const parentPositionSchema = parentResultKeySchema.pick({ conversationId: true, requestId: true });
+type ParentPosition = z.infer<typeof parentPositionSchema>;
+const parentDiscoverySchema = parentResultKeySchema.extend({ phase: z.string(), observed: z.boolean(),
+  installationId: z.uuid(), instanceId: z.uuid(), recoveryPhase: controlStateSchema.shape.recoveryPhase });
+const settledParentResultSchema = parentResultKeySchema.extend({
+  workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
+  resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(), reply: commitSchema.shape.reply,
+});
 const siblingSchema = childExecutionKeySchema.omit({ workflowRunId: true }).extend({ phase: phaseSchema,
   target: controlScopeSchema.options[1].nullable(), approvalId: z.uuid().nullable() });
 export const drainBlockerSchema = z.discriminatedUnion("kind", [
@@ -100,7 +109,8 @@ export class DelegationControl {
   private readonly pool: Pool;
   private readonly workflows: ChildWorkflowControl;
   private readonly children: ChildStore;
-  private cursor = "00000000-0000-0000-0000-000000000000";
+  private parentCursor: ParentPosition | undefined;
+  private childCursor = "00000000-0000-0000-0000-000000000000";
   private flushing: Promise<FlushResult> | undefined;
   constructor({ pool, workflows }: { pool: Pool; workflows: ChildWorkflowControl }) {
     this.pool = pool; this.workflows = workflows; this.children = new ChildStore(pool);
@@ -108,6 +118,7 @@ export class DelegationControl {
   async change(input: unknown): Promise<ControlReceipt> {
     const command = controlCommandSchema.parse(input);
     const db = await this.pool.connect();
+    let failed = false;
     try {
       await db.query("BEGIN");
       await db.query("SET LOCAL lock_timeout='5s'");
@@ -115,7 +126,12 @@ export class DelegationControl {
       const receipt = await changeDelegationControl(db, command);
       await db.query("COMMIT");
       return receipt;
-    } catch (error) { await db.query("ROLLBACK"); throw error; } finally { db.release(); }
+    } catch (error) {
+      failed = true;
+      try { await db.query("ROLLBACK"); }
+      catch (rollbackError) { throw new AggregateError([error, rollbackError], "Delegation control transaction and rollback failed", { cause: error }); }
+      throw error;
+    } finally { db.release(failed); }
   }
   status(): Promise<ControlState> { return state(this.pool); }
   flush(): Promise<FlushResult> {
@@ -124,6 +140,14 @@ export class DelegationControl {
     return this.flushing;
   }
   private async flushPass(): Promise<FlushResult> {
+    const [children, parents] = await Promise.allSettled([this.reconcileChildren(), this.reconcileParents()]);
+    if (children.status === "rejected" || parents.status === "rejected") {
+      const errors: unknown[] = [children, parents].flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      throw new AggregateError(errors, "Delegation control reconciliation failed");
+    }
+    return children.value;
+  }
+  private async reconcileChildren(): Promise<FlushResult> {
     const { rows } = await this.pool.query(`SELECT c.owner_id AS "ownerId",c.member_id AS "memberId",
       j.conversation_id AS "conversationId",j.request_id AS "requestId",j.child_id AS "childId",j.workflow_run_id AS "workflowRunId"
       FROM birbcrew_ts.pi_children j JOIN birbcrew_ts.conversations c USING(conversation_id)
@@ -132,28 +156,73 @@ export class DelegationControl {
         AND (j.outcome IS NULL OR d.resume_activity_id IS NULL OR t.phase<>'committed' OR t.reply IS NULL
           OR EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n
             WHERE (n.conversation_id,n.request_id)=(j.conversation_id,j.request_id) AND NOT n.stopped))
-      ORDER BY (j.child_id>$1::uuid) DESC,j.child_id LIMIT 4`, [this.cursor]);
+      ORDER BY (j.child_id>$1::uuid) DESC,j.child_id LIMIT 4`, [this.childCursor]);
     const result: FlushResult = { examined: rows.length, children: [] };
+    const errors: unknown[] = [];
     for (const row of rows) {
       const key = childExecutionKeySchema.parse(row);
-      this.cursor = key.childId;
-      try { await this.children.closeExitedChild(key, false); }
-      catch {
-        result.children.push({ childId: key.childId, settlement: "pending", wake: { kind: "deferred" } });
-        continue;
-      }
-      let wake: WakeObservation;
-      try { wake = wakeObservationSchema.parse(await this.workflows.signalDecision(key)); }
-      catch { wake = { kind: "unavailable" }; }
-      result.children.push({ childId: key.childId, settlement: "settled", wake });
+      this.childCursor = key.childId;
+      try {
+        try { await this.children.closeExitedChild(key, false); }
+        catch (error) {
+          if (!(error instanceof ChildNativeStopUnconfirmed)) throw error;
+          result.children.push({ childId: key.childId, settlement: "pending", wake: { kind: "deferred" } });
+          continue;
+        }
+        const wake = wakeObservationSchema.parse(await this.workflows.signalDecision(key));
+        result.children.push({ childId: key.childId, settlement: "settled", wake });
+      } catch (error) { errors.push(error); }
     }
+    if (errors.length) throw new AggregateError(errors, "Delegation child reconciliation failed");
     return flushResultSchema.parse(result);
+  }
+  private async reconcileParents(): Promise<void> {
+    const cursor = this.parentCursor;
+    const { rows } = await this.pool.query(`WITH forward AS MATERIALIZED (
+      SELECT conversation_id,request_id FROM birbcrew_ts.delegations
+      ${cursor ? "WHERE (conversation_id,request_id)>($1::uuid,$2::uuid)" : ""}
+      ORDER BY conversation_id,request_id LIMIT 4
+    ), page AS MATERIALIZED (
+      SELECT conversation_id,request_id,0 AS segment FROM forward
+      ${cursor ? `UNION ALL (SELECT conversation_id,request_id,1 AS segment FROM birbcrew_ts.delegations
+        WHERE (conversation_id,request_id)<=($1::uuid,$2::uuid)
+        ORDER BY conversation_id,request_id LIMIT (SELECT 4-count(*) FROM forward))` : ""}
+    ) SELECT c.member_id AS "memberId",p.conversation_id AS "conversationId",p.request_id AS "requestId",
+      t.workflow_run_id AS "workflowRunId",d.resume_activity_id AS "resumeActivityId",t.reply,t.phase,
+      r.installation_id AS "installationId",r.instance_id AS "instanceId",r.phase AS "recoveryPhase",
+      birbcrew_ts.delegation_parent_result_observed(p.conversation_id,p.request_id) AS observed
+      FROM page p JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
+      JOIN birbcrew_ts.turns t USING(conversation_id,request_id) JOIN birbcrew_ts.conversations c USING(conversation_id)
+      CROSS JOIN birbcrew_ts.recovery_control r WHERE r.singleton
+      ORDER BY p.segment,p.conversation_id,p.request_id`, cursor ? [cursor.conversationId, cursor.requestId] : []);
+    const last = rows.at(-1);
+    this.parentCursor = last === undefined ? undefined : parentPositionSchema.parse({
+      conversationId: last.conversationId, requestId: last.requestId,
+    });
+    const errors: unknown[] = [];
+    for (const row of rows) {
+      try {
+        const parent = parentDiscoverySchema.parse(row);
+        if (parent.observed || parent.recoveryPhase !== "active" || parent.phase !== "committed"
+          || parent.workflowRunId === null || parent.resumeActivityId === null || parent.reply === null) continue;
+        const result = settledParentResultSchema.parse({ memberId: parent.memberId, conversationId: parent.conversationId,
+          requestId: parent.requestId, workflowRunId: parent.workflowRunId, resumeActivityId: parent.resumeActivityId, reply: parent.reply });
+        const observation = parentResultObservationSchema.parse(await this.workflows.observeParentResult(result));
+        if (observation.kind === "unavailable") throw new Error("Delegation parent observation unavailable");
+        if (observation.kind !== "observed") continue;
+        await this.pool.query("SELECT birbcrew_ts.record_delegation_parent_observation($1,$2,$3,$4,$5,$6,$7)",
+          [parent.installationId, parent.instanceId, result.conversationId, result.requestId,
+            result.workflowRunId, result.resumeActivityId, result.reply]);
+      } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, "Delegation parent reconciliation failed");
   }
   async drain(rawCommandId: string): Promise<DrainObservation> {
     const commandId = z.uuid().parse(rawCommandId);
     const startedAt = new Date().toISOString();
     const db = await this.pool.connect();
     let snapshot;
+    let failed = false;
     try {
       await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
       await db.query("SET LOCAL statement_timeout='10s'");
@@ -168,9 +237,10 @@ export class DelegationControl {
           WHERE o.conversation_id=j.conversation_id AND o.logical_key='result/'||j.approval_id::text)) AS "cardClosed"
         FROM birbcrew_ts.delegation_control_children m JOIN birbcrew_ts.pi_children j USING(child_id)
         JOIN birbcrew_ts.conversations c USING(conversation_id) WHERE m.command_id=$1 ORDER BY j.child_id`, [commandId])).rows);
-      const parents = z.array(parentSnapshotSchema).parse((await db.query(`SELECT DISTINCT c.member_id AS "memberId",
+      const parents = z.array(parentEvidenceSnapshotSchema).parse((await db.query(`SELECT DISTINCT c.member_id AS "memberId",
         j.conversation_id AS "conversationId",j.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
         d.resume_activity_id AS "resumeActivityId",t.reply,t.phase,
+        birbcrew_ts.delegation_parent_result_observed(j.conversation_id,j.request_id) AS observed,
         ARRAY(SELECT n.token FROM birbcrew_ts.native_launches n WHERE (n.conversation_id,n.request_id)=(j.conversation_id,j.request_id)
           AND NOT n.stopped ORDER BY n.token) AS "unstoppedLaunches"
         FROM birbcrew_ts.delegation_control_children m JOIN birbcrew_ts.pi_children j USING(child_id)
@@ -187,7 +257,12 @@ export class DelegationControl {
         ORDER BY j.child_id`, [commandId])).rows);
       snapshot = { initial, receipt, children, parents, siblings };
       await db.query("COMMIT");
-    } catch (error) { await db.query("ROLLBACK"); throw error; } finally { db.release(); }
+    } catch (error) {
+      failed = true;
+      try { await db.query("ROLLBACK"); }
+      catch (rollbackError) { throw new AggregateError([error, rollbackError], "Delegation control transaction and rollback failed", { cause: error }); }
+      throw error;
+    } finally { db.release(failed); }
     const blockers: z.infer<typeof drainBlockerSchema>[] = [];
     const children: DrainObservation["children"] = [];
     const parents: DrainObservation["parents"] = [];
@@ -205,11 +280,11 @@ export class DelegationControl {
     }
     for (const parent of snapshot.parents) {
       let workflow: ParentResultObservation;
-      try { workflow = parentResultObservationSchema.parse(await this.workflows.observeParentResult({
+      try { workflow = parent.observed ? { kind: "observed" } : parentResultObservationSchema.parse(await this.workflows.observeParentResult({
         memberId: parent.memberId, conversationId: parent.conversationId, requestId: parent.requestId,
         workflowRunId: parent.workflowRunId, resumeActivityId: parent.resumeActivityId, reply: parent.reply,
       })); } catch { workflow = { kind: "unavailable" }; }
-      const { reply, ...diagnostic } = parent;
+      const { reply, observed, ...diagnostic } = parent;
       parents.push({ ...diagnostic, workflow });
       if (parent.phase !== "committed" || reply === null || parent.resumeActivityId === null) {
         blockers.push({ kind: "parent_pending", requestId: parent.requestId, phase: parent.phase });

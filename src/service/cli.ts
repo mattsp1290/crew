@@ -37,14 +37,15 @@ async function main() {
       const { runMemberWorker } = await import("./worker.ts");
       const { registerProfiles } = await import("./deployment.ts");
       const { profiles, close } = await import(pathToFileURL(resolve(configPath)).href);
+      const controlPool = new Pool({ connectionString: url, max: 2, connectionTimeoutMillis: 5000,
+        statement_timeout: 10000, query_timeout: 12000 });
       try {
         await registerProfiles(pool, profiles, stateDir);
-        await runMemberWorker(store, temporal, profiles, resolve(configPath), stateDir, heartbeat);
+        await runMemberWorker({ store, temporal, profiles, configPath: resolve(configPath), stateDir, heartbeat, controlPool });
       } finally {
-        try {
-          await close?.();
-        } finally {
-          await flushTelemetry();
+        try { await controlPool.end(); }
+        finally {
+          try { await close?.(); } finally { await flushTelemetry(); }
         }
       }
       return;
