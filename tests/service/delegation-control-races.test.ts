@@ -239,6 +239,60 @@ test("pinned proposal INSERT waits for child before control, so native lease can
   });
 });
 
+test("pinned proposal INSERT and waiting UPDATE commit before a blocked disable and retain the unanswered card", { timeout: 30_000 }, async t => {
+  const f = await fixture(); await f.start(); await f.reserve();
+  await sessions(async (writer, setter) => {
+    await begin(writer); await lockConversation(writer, f.conversationId);
+    assert.equal((await f.propose(writer)).rowCount, 1);
+    assert.equal((await f.waiting(writer)).rowCount, 1);
+    await begin(setter);
+    const pending = observed(change(f.targetScope, false, setter)); await blocked(setter, writer, t);
+    await writer.query("COMMIT"); const receipt = await accepted(pending); await setter.query("COMMIT");
+    assert.deepEqual((await pool.query(`SELECT j.phase,j.approval_id,j.native_checkpoint,j.outcome,p.invocation_id,p.decision,p.expired_at,m.retire
+      FROM birbcrew_ts.pi_children j JOIN birbcrew_ts.deferred_calls p USING(approval_id)
+      JOIN birbcrew_ts.delegation_control_children m USING(child_id) WHERE m.command_id=$1 AND j.child_id=$2`,
+      [receipt.commandId, f.childId])).rows[0], { phase: "waiting", approval_id: f.approvalId, native_checkpoint: checkpoint,
+      outcome: null, invocation_id: f.childId, decision: null, expired_at: null, retire: true });
+    await stopped(f);
+  });
+});
+
+test("pinned decision UPDATE commits before a blocked disable and preserves the owner choice", { timeout: 30_000 }, async t => {
+  const f = await fixture(); await f.start(); await f.propose(); await f.waiting(); await f.reserve();
+  await sessions(async (writer, setter) => {
+    await begin(writer); await lockConversation(writer, f.conversationId);
+    assert.equal((await f.decide(writer)).rowCount, 1);
+    await begin(setter);
+    const pending = observed(change(f.targetScope, false, setter)); await blocked(setter, writer, t);
+    await writer.query("COMMIT"); const receipt = await accepted(pending); await setter.query("COMMIT");
+    assert.deepEqual((await pool.query(`SELECT j.phase,j.approval_id,j.outcome,p.decision,p.grant_scope,p.expired_at,m.retire
+      FROM birbcrew_ts.pi_children j JOIN birbcrew_ts.deferred_calls p USING(approval_id)
+      JOIN birbcrew_ts.delegation_control_children m USING(child_id) WHERE m.command_id=$1 AND j.child_id=$2`,
+      [receipt.commandId, f.childId])).rows[0], { phase: "waiting", approval_id: f.approvalId, outcome: null,
+      decision: "approve", grant_scope: null, expired_at: null, retire: true });
+    await stopped(f);
+  });
+});
+
+test("pinned successful terminal UPDATE commits before a blocked disable and preserves success without retirement", { timeout: 30_000 }, async t => {
+  const f = await fixture(); await f.start(); await f.reserve();
+  await sessions(async (writer, setter) => {
+    await begin(writer); await lockConversation(writer, f.conversationId);
+    assert.equal((await f.finish(writer)).rowCount, 1);
+    await begin(setter);
+    const pending = observed(change(f.targetScope, false, setter)); await blocked(setter, writer, t);
+    await writer.query("COMMIT"); const receipt = await accepted(pending); await setter.query("COMMIT");
+    assert.deepEqual((await pool.query(`SELECT j.phase,j.generation,j.outcome,m.retire FROM birbcrew_ts.pi_children j
+      JOIN birbcrew_ts.delegation_control_children m USING(child_id) WHERE m.command_id=$1 AND j.child_id=$2`,
+      [receipt.commandId, f.childId])).rows[0], { phase: "complete", generation: f.token,
+      outcome: { kind: "completed", nativeCallId: "call-" + f.childId, text: "done" }, retire: false });
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_stop_requests WHERE conversation_id=$1 AND request_id=$2 AND token=$3",
+      [f.conversationId, f.requestId, f.token])).rowCount, 0);
+    assert.deepEqual((await pool.query("SELECT stopped FROM birbcrew_ts.native_launches WHERE child_id=$1", [f.childId])).rows,
+      [{ stopped: false }]);
+  });
+});
+
 test("old admission SELECT begun behind a rolling-back writer keeps stale stop visibility; separate post-lease read refuses", { timeout: 30_000 }, async t => {
   const f = await fixture(); await f.start(); await f.reserve();
   await sessions(async (writer, native) => {
