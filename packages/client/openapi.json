@@ -1137,7 +1137,8 @@
           "transcriptBytes",
           "transcriptDigest",
           "createdAt"
-        ]
+        ],
+        "description": "Source and target conversations must differ. The sum of carriedTurns, omittedTurns and uncertainTurns must be at most 128."
       },
       "CreateHandoffResponse": {
         "type": "object",
@@ -1304,7 +1305,8 @@
           "conversationId",
           "incoming",
           "outgoing"
-        ]
+        ],
+        "description": "At least one of incoming and outgoing is non-null. Incoming targets and outgoing sources must match conversationId."
       },
       "HandoffsCapability": {
         "anyOf": [

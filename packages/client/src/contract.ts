@@ -108,6 +108,8 @@ export const handoffRecordSchema = z.object({
   message: "Handoff source and target conversations must differ",
 }).refine((record) => record.carriedTurns + record.omittedTurns + record.uncertainTurns <= 128, {
   message: "Handoff turn counts must total at most 128",
+}).meta({
+  description: "Source and target conversations must differ. The sum of carriedTurns, omittedTurns and uncertainTurns must be at most 128.",
 });
 export const createHandoffResponseSchema = handoffRecordSchema.safeExtend({
   apiVersion: z.literal("1"),
@@ -122,6 +124,8 @@ export const conversationHandoffSchema = z.object({
 }).refine((chain) => (chain.incoming === null || chain.incoming.target.conversationId === chain.conversationId)
   && (chain.outgoing === null || chain.outgoing.source.conversationId === chain.conversationId), {
   message: "Handoff directions must match the envelope conversation",
+}).meta({
+  description: "At least one of incoming and outgoing is non-null. Incoming targets and outgoing sources must match conversationId.",
 });
 export const submitRequestSchema = requestIdentitySchema.extend({
   text: boundedText(promptBytes),

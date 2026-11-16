@@ -807,6 +807,22 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
   assert.equal(revoked.grant.grantId, grant.grantId);
   assert.equal(revoked.grant.status, "revoked");
   await check("cancel", conversationPath + "/requests/" + requestId + "/cancel", {});
+  const source = { ownerId: f.ownerId, conversationId: opened.state.conversationId, requestId: randomUUID() };
+  const sourceTurn = await store.beginTurn({ ...source, text: "OpenAPI handoff" });
+  assert.equal(sourceTurn.kind, "start"); if (sourceTurn.kind !== "start") return;
+  await store.commitTurn({ ...source, token: sourceTurn.token, reply: "Stored context",
+    checkpoint: { version: 1, engine: "pi", state: {} } });
+  const handoffBody = { requestId: randomUUID(), memberId: member.memberId };
+  const created = await check("createHandoff", `/v1/conversations/${source.conversationId}/handoffs`, handoffBody);
+  const outgoing = await check("handoff", `/v1/conversations/${source.conversationId}/handoff`);
+  const incoming = await check("handoff", `/v1/conversations/${created.target.conversationId}/handoff`);
+  const { apiVersion, ...handoffRecord } = created;
+  assert.equal(apiVersion, "1");
+  assert.deepEqual(outgoing, { apiVersion: "1", conversationId: source.conversationId, incoming: null, outgoing: handoffRecord });
+  assert.deepEqual(incoming, { apiVersion: "1", conversationId: created.target.conversationId, incoming: handoffRecord, outgoing: null });
+  const handoffOperation = openApi.paths[routes.createHandoff.path].post;
+  assert.deepEqual(handoffOperation["x-unknown-outcome-errors"], routes.createHandoff.unknownOutcomeErrors);
+  assert.match(handoffOperation.responses[409].description, /unknown.*update_rejected/);
   assert.deepEqual([...checked].sort(), Object.keys(routes).sort());
 
   const validateMember = responseValidator("createMember", 201);
@@ -817,6 +833,7 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
   const requestBodies = {
     createMember: { requestId: randomUUID(), engine: "pi", profile },
     openConversation: { conversationId: randomUUID(), memberId: member.memberId },
+    createHandoff: handoffBody,
     submit: { requestId, text: input.text },
     cancel: {},
     revokeGrant: {},
@@ -830,6 +847,18 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     assert.ok(validateBody(body), ajv.errorsText(validateBody.errors));
     assert.equal(validateBody({ ...body, ownerId: f.ownerId }), false,
       `${route.path} rejects extra request properties`);
+  }
+  const validateHandoffBody = ajv.compile({
+    ...handoffOperation.requestBody.content["application/json"].schema, components: openApi.components,
+  });
+  for (const field of ["requestId", "memberId"] as const) {
+    assert.equal(validateHandoffBody({ ...handoffBody, [field]: "not-a-uuid" }), false);
+    const { [field]: omitted, ...missing } = handoffBody;
+    assert.ok(omitted);
+    assert.equal(validateHandoffBody(missing), false);
+  }
+  for (const field of ["ownerId", "conversationId", "kind", "text"]) {
+    assert.equal(validateHandoffBody({ ...handoffBody, [field]: "unexpected" }), false);
   }
 });
 
