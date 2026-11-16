@@ -58,6 +58,14 @@ jobs:
             tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
             sha256sum ".proof/bin/$archive" .proof/bin/temporal > "$BIRBCREW_PROOF_ARTIFACTS/temporal-identity.txt"
           '
+      - name: Build the workspace client contract in the scripts-disabled copy
+        if: matrix.install-scripts == 'disabled'
+        timeout-minutes: 2
+        run: |
+          exec timeout --signal=TERM --kill-after=8s 90s node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_PROOF_ARTIFACTS/client-build.log" bash -euo pipefail -c '
+            cd "$OTLP_INSTALL_ROOT"
+            exec npm run build:client
+          '
       - name: Run all 13 unchanged Crew telemetry tests and retain complete TAP
         timeout-minutes: 3
         run: |

@@ -3042,9 +3042,9 @@
       "sha256": "68eed26cc9b061ca2840380aeca13fa0298398e05c6f2d60f05126c258b135b7"
     },
     ".github/workflows/integration-api.yml": {
-      "mode": "100644",
-      "gitBlob": "88ed12660942dcc34742de46559af627573f4b83",
-      "sha256": "47f152595b92b4ab3ac6d43e3465cee4d82a371f87d0087a0c633fd30452b2af"
+      "sha256": "c840ad43fd2cc8b02da9a45e0139f182241d26633c4481e94a1fb3e4eb869248",
+      "gitBlob": "23c21295896ebc0e8bb9f0e9d3523efa164ee014",
+      "mode": "100644"
     },
     ".github/workflows/proxy-qualification.yml": {
       "mode": "100644",
@@ -4822,14 +4822,14 @@
       "sha256": "bdb8c95230c3708cb53bb68188d3d63efb748cbd6eb95aa59be6006a1dfd7856"
     },
     "tests/proof/otlp-worker-qualification/inspector.mjs": {
-      "mode": "100644",
-      "gitBlob": "09c2032f7baad62ac9244e6022ca49d49adae0b6",
-      "sha256": "1e801252b91efe360810cf5aebe7317de4b9cc81247ef3ed54b2bb5ec263410b"
+      "sha256": "66589da81d0a32914635ac80ee6f5368d7cb1c38c27e53b5c952c2f283c6a090",
+      "gitBlob": "a5e336a1894ab6f1144f46682303393711e5a198",
+      "mode": "100644"
     },
     "tests/proof/otlp-worker-qualification/plan.md": {
-      "mode": "100644",
-      "gitBlob": "738892875d3277b13ed29c4dd72cbefe6b28203d",
-      "sha256": "5e107fa94f8bd179893658d2734ea6115fd730ffae46c207cecbdc1f4f8a9ef7"
+      "sha256": "a3cab9ca2ffb5f0f241e4368784533ec9cb594e778e8eb4e3352e322c3d10651",
+      "gitBlob": "986f66db7d171889637e03e606d26f126841e68f",
+      "mode": "100644"
     },
     "tests/proof/progress-compatibility.mts": {
       "mode": "100644",

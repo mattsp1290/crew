@@ -241,6 +241,7 @@ try {
     }
     assert.deepEqual(json(join(artifacts, 'source-after.json')).files, json(join(artifacts, 'source-before.json')).files);
     assert.deepEqual(json(join(artifacts, 'installed-after.json')), json(join(artifacts, 'installed-before.json')));
+    if (variant === 'disabled') completeCommand('client-build.log');
     if (variant === 'enabled') {
       completeCommand('setup.log');
       completeCommand('command.log');
