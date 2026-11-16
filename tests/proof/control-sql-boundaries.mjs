@@ -90,8 +90,7 @@ const suites={
       "an actual worker stops healthy heartbeats on blocked control discovery, recovers, and shuts down with discovery still blocked",
       "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails"
     ],
-    "count": 1,
-    "pattern": "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails"
+    "count": 9
   },
   "restore": {
     "file": "tests/service/recovery.test.ts",
