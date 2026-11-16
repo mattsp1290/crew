@@ -27,7 +27,12 @@ const members = new MemberStore(pool), children = new ChildStore(pool), approval
 const checkpoint = { version: 1, engine: "pi", state: {} };
 const directory = await mkdtemp(join(tmpdir(), "crew-control-store-"));
 type ChildExecutionKey = Parameters<ChildWorkflowControl["observe"]>[0];
-const fixtures: Awaited<ReturnType<typeof delegation>>[] = [];
+type DelegationCleanup = {
+  keys: Awaited<ReturnType<ChildStore["delegate"]>>;
+  request: Parameters<MemberStore["beginResume"]>[0];
+  execution: Parameters<MemberStore["beginResume"]>[2];
+};
+const fixtures: DelegationCleanup[] = [];
 const observations: { case: string; observedAt: string; value: unknown }[] = [];
 function record(name: string, value: unknown) { observations.push({ case: name, observedAt: new Date().toISOString(), value }); }
 function workflowFixture() {
@@ -124,7 +129,7 @@ afterEach(async () => {
     await finishParent(fixture);
   }
 });
-async function finishParent(fixture: Awaited<ReturnType<typeof delegation>>) {
+async function finishParent(fixture: DelegationCleanup) {
   const execution = { ...fixture.execution, activityId: "parent-followup" };
   const resume = await members.beginResume(fixture.request, null, execution);
   if (resume.kind === "replay") return execution;

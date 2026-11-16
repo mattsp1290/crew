@@ -22,7 +22,7 @@ async function profile(model: string) {
 
 export const profiles = new Map<string, MemberProfile>();
 try {
-  const parent = { ...await profile("control-parent"), delegateTask: true };
+  const parent = { ...await profile("control-parent"), delegateTask: true } satisfies MemberProfile;
   const analyst = await profile("control-analyst"), recorder = await profile("control-recorder");
   profiles.set("control.legacy.v1", parent);
   profiles.set("control.parent.v1", { ...parent, childTargets: { pi: {

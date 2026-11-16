@@ -28,8 +28,9 @@ import { memberQueueActivities } from "../../src/service/worker.ts";
 import { before, boundedCommand, durableLog, now, signalOwnedChild } from "../proof/member-service-diagnostics.mts";
 import { workingState } from "../proof/member-services.mts";
 
-const database = process.env.BIRBCREW_TEST_DATABASE_URL;
-assert.ok(database, "Use this suite's own fresh disposable PostgreSQL 17 database");
+const configuredDatabase = process.env.BIRBCREW_TEST_DATABASE_URL;
+assert.ok(configuredDatabase, "Use this suite's own fresh disposable PostgreSQL 17 database");
+const database = configuredDatabase;
 assert.equal(process.platform, "linux", "The actual Pi proof requires the production Linux confinement launcher");
 const directory = await mkdtemp(join(tmpdir(), "crew-control-workflow-"));
 const proof = process.env.BIRBCREW_CONTROL_PROOF_DIR;
