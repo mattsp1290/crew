@@ -2,7 +2,7 @@
 
 Crew selects a modified `@opentelemetry/otlp-exporter-base@0.208.0` archive for direct and transitive consumers. A collector that keeps sending an unfinished response can otherwise retain response buffers and keep a returning worker alive.
 
-The repair caps retained response chunks at 4 MiB and gives each Node HTTP export one deadline across initialization, headers, compression, requests, responses, and retry delays. Completion and shutdown dispose the owned request, upload streams, timers, abort listeners, and Agent. Browser delegates retain their existing policy. Crew's queue, warning suppression, correlation attributes, and caller flush budgets remain unchanged.
+The repair caps retained response chunks at 4 MiB and gives each Node HTTP export one deadline across initialization, headers, compression, requests, responses, and retry delays. Completion clears response buffers, upload streams, timers, and abort listeners. Cancellation also destroys the request. Shutdown cancels active exports and destroys the owned Agent. Browser delegates retain their existing policy. Crew's queue, warning suppression, correlation attributes, and caller flush budgets remain unchanged.
 
 The package name, version, User-Agent, runtime dependencies, and original metadata remain unchanged. The archive contains the original 324 published build paths and three metadata files. It excludes declaration maps and build-info files. The original [Apache license](LICENSE) is preserved. Modified sources and distributed outputs carry modification notices.
 
