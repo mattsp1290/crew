@@ -311,7 +311,7 @@ try {
     }
     assert.deepEqual(cleanup.steps.map(row=>row.label),['old-seed','current','old-rollback']);
     for(const step of cleanup.steps) {
-      assert.equal(step.root,step.label==='current'?source:oldSource);assert.ok(step.identity.startsWith(step.pid+'@'));
+      assert.equal(resolve(step.root),step.label==='current'?source:oldSource);assert.ok(step.identity.startsWith(step.pid+'@'));
     }
     assert.ok(cleanup.runnerObservations.length>0);assert.ok(cleanup.runnerObservations.every(row=>row.absent===true&&row.loadedBy==='supervisor-runner.ts'));
     const provider=readCase('provider');assert.deepEqual(provider.failures,[]);assert.ok(provider.wire.length>0);
