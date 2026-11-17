@@ -454,6 +454,13 @@ livenessProbe:
     command: ["sh", "-c", "test $(( $(date +%s) - $(stat -c %Y /tmp/crew-worker.heartbeat) )) -lt 30"]
 ```
 
+A failed control pass stops heartbeat touches at once, so this liveness probe
+restarts the worker about a minute into a PostgreSQL outage, or into a Temporal
+outage that reaches unobserved delegation work. A restart repairs neither
+dependency and interrupts native turns. Set `failureThreshold` and
+`periodSeconds` to tolerate the outages you expect, or alert on the heartbeat
+instead of restarting on it.
+
 The probe checks only the file's age. A file left on the same volume by a
 previous container passes it until that file is 30 seconds old. In Kubernetes,
 an `emptyDir` such as `/tmp` keeps the file when the container restarts. After
@@ -474,8 +481,12 @@ development server, not in the hardened image:
 - The worker probe passed while the worker ran, failed after 35 seconds of
   `SIGSTOP` and passed again 6 seconds after `SIGCONT`. Content already in the
   file was kept.
-- With the Temporal server stopped for 60 seconds, the worker kept running and
-  its heartbeat stayed fresh, so the probe kept passing.
+- Before delegation control, with the Temporal server stopped for 60 seconds,
+  the worker kept running and its heartbeat stayed fresh. This no longer holds
+  in general. A PostgreSQL outage fails every control pass. A Temporal outage
+  fails a pass that reaches a retired child awaiting a wake or a committed
+  parent without an observation, which is common after an upgrade with earlier
+  delegations and after a restore.
 - `npm run test:temporal:tls` runs the gateway probe command against a real
   gateway and checks that the worker's heartbeat advances.
 

@@ -21,7 +21,9 @@ import { memberActivities, type MemberActivities } from "../../src/service/activ
 import { ApprovalStore } from "../../src/service/approvals.ts";
 import { type ChildKey } from "../../src/service/children.ts";
 import { MemberClient } from "../../src/service/client.ts";
-import { DelegationControl, parentResultKeySchema, type ControlCommand, type ControlReceipt } from "../../src/service/delegation-control.ts";
+import { DelegationReconciler, changeControl, controlState, drainDelegation, parentResultKeySchema, reconciliationPage,
+  settledParentResultSchema, type ChildWorkflowControl, type ControlCommand, type ControlReceipt,
+  type SettledParentResult } from "../../src/service/delegation-control.ts";
 import { TemporalDelegationWorkflows } from "../../src/service/delegation-control-workflows.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
 import { activityQueue, memberTaskQueue } from "../../src/service/queues.ts";
@@ -296,7 +298,8 @@ const temporal = new Client({ connection });
 const native = await NativeConnection.connect({ address });
 cleanupSteps.push(async () => { await native.close(); cleanupResults.push({ scope: "temporal-native", state: "closed" }); });
 const members = new MemberClient(store, temporal);
-const control = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
+const temporalControl = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
+const control = new DelegationReconciler(temporalControl);
 await mkdir(local, { recursive: true });
 await writeFile(oldWorkflow, (await readFile(new URL("../proof/fixtures/pre-child-target-workflow.ts.txt", import.meta.url), "utf8"))
   .replaceAll('from "./', 'from "../../src/service/'));
@@ -384,12 +387,12 @@ async function delegation(tasks: z.infer<typeof taskSchema>[], profile = parentP
 }
 type Delegation = Awaited<ReturnType<typeof delegation>>;
 async function change(enabled: boolean, scope: ControlCommand["scope"] = { kind: "global" }) {
-  return control.change({ commandId: randomUUID(), expectedRevision: (await control.status()).revision, scope, enabled,
+  return changeControl(pool, { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision, scope, enabled,
     actor: "actual-pi-temporal-fixture", reason: "synthetic delegation control proof" });
 }
 async function enable() {
   await change(true);
-  for (const target of (await control.status()).disabledTargets) await change(true, target);
+  for (const target of (await controlState(pool)).disabledTargets) await change(true, target);
 }
 async function committed(value: Delegation) {
   return until(async () => {
@@ -398,7 +401,7 @@ async function committed(value: Delegation) {
   }, "committed parent follow-up");
 }
 async function flushUntilComplete(command: ControlReceipt) {
-  return until(async () => { await control.flush(); const report = await control.drain(command.commandId); return report.complete ? report : undefined; }, "combined exact child and parent drain", 120_000);
+  return until(async () => { await control.flush(); const report = await drainDelegation(temporalControl, command.commandId); return report.complete ? report : undefined; }, "combined exact child and parent drain", 120_000);
 }
 async function countSnapshot() {
   const loads = await runnerLoads();
@@ -413,7 +416,7 @@ async function recordCase(label: string, value: Delegation, command: ControlRece
   await evidence(label, { requestId: value.request.requestId, childRows: await childRows(value.request.requestId),
     nativeLaunchReservations: launches, providerRequests: requests, suiteCumulativeRunnerProfileLoads: loads,
     admissionEvidenceScope: "provider request proves final admission; reservation alone does not",
-    report: await control.drain(command.commandId) });
+    report: await drainDelegation(temporalControl, command.commandId) });
 }
 async function replay(value: Delegation) {
   const before = await countSnapshot();
@@ -488,7 +491,7 @@ test("unanswered recorder cards close without owner answers and ordered failures
     assert.equal(calls.length, 2); assert.ok(calls.every(row => row.decision === null), "Control creates no human choice");
     assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.work_items WHERE request_id=$1", [value.request.requestId])).rowCount, 0);
     for (const task of tasks) assert.equal(wire.filter(row => row.promptDigest === digest(task.task)).length, 1, "No retired recorder continuation reached the provider");
-    const parentPending = await control.drain(command.commandId);
+    const parentPending = await drainDelegation(temporalControl, command.commandId);
     assert.equal(parentPending.complete, false); assert.ok(parentPending.blockers.some(blocker => blocker.kind === "parent_pending"));
     await evidence("parent-follow-up-pending", parentPending);
     const parentLaunch = await pool.query(`SELECT token FROM birbcrew_ts.native_launches WHERE request_id=$1
@@ -527,7 +530,7 @@ test("unanswered recorder cards close without owner answers and ordered failures
       const rows = beforeRelease.filter(row => row.loadedBy === "supervisor-runner.ts").map(row => ({ pid: row.pid, absent: absent(row.pid) }));
       return rows.every(row => row.absent) ? rows : undefined;
     }, "known runner PIDs absent before withheld stopped update");
-    const nativePending = await control.drain(command.commandId);
+    const nativePending = await drainDelegation(temporalControl, command.commandId);
     assert.equal(nativePending.complete, false);
     assert.ok(nativePending.blockers.some(blocker => blocker.kind === "native_unconfirmed" && blocker.tokens.includes(parentToken)));
     assert.ok(!nativePending.blockers.some(blocker => blocker.kind === "parent_pending"));
@@ -583,7 +586,7 @@ test("target disable names the unaffected waiting recorder and global disable la
     await until(async () => wire.find(row => row.promptDigest === digest(analystTask)), "selected analyst request");
     const command = await change(false, { kind: "target", engine: "pi", profile: analystProfile });
     const report = await until(async () => {
-      await control.flush(); const report = await control.drain(command.commandId);
+      await control.flush(); const report = await drainDelegation(temporalControl, command.commandId);
       return report.children.every(child => child.terminal && child.workflow.kind === "closed") ? report : undefined;
     }, "selected target retirement");
     assert.equal(report.complete, false);
@@ -628,7 +631,7 @@ test("a real restarted worker reconciles a pre-target waiting history after miss
     await until(async () => { try { await readFile(heartbeat); return true; } catch { return undefined; } }, "actual restarted worker heartbeat");
     await committed(value);
     const report = await until(async () => {
-      const report = await control.drain(command.commandId);
+      const report = await drainDelegation(temporalControl, command.commandId);
       return report.children[0]?.workflow.kind === "closed" && report.parents.every(parent => parent.workflow.kind === "observed" && parent.unstoppedLaunches.length === 0) ? report : undefined;
     }, "worker-owned durable retirement without fixture flush", 120_000);
     assert.equal(report.valid, false); assert.ok(report.blockers.some(blocker => blocker.kind === "control_changed"));
@@ -649,7 +652,7 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
   const parentPrompt = "delegate " + JSON.stringify(tasks), holdKey = "parent/" + digest(parentPrompt);
   const observer = new TemporalDelegationWorkflows(temporal);
   const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
-  let parentKey: z.infer<typeof parentResultKeySchema> | undefined;
+  let parentKey: SettledParentResult | undefined;
   let command: ControlReceipt | undefined;
   let originalCohort: z.infer<typeof cohortSchema> | undefined;
   let retainedUnobservedParent = false;
@@ -682,7 +685,7 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
       const rows = runners.map(row => ({ pid: row.pid, absent: absent(row.pid) }));
       return rows.every(row => row.absent) ? rows : undefined;
     }, "all observed request runners exit while the workflow worker is offline");
-    const parent = parentResultKeySchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
+    const parent = settledParentResultSchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
       t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
       d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
       JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
@@ -719,7 +722,7 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     const cohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
       FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
     originalCohort = cohort;
-    const report = await control.drain(command.commandId);
+    const report = await drainDelegation(temporalControl, command.commandId);
     await evidence("sql-settled-parent-unobserved-disable", { requestId: value.request.requestId, childId: value.rows[0].childId,
       command, cohort, report, observation, workflowWorker: "stopped", activityWorkers: "running" });
     assert.equal(report.complete, false, "Disable must wait for the actual parent workflow to observe its already committed follow-up");
@@ -768,15 +771,15 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
             assert.equal(rows.length, 1, "The actual controller persisted one current-instance parent observation");
             return rows[0];
           }, "actual controller flush persists applicable exact parent-result evidence", 120_000);
-          const fresh = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
-          const current = await fresh.status();
+          const fresh = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
+          const current = await controlState(pool);
           const { observedAt, ...identity } = positive;
           assert.deepEqual(identity, { installationId: current.installationId, instanceId: current.instanceId,
             conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
             resumeActivityId: key.resumeActivityId, reply: key.reply });
           assert.equal(current.installationId, command.installationId);
           assert.equal(current.instanceId, command.instanceId);
-          const persistedReport = await fresh.drain(command.commandId);
+          const persistedReport = await drainDelegation(fresh, command.commandId);
           assert.equal(persistedReport.complete, true, "A new manager drains the original command with durable evidence");
           const cohortAfterPositive = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
             FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
@@ -788,16 +791,16 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
           await evidence("sql-settled-parent-observed-positive", { observation, positive: positiveProof, applicable: true,
             source: "actual-Temporal-adapter-through-controller-flush", freshManagerState: current, originalCommand: command,
             originalCohort, cohortAfterPositive, report: persistedReport });
-          const enabled = await fresh.change({ commandId: randomUUID(), expectedRevision: current.revision,
+          const enabled = await changeControl(pool, { commandId: randomUUID(), expectedRevision: current.revision,
             scope: { kind: "global" }, enabled: true, actor: "actual-pi-temporal-fixture", reason: "re-enable after actual parent observation" });
-          const later = await fresh.change({ commandId: randomUUID(), expectedRevision: (await fresh.status()).revision,
+          const later = await changeControl(pool, { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision,
             scope: { kind: "global" }, enabled: false, actor: "actual-pi-temporal-fixture", reason: "exclude durably observed exact parent result" });
           const laterCohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
             FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [later.commandId])).rows);
           const originalChildren = new Set(persistedReport.children.filter(child => child.requestId === key.requestId).map(child => child.childId));
           assert.equal(originalChildren.size, tasks.length, "The original cohort identifies every child from this exact request");
           assert.ok(laterCohort.every(row => !originalChildren.has(row.childId)), "The later disable excludes this durably observed request's children");
-          const laterReport = await fresh.drain(later.commandId);
+          const laterReport = await drainDelegation(fresh, later.commandId);
           assert.ok(laterReport.children.every(child => child.requestId !== key.requestId));
           assert.ok(laterReport.parents.every(parent => parent.requestId !== key.requestId));
           assert.ok(laterReport.siblings.every(sibling => sibling.requestId !== key.requestId));
@@ -989,7 +992,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     assert.equal(delivered, reply, "The waiting caller receives the actual committed reply after activity acknowledgement loss");
     assert.ok(injected, "The production executeTurn returned a complete actual Pi result before injection");
     const fault = injected;
-    const parent = parentResultKeySchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
+    const parent = settledParentResultSchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
       t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
       d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
       JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
@@ -1068,7 +1071,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     }, "Disable retains the already completed child without retiring it");
     const noLaunchBaseline = await countSnapshot();
     const flush = await control.flush();
-    const report = await control.drain(command.commandId);
+    const report = await drainDelegation(temporalControl, command.commandId);
     await evidence("reconciled-parent-disable-drain", { key, command, cohort, flush, report, observation,
       expectedObservation: { kind: "observed" }, expectedDrainComplete: true });
     assert.deepEqual(observation, { kind: "observed" }, "The actual adapter must recognize the exact committed parent reply delivered through reconciliation");
@@ -1357,8 +1360,8 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
       "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
     assert.equal(applicable.observed, true);
-    const fresh = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
-    const persistedReport = await fresh.drain(command.commandId);
+    const fresh = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
+    const persistedReport = await drainDelegation(fresh, command.commandId);
     assert.equal(persistedReport.complete, true, "A fresh controller drains the original command using durable reconciled-result evidence");
     assert.deepEqual(await countSnapshot(), noLaunchBaseline, "Reconciled observation, flush and fresh drain launch no additional runner or provider work");
     await evidence("reconciled-parent-positive", { key, command, cohort, positives, applicable, persistedReport,
@@ -1368,9 +1371,9 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     const missingNamespace = "control-missing-" + randomUUID();
     const namespaceClient = new Client({ connection, namespace: missingNamespace });
     const namespaceObserver = new TemporalDelegationWorkflows(namespaceClient);
-    const authorityBeforeMissingRun = await control.status();
+    const authorityBeforeMissingRun = await controlState(pool);
     const missingParentCalls: { key: typeof key; observation: Awaited<ReturnType<typeof observer.observeParentResult>> }[] = [];
-    const missingController = new DelegationControl({ pool, workflows: {
+    const missingWorkflows: ChildWorkflowControl = {
       signalDecision: candidate => observer.signalDecision(candidate),
       observe: candidate => observer.observe(candidate),
       observeParentResult: async candidate => {
@@ -1378,7 +1381,8 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
         if (isDeepStrictEqual(candidate, missingKey)) missingParentCalls.push({ key: candidate, observation });
         return observation;
       },
-    } });
+    };
+    const missingController = new DelegationReconciler({ pool, workflows: missingWorkflows });
     const replaced = await pool.query(`UPDATE birbcrew_ts.turns SET workflow_run_id=$3
       WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$4 RETURNING workflow_run_id`,
     [key.conversationId, key.requestId, missingKey.workflowRunId, key.workflowRunId]);
@@ -1400,7 +1404,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
       const namespaceObservation = await namespaceObserver.observeParentResult(key);
       const discovery = z.strictObject({ count: z.number().int().positive() }).parse((await pool.query(
         "SELECT count(*)::integer AS count FROM birbcrew_ts.delegations")).rows[0]);
-      const passLimit = Math.ceil(discovery.count / 4) + 1;
+      const passLimit = Math.ceil(discovery.count / reconciliationPage) + 1;
       const flushPasses: { failed: boolean; aggregateError: boolean; parentUnavailable: boolean;
         result: Awaited<ReturnType<typeof control.flush>> | null }[] = [];
       for (let pass = 0; pass < passLimit && missingParentCalls.length === 0; pass++) {
@@ -1415,7 +1419,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
         }
       }
       const flushParentCalls = [...missingParentCalls];
-      const missingReport = await missingController.drain(command.commandId);
+      const missingReport = await drainDelegation({ pool, workflows: missingWorkflows }, command.commandId);
       const missingApplicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
         "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
       const retainedPositives = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
@@ -1428,7 +1432,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
         `SELECT count(*)::integer AS count FROM birbcrew_ts.delegation_parent_observations
           WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$3`,
         [key.conversationId, key.requestId, missingKey.workflowRunId])).rows[0]);
-      const authorityAfterMissingRun = await control.status();
+      const authorityAfterMissingRun = await controlState(pool);
       const noLaunchAfterMissingRun = await countSnapshot();
       await evidence("missing-parent-history-background-flush", {
         source: "SQL-seeded-stored-parent-run-and-actual-Temporal-RPC", actualRetentionExpiryClaim: false,

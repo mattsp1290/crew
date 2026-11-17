@@ -223,16 +223,6 @@ async function selected(commandId: string, childId: string, expected: boolean, r
     [commandId, childId])).rows, expected ? [{ retire }] : []);
 }
 
-async function freshAdmission(db: PoolClient, childId: string) {
-  return db.query(`SELECT 1 FROM birbcrew_ts.pi_children j CROSS JOIN birbcrew_ts.delegation_control c
-    WHERE j.child_id=$1 AND c.singleton AND c.global_enabled
-      AND birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile) IS NOT NULL
-      AND NOT c.disabled_targets @> jsonb_build_array(birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile))
-      AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.delegation_control_children m WHERE m.child_id=j.child_id AND m.retire)
-      AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_stop_requests s
-        WHERE (s.conversation_id,s.request_id,s.token)=(j.conversation_id,j.request_id,j.generation))`, [childId]);
-}
-
 test("historical unreadable target joins a conservative disable cohort without inventing authority", async () => {
   const scope: Scope = { kind: "target", engine: "pi", profile: "unrelated-proof-target" };
   const receipt = await change(scope);
@@ -339,7 +329,7 @@ test("old admission SELECT begun behind a rolling-back writer keeps stale stop v
     await blocked(native, writer, t);
     await change(f.targetScope); await stopped(f);
     await writer.query("ROLLBACK");
-    const old = await accepted(pending), fresh = await freshAdmission(native, f.childId);
+    const old = await accepted(pending), fresh = await freshChildAdmission(native, f.launch);
     const reservations = (await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1", [f.childId])).rowCount;
     record({ kind: "admission", case: t.name, oldAdmissionRows: old.rowCount, freshAdmissionRows: fresh.rowCount, reservations });
     t.diagnostic(JSON.stringify({ oldAdmissionRows: old.rowCount, freshAdmissionRows: fresh.rowCount, reservations }));

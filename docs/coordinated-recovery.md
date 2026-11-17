@@ -252,7 +252,9 @@ snapshot or copied from another fence, and never deleted. See
    sealed destinations or identities. It also removes all active named roles
    under restored profile names. Recorded parent observations retain their old
    instance identity, so matching workers must observe parent histories again
-   before those observations can establish drain completion. A held source that
+   before those observations can establish drain completion. A parent whose
+   history Temporal no longer retains stays a permanent drain blocker; see
+   [blockers that never clear](delegation-control.md#blockers-that-never-clear). A held source that
    resumes without a restore keeps its delegation-control settings, parent
    observations, and named roles.
 

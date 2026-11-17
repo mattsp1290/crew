@@ -112,10 +112,14 @@ export async function freshChildAdmission(db: PoolClient, launch: Launch) {
       AND j.outcome IS NULL AND NOT j.launch_revoked
       AND birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile) IS NOT NULL
       AND NOT d.disabled_targets @> jsonb_build_array(birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile))
-      AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.delegation_control_children m WHERE m.child_id=j.child_id AND m.retire)
+      AND NOT birbcrew_ts.delegation_child_retired(j.child_id)
       AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_stop_requests s
         WHERE (s.conversation_id,s.request_id,s.token)=(j.conversation_id,j.request_id,j.generation))`,
     [launch.childId, launch.token]);
+}
+
+export async function admitChild(db: PoolClient, launch: Launch): Promise<boolean> {
+  return Boolean((await lockChildAdmission(db, launch)).rowCount) && Boolean((await freshChildAdmission(db, launch)).rowCount);
 }
 
 export async function revokeChild(db: PoolClient, launch: Launch) {

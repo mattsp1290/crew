@@ -11,8 +11,8 @@ import { z } from "zod";
 import { fixedRoles } from "@birbcrew/pi-subagents";
 import { ApprovalStore, type Approval } from "../../src/service/approvals.ts";
 import { ChildStore, type ChildKey } from "../../src/service/children.ts";
-import { DelegationControl, controlCommandSchema, controlReceiptSchema,
-  type ChildWorkflowControl, type ControlCommand } from "../../src/service/delegation-control.ts";
+import { DelegationReconciler, changeControl, controlCommandSchema, controlReceiptSchema, controlState, drainDelegation,
+  reconciliationPage, type ChildWorkflowControl, type ControlCommand } from "../../src/service/delegation-control.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
 import { readSnapshot } from "../../src/service/observation.ts";
 import type { MemberProfile } from "../../src/service/profiles.ts";
@@ -45,23 +45,13 @@ function workflowFixture(controlPool: Pool = pool) {
       : { kind: "closed", runId: key.workflowRunId, status: "COMPLETED" }; },
     async observeParentResult(key) { parentObservations.push(key); return { kind: "observed" }; },
   };
-  return { workflows, signals, parentObservations, control: new DelegationControl({ pool: controlPool, workflows }) };
+  return { pool: controlPool, workflows, signals, parentObservations, control: new DelegationReconciler({ pool: controlPool, workflows }) };
 }
-const forbiddenWorkflowCalls: string[] = [];
-function faultWorkflows(): ChildWorkflowControl {
-  const fail = async (operation: string): Promise<never> => {
-    forbiddenWorkflowCalls.push(operation);
-    throw new Error("Workflow service must not be touched by change/status");
-  };
-  return { signalDecision: () => fail("signalDecision"), observe: () => fail("observe"),
-    observeParentResult: () => fail("observeParentResult") };
-}
-const control = new DelegationControl({ pool, workflows: faultWorkflows() });
 async function command(scope: ControlCommand["scope"], enabled = false): Promise<ControlCommand> {
-  return { commandId: randomUUID(), expectedRevision: (await control.status()).revision, scope, enabled,
+  return { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision, scope, enabled,
     actor: "isolated-store-test", reason: "Verify durable operator permission behavior" };
 }
-async function change(scope: ControlCommand["scope"], enabled = false) { return control.change(await command(scope, enabled)); }
+async function change(scope: ControlCommand["scope"], enabled = false) { return changeControl(pool, await command(scope, enabled)); }
 const targetScope = (profile: string) => ({ kind: "target", engine: "pi", profile } satisfies ControlCommand["scope"]);
 before(async () => {
   const version = z.object({ server_version_num: z.string() }).parse((await pool.query("SHOW server_version_num")).rows[0]);
@@ -160,7 +150,7 @@ async function parentObserved(requestId: string) {
 async function discoveryPasses() {
   const { count } = z.object({ count: z.number() }).parse((await pool.query(
     "SELECT count(*)::int AS count FROM birbcrew_ts.delegations")).rows[0]);
-  return Math.ceil(count / 4) + 2;
+  return Math.ceil(count / reconciliationPage) + 2;
 }
 async function observeParents(worker: ReturnType<typeof workflowFixture>, requestIds: string[]) {
   const limit = await discoveryPasses();
@@ -179,7 +169,7 @@ async function completedDelegation() {
 
 test("strict operator input rejects malformed commands without changing durable permission", async () => {
   const good = await command(targetScope("strict-" + randomUUID()));
-  const original = await control.status();
+  const original = await controlState(pool);
   for (const invalid of [
     { ...good, extra: true }, { ...good, commandId: "not-a-uuid" }, { ...good, expectedRevision: 1 },
     { ...good, expectedRevision: "-1" }, { ...good, expectedRevision: "01" }, { ...good, expectedRevision: "1.0" },
@@ -192,37 +182,36 @@ test("strict operator input rejects malformed commands without changing durable 
     { ...good, reason: "r".repeat(1025) }, { ...good, reason: "bad\0reason" },
   ]) {
     assert.equal(controlCommandSchema.safeParse(invalid).success, false);
-    await assert.rejects(control.change(invalid));
-    assert.deepEqual(await control.status(), original);
+    await assert.rejects(changeControl(pool, invalid));
+    assert.deepEqual(await controlState(pool), original);
   }
 });
 
-test("change and status persist refusal with a workflow adapter that throws on every operation", async () => {
+test("change and status persist refusal without a workflow adapter", async () => {
   const input = await command(targetScope("offline-" + randomUUID()));
-  const receipt = controlReceiptSchema.parse(await control.change(input));
+  const receipt = controlReceiptSchema.parse(await changeControl(pool, input));
   assert.deepEqual(receipt.scope, input.scope);
   assert.equal(receipt.enabled, false);
   assert.equal(receipt.revision, (BigInt(input.expectedRevision) + 1n).toString());
-  assert.equal((await control.status()).revision, receipt.revision);
-  assert.deepEqual(forbiddenWorkflowCalls, [], "Unit boundary adapter receives no workflow calls");
+  assert.equal((await controlState(pool)).revision, receipt.revision);
   record("workflow-independent durable refusal", receipt);
 });
 
 test("same command retries preserve the original receipt while changed payloads and stale CAS refuse", async () => {
   const input = await command(targetScope("idempotency-" + randomUUID()));
-  const receipt = await control.change(input);
+  const receipt = await changeControl(pool, input);
   await change(targetScope("newer-" + randomUUID()));
-  const current = await control.status();
-  assert.deepEqual(await control.change(input), receipt);
+  const current = await controlState(pool);
+  assert.deepEqual(await changeControl(pool, input), receipt);
   for (const changed of [{ ...input, reason: "changed" }, { ...input, enabled: true },
-    { ...input, commandId: randomUUID() }]) await assert.rejects(control.change(changed));
-  assert.deepEqual(await control.status(), current);
+    { ...input, commandId: randomUUID() }]) await assert.rejects(changeControl(pool, changed));
+  assert.deepEqual(await controlState(pool), current);
   const [left, right] = await Promise.allSettled([
-    control.change({ ...await command(targetScope("cas-left-" + randomUUID())), expectedRevision: current.revision }),
-    control.change({ ...await command(targetScope("cas-right-" + randomUUID())), expectedRevision: current.revision }),
+    changeControl(pool, { ...await command(targetScope("cas-left-" + randomUUID())), expectedRevision: current.revision }),
+    changeControl(pool, { ...await command(targetScope("cas-right-" + randomUUID())), expectedRevision: current.revision }),
   ]);
   assert.deepEqual([left.status, right.status].sort(), ["fulfilled", "rejected"]);
-  assert.equal((await control.status()).revision, (BigInt(current.revision) + 1n).toString());
+  assert.equal((await controlState(pool)).revision, (BigInt(current.revision) + 1n).toString());
 });
 
 async function flushChild(fixture: ReturnType<typeof workflowFixture>, childId: string) {
@@ -335,7 +324,7 @@ test("global and target permission compose without enabling one overriding the o
   await assert.rejects(delegation({ profile }));
   await change({ kind: "global" }, false);
   await change(targetScope(profile), true);
-  const state = await control.status();
+  const state = await controlState(pool);
   assert.equal(state.globalEnabled, false);
   assert.equal(state.disabledTargets.some(target => target.profile === profile), false);
   await assert.rejects(delegation({ profile }));
@@ -347,7 +336,7 @@ test("global and target permission compose without enabling one overriding the o
 test("drain reports ready SQL work, not-started execution and undelivered parent independently", async () => {
   const f = await delegation(), [key] = f.keys, worker = workflowFixture();
   const receipt = await change(targetScope(f.profile));
-  const report = await worker.control.drain(receipt.commandId);
+  const report = await drainDelegation(worker, receipt.commandId);
   assert.equal(report.valid, true);
   assert.equal(report.admissionClosed, true);
   assert.equal(report.complete, false);
@@ -355,6 +344,7 @@ test("drain reports ready SQL work, not-started execution and undelivered parent
     { kind: "child_pending", childId: key.childId, phase: "ready" },
     { kind: "child_workflow", childId: key.childId, observation: { kind: "not_started" } },
     { kind: "parent_pending", requestId: key.requestId, phase: "started" },
+    { kind: "parent_workflow", requestId: key.requestId, observation: { kind: "pending" } },
   ]);
   assert.deepEqual(report.children.map(child => ({ childId: child.childId, retire: child.retire })),
     [{ childId: key.childId, retire: true }]);
@@ -367,7 +357,7 @@ test("drain requires independently closed child execution and observed parent re
   const receipt = await change(targetScope(f.profile));
   await flushChild(worker, key.childId);
   await finishParent(f);
-  const complete = await worker.control.drain(receipt.commandId);
+  const complete = await drainDelegation(worker, receipt.commandId);
   assert.equal(complete.complete, true);
   assert.deepEqual(complete.blockers, []);
   assert.deepEqual(complete.children[0].workflow, { kind: "closed", runId: childExecution.execution.workflowRunId, status: "COMPLETED" });
@@ -379,24 +369,24 @@ test("drain requires independently closed child execution and observed parent re
     { kind: "open", runId: childExecution.execution.workflowRunId, status: "RUNNING" },
   ] satisfies Awaited<ReturnType<ChildWorkflowControl["observe"]>>[]) {
     worker.workflows.observe = async () => observation;
-    const report = await worker.control.drain(receipt.commandId);
+    const report = await drainDelegation(worker, receipt.commandId);
     assert.equal(report.complete, false);
     assert.deepEqual(report.blockers, [{ kind: "child_workflow", childId: key.childId, observation }]);
     record("adapter fixture child execution " + observation.kind, report);
   }
   worker.workflows.observe = async () => { throw new Error("controlled unreachable workflow service"); };
-  assert.deepEqual((await worker.control.drain(receipt.commandId)).blockers,
+  assert.deepEqual((await drainDelegation(worker, receipt.commandId)).blockers,
     [{ kind: "child_workflow", childId: key.childId, observation: { kind: "unavailable" } }]);
   worker.workflows.observe = async () => ({ kind: "closed", runId: childExecution.execution.workflowRunId, status: "COMPLETED" });
   for (const kind of ["pending", "missing", "unknown", "unavailable"] as const) {
     worker.workflows.observeParentResult = async () => ({ kind });
-    const report = await worker.control.drain(receipt.commandId);
+    const report = await drainDelegation(worker, receipt.commandId);
     assert.equal(report.complete, false);
     assert.deepEqual(report.blockers, [{ kind: "parent_workflow", requestId: key.requestId, observation: { kind } }]);
     record("adapter fixture parent result " + kind, report);
   }
   worker.workflows.observeParentResult = async () => { throw new Error("controlled result observation failure"); };
-  assert.deepEqual((await worker.control.drain(receipt.commandId)).blockers,
+  assert.deepEqual((await drainDelegation(worker, receipt.commandId)).blockers,
     [{ kind: "parent_workflow", requestId: key.requestId, observation: { kind: "unavailable" } }]);
 });
 
@@ -410,27 +400,27 @@ test("completed selected child remains in the cohort until parent and all retain
   try {
     await children.finish(key, started.generation, { text: "Completed fixture child", checkpoint });
     const receipt = await change(targetScope(f.profile));
-    const beforeParent = await worker.control.drain(receipt.commandId);
+    const beforeParent = await drainDelegation(worker, receipt.commandId);
     assert.deepEqual(beforeParent.children.map(child => ({ childId: child.childId, retire: child.retire })),
       [{ childId: key.childId, retire: false }]);
     assert.ok(beforeParent.blockers.some(blocker => blocker.kind === "parent_pending"));
     await finishParent(f);
-    await worker.control.drain(receipt.commandId);
+    await drainDelegation(worker, receipt.commandId);
     assert.equal(await parentObserved(key.requestId), false, "Read-only drain does not save its adapter fixture observation");
     await observeParents(worker, [key.requestId]);
     const lateNativeReceipt = await change(targetScope(f.profile));
-    const nativePending = await worker.control.drain(lateNativeReceipt.commandId);
+    const nativePending = await drainDelegation(worker, lateNativeReceipt.commandId);
     assert.deepEqual(nativePending.children.map(child => ({ childId: child.childId, retire: child.retire })),
       [{ childId: key.childId, retire: false }]);
     assert.deepEqual(nativePending.blockers, [{ kind: "native_unconfirmed", requestId: key.requestId, tokens: parentTokens.toSorted() }]);
     await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND token=$2", [key.conversationId, parentTokens[0]]);
-    const onePending = await worker.control.drain(lateNativeReceipt.commandId);
+    const onePending = await drainDelegation(worker, lateNativeReceipt.commandId);
     assert.deepEqual(onePending.blockers, [{ kind: "native_unconfirmed", requestId: key.requestId, tokens: [parentTokens[1]] }]);
     await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND token=$2", [key.conversationId, parentTokens[1]]);
-    assert.equal((await worker.control.drain(lateNativeReceipt.commandId)).complete, true);
+    assert.equal((await drainDelegation(worker, lateNativeReceipt.commandId)).complete, true);
     assert.equal(await parentObserved(key.requestId), true, "A cached parent positive never waived either unstopped native attempt");
     const quiescentReceipt = await change(targetScope(f.profile));
-    assert.deepEqual((await worker.control.drain(quiescentReceipt.commandId)).children, []);
+    assert.deepEqual((await drainDelegation(worker, quiescentReceipt.commandId)).children, []);
     record("database-only retained launch accounting", { childId: key.childId, tokens: parentTokens,
       beforeParentBlockers: beforeParent.blockers, afterParentBlockers: nativePending.blockers });
   } finally {
@@ -448,7 +438,7 @@ test("revision change during workflow observation invalidates the snapshot while
     assert.ok(execution.workflowRunId);
     return { kind: "closed", runId: execution.workflowRunId, status: "COMPLETED" };
   };
-  const report = await worker.control.drain(receipt.commandId);
+  const report = await drainDelegation(worker, receipt.commandId);
   assert.equal(report.valid, false);
   assert.equal(report.admissionClosed, false);
   assert.equal(report.complete, false);
@@ -463,8 +453,8 @@ test("revision change during workflow observation invalidates the snapshot while
 test("previous-instance commands refuse and cross-observation instance changes invalidate rather than erase the cohort", async () => {
   const f = await delegation(), [key] = f.keys, worker = workflowFixture();
   await running(key);
-  const input = await command(targetScope(f.profile)), receipt = await control.change(input);
-  const original = await control.status();
+  const input = await command(targetScope(f.profile)), receipt = await changeControl(pool, input);
+  const original = await controlState(pool);
   const replacementInstance = randomUUID();
   try {
     worker.workflows.observe = async execution => {
@@ -472,14 +462,14 @@ test("previous-instance commands refuse and cross-observation instance changes i
       assert.ok(execution.workflowRunId);
       return { kind: "closed", runId: execution.workflowRunId, status: "COMPLETED" };
     };
-    const report = await worker.control.drain(receipt.commandId);
+    const report = await drainDelegation(worker, receipt.commandId);
     assert.equal(report.valid, false);
     assert.equal(report.complete, false);
     assert.equal(report.initial.instanceId, original.instanceId);
     assert.equal(report.current.instanceId, replacementInstance);
     assert.equal(report.children[0].childId, key.childId);
     assert.ok(report.blockers.some(blocker => blocker.kind === "control_changed"));
-    await assert.rejects(control.change(input), { code: "55000" });
+    await assert.rejects(changeControl(pool, input), { code: "55000" });
     record("database fixture instance invalidation", report);
   } finally {
     await pool.query("UPDATE birbcrew_ts.recovery_control SET instance_id=$1 WHERE singleton", [original.instanceId]);
@@ -501,7 +491,7 @@ test("target drain names an unaffected waiting sibling and global retirement clo
   const pending = await waiting(sibling), worker = workflowFixture();
   const targeted = await change(targetScope(analyst));
   await flushChild(worker, selected.childId);
-  const report = await worker.control.drain(targeted.commandId);
+  const report = await drainDelegation(worker, targeted.commandId);
   const expectedSibling = { ownerId: sibling.ownerId, memberId: sibling.memberId, conversationId: sibling.conversationId,
     requestId: sibling.requestId, childId: sibling.childId, phase: "waiting", target: targetScope(recorder),
     approvalId: pending.approval.approvalId };
@@ -516,7 +506,7 @@ test("target drain names an unaffected waiting sibling and global retirement clo
   assert.equal((await childState(sibling)).phase, "failed");
   assert.deepEqual(await approvals.pending(f.conversation), []);
   await finishParent(f);
-  const complete = await worker.control.drain(global.commandId);
+  const complete = await drainDelegation(worker, global.commandId);
   assert.equal(complete.complete, true);
   assert.deepEqual(complete.siblings, []);
   assert.ok(complete.children.some(child => child.childId === sibling.childId && child.retire));
@@ -527,17 +517,17 @@ test("enable receipts and superseded disabled receipts never report admission cl
   const target = targetScope("report-enable-" + randomUUID()), worker = workflowFixture();
   const disabled = await change(target);
   const enabled = await change(target, true);
-  const enabledReport = await worker.control.drain(enabled.commandId);
+  const enabledReport = await drainDelegation(worker, enabled.commandId);
   assert.equal(enabledReport.valid, true);
   assert.equal(enabledReport.admissionClosed, false);
   assert.equal(enabledReport.complete, false);
   assert.deepEqual(enabledReport.blockers, [{ kind: "admission_open" }]);
-  const oldReport = await worker.control.drain(disabled.commandId);
+  const oldReport = await drainDelegation(worker, disabled.commandId);
   assert.equal(oldReport.valid, false);
   assert.equal(oldReport.admissionClosed, false);
   assert.deepEqual(oldReport.blockers, [{ kind: "control_changed" }, { kind: "admission_open" }]);
-  await assert.rejects(worker.control.drain("invalid-command-id"));
-  await assert.rejects(worker.control.drain(randomUUID()));
+  await assert.rejects(drainDelegation(worker, "invalid-command-id"));
+  await assert.rejects(drainDelegation(worker, randomUUID()));
 });
 
 async function cli(args: string[], input = "") {
@@ -573,16 +563,16 @@ test("actual CLI change and status work with unreachable Temporal and unreadable
   const receipt = controlReceiptSchema.parse(JSON.parse(changed.stdout));
   assert.equal(receipt.commandId, input.commandId);
   assert.equal(receipt.enabled, false);
-  assert.deepEqual(await control.change(input), receipt);
+  assert.deepEqual(await changeControl(pool, input), receipt);
   const status = await cli(["status"]);
   assert.equal(status.exitCode, 0, status.stderr);
-  assert.deepEqual(JSON.parse(status.stdout), await control.status());
+  assert.deepEqual(JSON.parse(status.stdout), await controlState(pool));
   record("actual CLI Temporal-independent change and status", { receipt, changeExit: changed.exitCode, statusExit: status.exitCode });
 });
 
 test("actual CLI rejects extra fields, malformed JSON and unknown operations without disclosing private input", { timeout: 60_000 }, async () => {
   const input = await command(targetScope("cli-strict-" + randomUUID()));
-  const original = await control.status(), secret = "private-control-input-" + randomUUID();
+  const original = await controlState(pool), secret = "private-control-input-" + randomUUID();
   for (const [args, text] of [
     [["change"], JSON.stringify({ ...input, extra: secret })],
     [["change"], "{\"reason\":\"" + secret],
@@ -595,7 +585,7 @@ test("actual CLI rejects extra fields, malformed JSON and unknown operations wit
     assert.equal(z.object({ status: z.literal("failed"), message: z.string() }).parse(JSON.parse(result.stderr)).status, "failed");
     assert.equal(result.stderr.includes(secret), false);
     assert.equal(result.stderr.includes(url), false);
-    assert.deepEqual(await control.status(), original);
+    assert.deepEqual(await controlState(pool), original);
   }
 });
 
@@ -614,7 +604,7 @@ test("unconfirmed native stop stays pending until an authoritative stopped fact 
     assert.equal((await childState(key)).phase, "running");
     assert.equal(z.object({ stopped: z.boolean() }).parse((await pool.query(
       "SELECT stopped FROM birbcrew_ts.native_launches WHERE child_id=$1", [key.childId])).rows[0]).stopped, false);
-    const report = await worker.control.drain(receipt.commandId);
+    const report = await drainDelegation(worker, receipt.commandId);
     assert.equal(report.complete, false);
     assert.ok(report.blockers.some(blocker => blocker.kind === "native_unconfirmed"
       && blocker.tokens.includes(started.generation)));
@@ -675,7 +665,7 @@ test("SQL completion remains selected until an adapter-fixture positive is persi
   const f = await completedDelegation(), [key] = f.keys, worker = workflowFixture();
   worker.workflows.observeParentResult = async () => ({ kind: "pending" });
   const receipt = await change(targetScope(f.profile));
-  const pending = await worker.control.drain(receipt.commandId);
+  const pending = await drainDelegation(worker, receipt.commandId);
   assert.deepEqual(pending.children.map(child => ({ childId: child.childId, retire: child.retire })),
     [{ childId: key.childId, retire: false }]);
   assert.deepEqual(pending.blockers, [{ kind: "parent_workflow", requestId: key.requestId, observation: { kind: "pending" } }]);
@@ -685,14 +675,14 @@ test("SQL completion remains selected until an adapter-fixture positive is persi
       workflowRunId: f.execution.workflowRunId, resumeActivityId: "parent-followup", reply: "Fixture outcomes delivered" });
     return { kind: "observed" };
   };
-  assert.equal((await worker.control.drain(receipt.commandId)).complete, true);
+  assert.equal((await drainDelegation(worker, receipt.commandId)).complete, true);
   assert.equal(await parentObserved(key.requestId), false, "A positive live drain remains a read-only observation");
   await observeParents(worker, [key.requestId]);
   const evidence = await pool.query("SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [key.requestId]);
   assert.equal(evidence.rowCount, 1);
   const restarted = workflowFixture();
   restarted.workflows.observeParentResult = async () => { assert.fail("Applicable persisted evidence avoids unavailable parent history"); };
-  const cached = await restarted.control.drain(receipt.commandId);
+  const cached = await drainDelegation(restarted, receipt.commandId);
   assert.equal(cached.complete, true);
   assert.deepEqual(cached.parents[0].workflow, { kind: "observed" });
   assert.equal(JSON.stringify(cached).includes("Fixture outcomes delivered"), false);
@@ -700,10 +690,10 @@ test("SQL completion remains selected until an adapter-fixture positive is persi
     "resumeActivityId", "phase", "unstoppedLaunches", "workflow"].sort());
   assert.deepEqual((await pool.query("SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [key.requestId])).rows, evidence.rows);
   restarted.workflows.observe = async () => ({ kind: "missing" });
-  assert.deepEqual((await restarted.control.drain(receipt.commandId)).blockers,
+  assert.deepEqual((await drainDelegation(restarted, receipt.commandId)).blockers,
     [{ kind: "child_workflow", childId: key.childId, observation: { kind: "missing" } }]);
   const later = await change(targetScope(f.profile));
-  assert.deepEqual((await restarted.control.drain(later.commandId)).children, []);
+  assert.deepEqual((await drainDelegation(restarted, later.commandId)).children, []);
   assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 AND child_id=$2",
     [receipt.commandId, key.childId])).rowCount, 1, "The earlier immutable cohort retains its completed child");
   record("adapter-fixture positive producer and read-only cached consumer", { requestId: key.requestId, pending, cached, later });
@@ -790,12 +780,12 @@ test("positive adapter fixtures cannot persist across a changed exact run, resum
       for (let pass = 0, limit = await discoveryPasses(); pass < limit; pass++) await worker.control.flush();
       assert.equal(await parentObserved(f.request.requestId), false, "An observation cannot certify the replaced SQL identity");
       const receipt = await change(targetScope(f.profile));
-      assert.deepEqual((await workflowFixture().control.drain(receipt.commandId)).children.map(child => child.childId), [f.keys[0].childId]);
+      assert.deepEqual((await drainDelegation(workflowFixture(), receipt.commandId)).children.map(child => child.childId), [f.keys[0].childId]);
       await observeParents(workflowFixture(), [f.request.requestId]);
       await pool.query(mutate, [f.request.requestId, "another-replacement-" + randomUUID()]);
       const fallback = workflowFixture();
       fallback.workflows.observeParentResult = async () => ({ kind: "pending" });
-      assert.deepEqual((await fallback.control.drain(receipt.commandId)).blockers,
+      assert.deepEqual((await drainDelegation(fallback, receipt.commandId)).blockers,
         [{ kind: "parent_workflow", requestId: f.request.requestId, observation: { kind: "pending" } }]);
       assert.equal(await parentObserved(f.request.requestId), false, "A cached positive does not certify a later different identity");
     } finally {
@@ -808,7 +798,7 @@ test("positive adapter fixtures cannot persist across a changed exact run, resum
 });
 
 test("in-flight adapter-fixture positives retain exact recovery authority across freeze, thaw and identity transfer", async () => {
-  const initial = await control.status();
+  const initial = await controlState(pool);
   for (const column of ["installation_id", "instance_id"] as const) {
     const f = await completedDelegation(), worker = workflowFixture();
     let transferred = false;
@@ -841,7 +831,7 @@ test("in-flight adapter-fixture positives retain exact recovery authority across
 });
 
 test("recovery freeze refuses adapter-fixture writes while same-instance thaw accepts and replacement instance reobserves", async () => {
-  const f = await completedDelegation(), worker = workflowFixture(), initial = await control.status();
+  const f = await completedDelegation(), worker = workflowFixture(), initial = await controlState(pool);
   let observed = false;
   worker.workflows.observeParentResult = async parent => {
     if (parent.requestId === f.request.requestId) {
@@ -865,10 +855,10 @@ test("recovery freeze refuses adapter-fixture writes while same-instance thaw ac
     assert.equal(await parentObserved(f.request.requestId), false, "A restored instance cannot reuse old evidence");
     const receipt = await change(targetScope(f.profile)), restarted = workflowFixture();
     restarted.workflows.observeParentResult = async () => ({ kind: "missing" });
-    const missing = await restarted.control.drain(receipt.commandId);
+    const missing = await drainDelegation(restarted, receipt.commandId);
     assert.deepEqual(missing.blockers, [{ kind: "parent_workflow", requestId: f.request.requestId, observation: { kind: "missing" } }]);
     await observeParents(workflowFixture(), [f.request.requestId]);
-    assert.equal((await workflowFixture().control.drain(receipt.commandId)).complete, true);
+    assert.equal((await drainDelegation(workflowFixture(), receipt.commandId)).complete, true);
     assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.delegation_parent_observations WHERE request_id=$1", [f.request.requestId])).rowCount, 2);
   } finally {
     await pool.query("UPDATE birbcrew_ts.recovery_control SET phase='active',generation=NULL,instance_id=$1 WHERE singleton", [initial.instanceId]);

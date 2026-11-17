@@ -298,10 +298,10 @@ try {
   assert.equal(activeChildren.length, 1); assert.ok(activeChildren[0].workflow_run_id);
   workflowIds.push("birbcrew-ts/child/" + activeChildren[0].child_id);
   assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1 AND NOT stopped", [activeChildren[0].child_id])).rowCount, 1);
-  const { DelegationControl } = await import("../../src/service/delegation-control.ts");
+  const { changeControl, controlState, drainDelegation } = await import("../../src/service/delegation-control.ts");
   const { TemporalDelegationWorkflows } = await import("../../src/service/delegation-control-workflows.ts");
-  const control = new DelegationControl({ pool, workflows: new TemporalDelegationWorkflows(temporal) });
-  const command = controlReceiptSchema.parse(await control.change({ commandId: randomUUID(), expectedRevision: (await control.status()).revision,
+  const control = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
+  const command = controlReceiptSchema.parse(await changeControl(pool, { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision,
     scope: { kind: "global" }, enabled: false, actor: "retained-rollback-proof", reason: "stop named child before exact old application rollback" }));
   const drain = await until(async () => {
     const output = await boundedCommand(process.execPath, [join(newRoot, "src/service/delegation-control-cli.ts"), "drain", command.commandId], now() + 20_000, { env });
@@ -327,7 +327,7 @@ try {
         WHERE request_id=ANY($1::uuid[]) UNION ALL
         SELECT 'paused' AS source,request_id,checkpoint FROM birbcrew_ts.paused_segments WHERE request_id=$2
         ORDER BY source,request_id`, [[oldDelegation.requestId, rememberedRequest.requestId, retiredRequest.requestId], approvalRequest.requestId])).rows,
-      state: await control.status(),
+      state: await controlState(pool),
     };
   }
   async function nativeManifest(path = stateDir): Promise<{ path: string; dev: number; ino: number; bytes: number; sha256: string }[]> {
@@ -400,7 +400,7 @@ try {
   }
   const followupHistory = await temporal.workflow.getHandle(`birbcrew-ts/member/${remembered.memberId}/conversation/${remembered.conversationId}`).fetchHistory();
   assert.ok(followupHistory.events?.some(event => event.workflowTaskCompletedEventAttributes?.identity === rollback.identity), "Actual old rollback worker completes retained workflow tasks");
-  const finalDrain = await control.drain(command.commandId);
+  const finalDrain = await drainDelegation(control, command.commandId);
   assert.equal(finalDrain.complete, true); assert.equal(finalDrain.valid, true); assert.equal(finalDrain.admissionClosed, true);
   await evidence("rollback-assertions", { histories, refusal, retained: await retainedRows(), finalDrain, ordinaryApprovalId: card.approvalId,
     oldWorkerIdentity: rollback.identity, workflowCode: "byte-identical-at-accepted-floor", dependencyLock: "byte-identical", scope: "live-database-global-disable-application-only" });
