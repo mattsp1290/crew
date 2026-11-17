@@ -48,8 +48,9 @@ Node 24.22.3 base only that workflow's amd64 build and smoke run are verified.
 
 ## Processes
 
-Both commands run from `/app`. Every process applies the `birbcrew_ts`
-migrations at startup (see [Database role](#database-role)).
+Both commands run from `/app` and apply the `birbcrew_ts` migrations at startup
+(see [Database role](#database-role)). The private
+[delegation-control CLI](delegation-control.md) uses an already migrated database.
 
 | Process | Command | Notes |
 | --- | --- | --- |
@@ -114,7 +115,7 @@ In Kubernetes pass the command as `args:`; setting `command:` replaces `tini`.
 | `BIRBCREW_TEMPORAL_TLS_SERVER_NAME` | both | unset | Name checked against the frontend certificate and sent as SNI. |
 | `BIRBCREW_STATE_DIR` | worker | `/var/lib/birbcrew/native` | Native state directory. Keep the image default. |
 | `HOME` | both | `/tmp` | Writable home for SDK caches. |
-| `BIRBCREW_WORKER_HEARTBEAT_FILE` | worker | unset | Absolute path the worker touches every 5 seconds from the start of its Temporal workers until shutdown begins. See [Health](#health). |
+| `BIRBCREW_WORKER_HEARTBEAT_FILE` | worker | unset | Absolute path touched every 5 seconds while Temporal workers run and a healthy delegation-control pass completed within 60 seconds. The first touch waits for a successful pass. See [Health](#health). |
 | `BIRBCREW_USAGE_PRICES_PATH` | worker, and a backend that runs `runTrustedRequest` | unset | Absolute path to the operator's JSON price table, USD per million tokens per model. Read once at worker start; a malformed file stops the worker. Unset, no cost is estimated. See [estimated cost](usage-metering.md#estimated-cost). |
 | `BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS` | gateway | unset | `1` lets webhooks use plain `http` and loopback or private addresses, including in deployed installations. This also permits public HTTP receivers and is not restricted to mesh peers. Any other value leaves it off. See [outbound webhooks](webhooks.md#network-safety). |
 | `BIRBCREW_OBSERVER_FANOUT` | gateway | `true` | `true` gives the observers of a conversation one shared PostgreSQL reader per gateway process; `false` restores one poll per observer every 75 ms. The stream is the same either way. Any other value stops the gateway at startup. See [the gateway guide](member-gateway.md). |
@@ -175,7 +176,7 @@ to fail (**unverified** on a cluster).
 
 ## Database role
 
-Each gateway, worker and CLI process calls `MemberStore.migrate()` at startup
+Each gateway, worker and members CLI process calls `MemberStore.migrate()` at startup
 with the `BIRBCREW_DATABASE_URL` role. That role runs the `birbcrew_ts`
 migrations, under an advisory lock, and owns the schema it creates. Give Crew
 its own database and role, separate from Temporal persistence.
@@ -255,6 +256,12 @@ table (see [outbound webhooks](webhooks.md#upgrade)). Migration 35 (estimated co
 `usage_ledger` in `ACCESS EXCLUSIVE` and `trusted_requests` in `SHARE ROW EXCLUSIVE` with
 `NOWAIT` and retries like 25 to 33, and a running trusted turn's lease never delays it (see
 [usage metering](usage-metering.md#upgrade-and-recovery)).
+Migration 38 installs delegation-control tables and write guards using normal
+PostgreSQL DDL locks in the migration transaction. It has no migration-specific
+`NOWAIT` retry loop. Stop all previous-release processes before applying it. For
+the exact retained-state rollback floor and required global disable, drain, and
+process shutdown sequence, follow
+[delegation control](delegation-control.md#upgrade-or-roll-back-with-retained-state).
 From the release that adds migration 31 on, every gateway, worker and CLI process
 refuses to start with
 `Migration N would apply after migration M` when it would apply a migration numbered 27
@@ -399,15 +406,18 @@ livenessProbe:
 
 Set `BIRBCREW_WORKER_HEARTBEAT_FILE` to an absolute path, for example
 `/tmp/crew-worker.heartbeat`. The worker refuses to start if the path is
-relative or its directory is not writable. It touches the file when it starts
-its Temporal workers, then every 5 seconds until shutdown begins. A touch
-creates the file if needed and never truncates it. If a touch fails, the worker
+relative or its directory is not writable. It touches the file every 5 seconds
+while all Temporal workers report `RUNNING` and a healthy delegation-control pass
+completed within the last 60 seconds, until shutdown begins. The first touch
+waits for a successful pass. A touch creates the file if needed and never
+truncates it. If a touch fails, the worker
 logs `Cannot update BIRBCREW_WORKER_HEARTBEAT_FILE` once and keeps running.
 
 A recent modification time proves that:
 
 - the worker's main event loop is running;
 - the worker started its Temporal workers;
+- delegation-control reconciliation completed successfully within the last 60 seconds;
 - shutdown has not begun.
 
 It does not prove that the workers can reach Temporal or are polling. The SDK
@@ -416,8 +426,21 @@ The file also does not detect an activity or the SDK supervisor child that
 hangs without blocking the event loop. A supervisor that exits does stop the
 worker.
 
-Startup runs migrations, connects to Temporal and bundles workflow code before
-the first touch, so give it a startup probe:
+The worker logs `delegation_control_pending` when retirement settlement remains
+pending or a workflow wake is unavailable. It logs `delegation_control_failed`
+with `source` set to `reconciliation` when the pass fails, or to `pool` when an
+idle controller pool connection fails. Either failure, or an unavailable wake,
+suppresses heartbeat touches until a healthy pass. Pending native teardown
+alone does not suppress them. Historical parent discovery also runs independently of child
+retirement. Missing or unknown parent histories keep drain completion blocked
+without failing worker health. Database failures and unavailable parent-history
+reads fail the pass. The controller uses its own pool with connection and query
+timeouts, leaving native execution settings unchanged. Use the private
+[delegation drain](delegation-control.md#observe-the-drain) to confirm
+child closure, parent delivery, and native stops.
+
+Startup runs migrations, connects to Temporal, bundles workflow code, and
+completes a healthy control pass before the first touch. Give it a startup probe:
 
 ```yaml
 startupProbe:
@@ -430,6 +453,13 @@ livenessProbe:
   exec:
     command: ["sh", "-c", "test $(( $(date +%s) - $(stat -c %Y /tmp/crew-worker.heartbeat) )) -lt 30"]
 ```
+
+A failed control pass stops heartbeat touches at once, so this liveness probe
+restarts the worker about a minute into a PostgreSQL outage, or into a Temporal
+outage that reaches unobserved delegation work. A restart repairs neither
+dependency and interrupts native turns. Set `failureThreshold` and
+`periodSeconds` to tolerate the outages you expect, or alert on the heartbeat
+instead of restarting on it.
 
 The probe checks only the file's age. A file left on the same volume by a
 previous container passes it until that file is 30 seconds old. In Kubernetes,
@@ -451,8 +481,12 @@ development server, not in the hardened image:
 - The worker probe passed while the worker ran, failed after 35 seconds of
   `SIGSTOP` and passed again 6 seconds after `SIGCONT`. Content already in the
   file was kept.
-- With the Temporal server stopped for 60 seconds, the worker kept running and
-  its heartbeat stayed fresh, so the probe kept passing.
+- Before delegation control, with the Temporal server stopped for 60 seconds,
+  the worker kept running and its heartbeat stayed fresh. This no longer holds
+  in general. A PostgreSQL outage fails every control pass. A Temporal outage
+  fails a pass that reaches a retired child awaiting a wake or a committed
+  parent without an observation, which is common after an upgrade with earlier
+  delegations and after a restore.
 - `npm run test:temporal:tls` runs the gateway probe command against a real
   gateway and checks that the worker's heartbeat advances.
 

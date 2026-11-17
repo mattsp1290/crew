@@ -31,6 +31,11 @@ A checksum detects corruption, not a maliciously replaced bundle. Keep the
 manifest checksum in an independently trusted backup catalog; authenticate and
 verify the bundle before invoking restore. Never extract an untrusted archive.
 
+The application database backup also retains delegation-control state, immutable
+command receipts, selected child cohorts, and permanent retirements. Keep these
+tables with the children, approvals, effects, and native-launch records they
+govern. See [delegation control](delegation-control.md) for the operator commands.
+
 ## Operator interface
 
 `src/service/recovery.ts` exports `InstallationRecovery`, `RecoveryPins`,
@@ -241,6 +246,27 @@ snapshot or copied from another fence, and never deleted. See
    npm run recovery -- resume /absolute/target-operator.ts /private/generation
    ```
 
+   Activating a restored installation now creates a fresh global delegation
+   disable command for the new recovery instance in the activation transaction.
+   It permanently retires unfinished restored children without changing their
+   sealed destinations or identities. It also removes all active named roles
+   under restored profile names. Recorded parent observations retain their old
+   instance identity, so matching workers must observe parent histories again
+   before those observations can establish drain completion. A parent whose
+   history Temporal no longer retains stays a permanent drain blocker; see
+   [blockers that never clear](delegation-control.md#blockers-that-never-clear). A held source that
+   resumes without a restore keeps its delegation-control settings, parent
+   observations, and named roles.
+
+   Keep consumer ingress disabled while matching workers reconcile retired
+   children as failed, or cancelled when request cancellation already applies.
+   Reconciliation closes unanswered cards without recording an owner choice and
+   preserves committed effect receipts. Enabling delegation later permits only
+   future children and cannot revive retired work. Use a new command UUID and
+   current revision after reconciliation. An old enable command belongs to the
+   previous instance and is refused. Named delegation also requires a new parent
+   profile name. Follow [delegation control](delegation-control.md#re-enable-future-delegation).
+
    Activating a restored installation revokes every standing grant that is not
    already revoked, with reason `recovery_restore`, in the same transaction, and
    audits each one: the restore can bring back grants revoked after its recovery
@@ -394,6 +420,14 @@ pins and artifact checksums; the operator owns the service/store restore itself.
 The existing proxy restart proof uses Temporal CLI 1.10.0 development SQLite
 persistence. That is **development fixture evidence only**, not support for using
 `start-dev` as production persistence, nor an in-flight multi-store restore proof.
+
+The selected PostgreSQL dump-and-restore case checks the new delegation-control
+activation policy. Whole-installation coordinated restore remains unqualified
+for this policy. The database case does not establish native teardown or workflow
+recovery across a restored installation. The accepted
+[application rollback](delegation-control.md#upgrade-or-roll-back-with-retained-state)
+uses retained state with delegation globally disabled. It does not authorize
+restore activation under the older application, which lacks this policy.
 
 ## Reproduce checks
 
