@@ -159,6 +159,15 @@ Use each blocker to decide what remains:
 - For `target_unreadable`, keep delegation disabled for operator investigation.
   The command does not invent a destination or silently omit the child.
 - For `control_changed` or `admission_open`, inspect the current control state.
+  Drain requires a current disable receipt for the same installation, recovery
+  instance, and revision, with recovery phase `active`.
+
+The observation starts with a repeatable-read database snapshot, checks Temporal,
+then reads control state again. Any intervening control revision, recovery phase,
+or instance change invalidates it. An enable receipt and a superseded disable
+receipt cannot produce a complete drain. A later command also makes a previously
+saved observation stale. If necessary, issue a new disable command and drain its
+new cohort. Do not reuse an old result as a lasting certificate of quiescence.
 
 ### Blockers that never clear
 
@@ -171,8 +180,9 @@ Waiting does not clear three kinds of blocker:
   migration 038 and every delegation restored by a coordinated restore, unless
   a worker observed the history before it expired.
 - A native launch left unstopped by a worker that was killed or lost PostgreSQL
-  during teardown reports `native_unconfirmed`. Only the supervisor's own
-  teardown records a stop.
+  during teardown, or whose process group never confirmed that it stopped,
+  reports `native_unconfirmed`. Only the supervisor's own teardown records a
+  stop.
 
 Each disable selects every child of such a request again, including finished
 children, so no later disable that covers it can report `complete: true`. Crew
@@ -198,15 +208,6 @@ Rows that keep a running worker busy can still clear. Rows with an uncertain
 phase, rows whose parent stays `missing` while workers run, and unstopped
 launches with no live worker cannot. Run this soon after upgrading, while
 workers can still observe recent histories, and before relying on a drain.
-  Drain requires a current disable receipt for the same installation, recovery
-  instance, and revision, with recovery phase `active`.
-
-The observation starts with a repeatable-read database snapshot, checks Temporal,
-then reads control state again. Any intervening control revision, recovery phase,
-or instance change invalidates it. An enable receipt and a superseded disable
-receipt cannot produce a complete drain. A later command also makes a previously
-saved observation stale. If necessary, issue a new disable command and drain its
-new cohort. Do not reuse an old result as a lasting certificate of quiescence.
 
 ## Inspect worker reconciliation
 
