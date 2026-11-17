@@ -44,11 +44,11 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
   let pass: Promise<void> | undefined;
   let reconciliation: ReturnType<typeof setInterval> | undefined;
   let beats: ReturnType<typeof setInterval> | undefined;
-  const failed = () => {
+  const failed = (source: "pool" | "reconciliation") => () => {
     lastSuccessfulPassAt = undefined;
-    console.error(JSON.stringify({ event: "delegation_control_failed" }));
+    console.error(JSON.stringify({ event: "delegation_control_failed", source }));
   };
-  controlPool.on("error", failed);
+  controlPool.on("error", failed("pool"));
   const serve = (worker: Worker) => {
     workers.push(worker);
     const run = worker.run();
@@ -85,7 +85,7 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
         if (!healthy || result.children.some(child => child.settlement === "pending")) {
           console.error(JSON.stringify({ event: "delegation_control_pending", ...result }));
         }
-      }, failed).finally(() => { pass = undefined; });
+      }, failed("reconciliation")).finally(() => { pass = undefined; });
     };
     reconcile();
     reconciliation = setInterval(reconcile, 2000);
