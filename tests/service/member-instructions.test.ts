@@ -1,3 +1,4 @@
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -102,7 +103,7 @@ test("spawn takes optional instructions under memory's text rules, and a replay 
   const spawned = await g.api("/v1/members", body);
   assert.equal(spawned.status, 201, spawned.text);
   const { memberId } = spawned.body;
-  assert.deepEqual(spawned.body, { ownerId: g.ownerId, memberId, engine: "pi", profile,
+  assert.deepEqual(spawned.body, { ownerId: g.ownerId, memberId, engine: "pi", profile, subagents: { mode: "legacy", targets: [] },
     instructions: { bytes: Buffer.byteLength(role), digest: sha(role) } });
   assert.deepEqual(await g.api("/v1/members", body), spawned, "an identical spawn is a replay");
   assert.deepEqual(await g.api("/v1/members", { ...body, requestId: body.requestId.toUpperCase() }), spawned);
@@ -122,7 +123,7 @@ test("spawn takes optional instructions under memory's text rules, and a replay 
   // Without instructions, spawn answers as it did before, and a replay cannot add them.
   const plainBody = { requestId: randomUUID(), engine: "codex", profile };
   const plain = await g.api("/v1/members", plainBody);
-  assert.deepEqual(plain.body, { ownerId: g.ownerId, memberId: plain.body.memberId, engine: "codex", profile });
+  assert.deepEqual(plain.body, { ownerId: g.ownerId, memberId: plain.body.memberId, engine: "codex", profile, subagents: { mode: "legacy", targets: [] } });
   assert.deepEqual((await g.api("/v1/members", { ...plainBody, instructions: "late" })).body, { error: "conflict" });
   assert.deepEqual(await g.api("/v1/members", plainBody), plain);
 
@@ -185,8 +186,8 @@ test("only the owner reads the text, from one route; listings, spawn and audit c
   // The listing reports a digest and a byte count on members that have instructions, and nothing else changes.
   const listed = await g.api("/v1/members");
   assert.equal(listed.text.includes(marker), false);
-  const expected = [{ memberId: member.memberId, engine: "claude", profile, instructions: { bytes: Buffer.byteLength(text), digest: sha(text) } },
-    { memberId: plain.memberId, engine: "pi", profile }].sort((a, b) => a.memberId < b.memberId ? -1 : 1);
+  const expected = [{ memberId: member.memberId, engine: "claude", profile, subagents: { mode: "legacy", targets: [] }, instructions: { bytes: Buffer.byteLength(text), digest: sha(text) } },
+    { memberId: plain.memberId, engine: "pi", profile, subagents: { mode: "legacy", targets: [] } }].sort((a, b) => a.memberId < b.memberId ? -1 : 1);
   assert.deepEqual(listed.body, { apiVersion: "1", members: expected, next: null });
   const first = (await g.api("/v1/members?limit=1")).body, second = (await g.api("/v1/members?limit=1&after=" + first.next)).body;
   assert.deepEqual([...first.members, ...second.members, second.next], [...expected, null], "pages keep the summary");
@@ -278,9 +279,6 @@ test("every conversation of the member gets the instructions first, before proje
   assert.equal(await conversationContext(pool, await open(plain)), undefined, "no instructions, no context, as before");
   assert.equal(await conversationContext(pool, await open(await g.spawn("pi", undefined, g.strangerId))), undefined);
   assert.equal(await conversationContext(pool, first), await conversationContext(pool, first), "each read gives the same text");
-  // The supervisor gives the context to every launch but a Pi child's, which gets none of it.
-  assert.match(await readFile(new URL("../../src/service/supervisor-runner.ts", import.meta.url), "utf8"),
-    /const projectContext = command\.childProfile \? undefined : await conversationContext\(pool, member\);/);
 
   // With project notes and memory: instructions, then notes, then memory, one newline apart.
   const { memoryId } = await memories.create(g.ownerId, { requestId: randomUUID(), memberId: member.memberId, text: "Deploys need a second reviewer." });
@@ -475,7 +473,7 @@ test("a handoff whose target its member's instructions or memory would not fit i
 
 /** A database migrated only up to `version`, as that release left it; dropped after the test. */
 async function databaseAt(t: TestContext, version: number) {
-  const name = "instructions_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("instructions_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -557,10 +555,11 @@ test("migration 029 completes while a native turn holds its admission", async (t
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 29).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 029 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
   await current.commitTurn({ ownerId, conversationId, requestId, token: start.token, reply: "still running", checkpoint: { version: 1, engine: "pi", state: {} } });
 });
 

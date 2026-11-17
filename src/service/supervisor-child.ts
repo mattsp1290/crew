@@ -1,7 +1,10 @@
 import type { ChildOutcome, Delegation } from "@birbcrew/pi-subagents";
 import type { Pool, PoolClient } from "pg";
 import { confirmedApproval, type Approval } from "./approvals.ts";
-import { childTarget, storedTarget } from "./child-target.ts";
+import { isDeepStrictEqual } from "node:util";
+import { configuredDestination } from "./provider-identity.ts";
+import type { MemberProfile } from "./profiles.ts";
+import { childTarget, holdsChildTools, sameDestination, storedTarget } from "./child-target.ts";
 import type { Checkpoint, Conversation } from "./domain.ts";
 import type { Launch } from "./supervisor.ts";
 
@@ -101,6 +104,24 @@ export async function lockChildAdmission(db: PoolClient, launch: Launch) {
   launch.execution.workflowRunId, launch.execution.activityId, launch.execution.attempt, launch.text]);
 }
 
+// Separate statement after the child lease. It must see a disable committed during the lease wait.
+export async function freshChildAdmission(db: PoolClient, launch: Launch) {
+  return db.query(`SELECT 1 FROM birbcrew_ts.pi_children j CROSS JOIN birbcrew_ts.delegation_control d
+    WHERE current_setting('transaction_isolation')='read committed'
+      AND d.singleton AND d.global_enabled AND j.child_id=$1 AND j.generation=$2
+      AND j.outcome IS NULL AND NOT j.launch_revoked
+      AND birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile) IS NOT NULL
+      AND NOT d.disabled_targets @> jsonb_build_array(birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile))
+      AND NOT birbcrew_ts.delegation_child_retired(j.child_id)
+      AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_stop_requests s
+        WHERE (s.conversation_id,s.request_id,s.token)=(j.conversation_id,j.request_id,j.generation))`,
+    [launch.childId, launch.token]);
+}
+
+export async function admitChild(db: PoolClient, launch: Launch): Promise<boolean> {
+  return Boolean((await lockChildAdmission(db, launch)).rowCount) && Boolean((await freshChildAdmission(db, launch)).rowCount);
+}
+
 export async function revokeChild(db: PoolClient, launch: Launch) {
   // The SDK can hold this row throughout a model call. Bound the wait without locking its conversation.
   await db.query("SET LOCAL lock_timeout='8s'");
@@ -118,4 +139,30 @@ export async function revokeChild(db: PoolClient, launch: Launch) {
     [launch.ownerId, launch.conversationId, launch.requestId, launch.childId, launch.token,
     launch.execution.workflowRunId, launch.execution.activityId, launch.execution.attempt, launch.text]);
   if (!prior.rowCount) throw new Error("Invalid child stop");
+}
+
+export async function verifyChildConfiguration(db: PoolClient, launch: Launch, config: ReadonlyMap<string, MemberProfile>,
+  conversation: Conversation, childProfile: Delegation["profile"] | undefined) {
+  if (!launch.childId) {
+    if (childProfile) throw new Error("Parent launch carries child authority");
+    return;
+  }
+  const { rows: [row] } = await db.query<{ parent_profile: string; member_id: string; role_profile: Delegation["profile"] & { target?: unknown } }>(
+    `SELECT m.profile AS parent_profile,c.member_id,j.role_profile FROM birbcrew_ts.pi_children j
+     JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.members m USING(owner_id,member_id)
+     WHERE c.owner_id=$1 AND j.conversation_id=$2 AND j.request_id=$3 AND j.child_id=$4 AND j.generation=$5 AND m.engine='pi'`,
+    [launch.ownerId, launch.conversationId, launch.requestId, launch.childId, launch.token]);
+  if (!row) throw new Error("Child generation is unavailable");
+  const { target: rawTarget, ...recorded } = row.role_profile;
+  const target = storedTarget(rawTarget);
+  const route = childTarget(target, row.parent_profile);
+  const configured = config.get(route.profile);
+  if (route.engine !== "pi" || conversation.engine !== route.engine || conversation.profile !== route.profile
+    || conversation.ownerId !== launch.ownerId || conversation.conversationId !== launch.conversationId
+    || conversation.memberId !== row.member_id || !isDeepStrictEqual(recorded, childProfile)
+    || !configured?.pi || !holdsChildTools(configured.protectedTool, recorded)
+    || configured.pi.model.id !== recorded.model || (!target && !configured.delegateTask)) {
+    throw new Error("Child configuration differs from recorded authority");
+  }
+  if (target && !sameDestination(target, configuredDestination(config, route))) throw new Error("Child destination identity changed");
 }

@@ -1,5 +1,7 @@
+import { memberSubagents } from "./child-target.ts";
 import { z } from "zod";
-import { serverRequestReceiptSchema, type ServerRequestReceipt } from "@birbcrew/client/contract";
+import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type DecisionReceiptsCapabilityV1,
+  type ServerRequestReceipt } from "@birbcrew/client/contract";
 import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
 import { approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
@@ -17,6 +19,7 @@ import { webhookCapabilities } from "./webhooks.ts";
 import { usageCapabilities } from "./usage.ts";
 
 const listDefaultLimit = 50, listMaximumLimit = 100;
+const receipts = decisionReceiptsCapabilityV1Schema.shape;
 
 export const integrationCapabilities = {
   apiVersion: "1",
@@ -37,6 +40,12 @@ export const integrationCapabilities = {
     filters: auditFilterNames, actorKinds,
   },
   routines: routineCapabilities,
+  approvalDetails: { version: 1, tools: ["record_work_item"] },
+  decisionReceipts: {
+    version: receipts.version.value, field: receipts.field.value, route: receipts.route.value,
+    tools: ["record_work_item", "choose_next_step"], replay: receipts.replay.value,
+    conflictCode: receipts.conflictCode.value, unverifiableCode: receipts.unverifiableCode.value,
+  } satisfies DecisionReceiptsCapabilityV1,
   standingGrants: {
     version: 1, choices: standingChoice.options, cardField: "standingChoices", stateField: "grantedCalls", tools: ["record_work_item"], policyVersion: 1,
     initiatorKinds: ["owner"], route: "/v1/members/{memberId}/grants", inactiveListLimit: grantListLimit,
@@ -189,17 +198,18 @@ export class IntegrationApi {
   async listMembers(ownerId: string, query: unknown) {
     const { limit, after } = memberListQuery.parse(query);
     const { rows } = await this.store.pool.query<{ memberId: string; engine: Engine; profile: string; instructions: InstructionsSummary | null;
-      instructionPacks: string[] | null }>(
-      `SELECT m.member_id AS "memberId",m.engine,m.profile,
+      instructionPacks: string[] | null; consent: unknown; seal: unknown; active: string[] | null }>(
+      `SELECT m.member_id AS "memberId",m.engine,m.profile,m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active,
          CASE WHEN i.member_id IS NOT NULL THEN ${instructionsSummarySql} END AS instructions,
          (SELECT array_agg(a.pack_id::text ORDER BY a.position) FROM birbcrew_ts.member_instruction_packs a
            WHERE a.owner_id=m.owner_id AND a.member_id=m.member_id) AS "instructionPacks"
-       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.member_instructions i ON i.owner_id=m.owner_id AND i.member_id=m.member_id
+       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
+       LEFT JOIN birbcrew_ts.member_instructions i ON i.owner_id=m.owner_id AND i.member_id=m.member_id
        WHERE m.owner_id=$1 AND ($2::uuid IS NULL OR m.member_id>$2) ORDER BY m.member_id LIMIT $3`,
       [ownerId, after ?? null, limit + 1]);
     const { items, next } = page("member", rows, limit, row => row.memberId);
     // Never the text: only GET /v1/members/{memberId}/instructions returns it. Pack IDs, in order.
-    const members = items.map(({ instructions, instructionPacks, ...member }) => ({ ...member, ...(instructions ? { instructions } : {}),
+    const members = items.map(({ instructions, instructionPacks, consent, seal, active, ...member }) => ({ ...member, subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
       ...(instructionPacks ? { instructionPacks } : {}) }));
     return { apiVersion: "1" as const, members, next };
   }

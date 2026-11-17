@@ -403,10 +403,18 @@ The first check reads nothing more for a member without a budget, and leaves a
 trusted-context conversation to admission, which refuses it as before.
 
 A request that already has an admission row or a turn is never refused, so a retry
-gets the answer it got before. A request already running is never interrupted, and its
-usage is recorded when its segments return. Usage arrives only after a segment, so the
-budget is a soft cap: every request admitted while the member was under its limit runs
-to the end, and the member can end the day above its limit by what those requests use.
+gets the answer it got before. A running segment is never interrupted for budget.
+Before each child's first launch, Crew checks the parent member's reported usage
+under the parent conversation lock. If that usage has reached the limit, the child
+settles with `budget_exhausted` and a `delegation.finished` audit fact. It starts no
+native process. That outcome survives retries and later budget resets.
+
+An admitted child is not checked again. Its approval resume runs even if the budget
+is exhausted while the owner decides. Parent continuation also runs. A Pi delegation
+has at most two parent segments and two children with at most two segments each,
+for six bounded segments per request. Usage arrives after segments return, so this
+remains a soft cap. Siblings and other conversations can start before their earlier
+usage is reported, and unknown usage contributes nothing to the budget.
 
 A routine firing goes through the same admission. When its member is over budget, the
 firing fails with reason `usage_limit`. That counts as a failure, so the tenth
@@ -582,8 +590,6 @@ database, and Crew changes neither when the restored installation resumes:
 - Calls the Claude CLI makes outside the main agent loop, if any.
 - Budgets per owner, money budgets, other windows, and a warning before the limit.
   Budgets count tokens; an estimate never refuses anything.
-- A Pi child's own admission: children run under their parent's admitted request, so
-  the budget is checked once, for the parent. Their segments are metered.
 - Retention or deletion of ledger rows.
 
 ## Validation

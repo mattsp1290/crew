@@ -2,11 +2,14 @@ import { runCodexTurn } from "./codex.ts";
 import { runPiTurn, runPiSegment, runPiDelegatingSegment } from "./pi.ts";
 import { runClaudeTurn, runClaudeSegment } from "./claude.ts";
 import type { MemberProfiles, TurnDriver } from "./activities.ts";
-import { ChildTargetError, runsChild } from "./child-target.ts";
+import { ChildTargetError, holdsChildTools, type ChildTarget, type ChildRole } from "./child-target.ts";
+import type { ProviderIdentity } from "./provider-identity.ts";
 import type { Engine } from "./domain.ts";
 
 export interface MemberProfile {
   accountId: string;
+  childTargets?: Readonly<Partial<Record<Engine, Readonly<Partial<Record<ChildRole, ChildTarget>>>>>>;
+  upstreamIdentity?: Readonly<Partial<Record<Engine, ProviderIdentity>>>;
   delegateTask?: true;
   humanTool?: "choose_next_step";
   protectedTool?: "record_work_item";
@@ -24,7 +27,7 @@ export function memberProfiles(config: ReadonlyMap<string, MemberProfile>, state
       const member = { ...pi, invocationGroup };
       if (input.childProfile) {
         const child = input.childProfile;
-        if (!runsChild({ delegateTask: !!delegateTask, protectedTool }, child) || child.model !== pi.model.id) {
+        if (!holdsChildTools(protectedTool, child) || child.model !== pi.model.id) {
           throw new Error("Child profile differs from member");
         }
         const options = { ...member, instructions: child.instructions };

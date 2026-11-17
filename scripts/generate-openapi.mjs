@@ -9,6 +9,12 @@ import {
   instructionsSummarySchema,
   memberSchema,
   conversationStateSchema,
+  createHandoffSchema,
+  handoffRecordSchema,
+  handoffsCapabilitySchema,
+  handoffsCapabilityV1Schema,
+  decisionReceiptsCapabilitySchema,
+  decisionReceiptsCapabilityV1Schema,
 } from "../packages/client/src/contract.ts";
 
 const registry = z.registry();
@@ -27,9 +33,23 @@ for (const [id, value] of Object.entries({
   Capabilities: routes.capabilities.response,
   Health: routes.health.response,
   MemberPage: routes.listMembers.response,
+  GrantList: routes.listGrants.response,
+  RevokeGrantResponse: routes.revokeGrant.response,
+  RevokeGrant: routes.revokeGrant.body,
+  CreateHandoff: createHandoffSchema,
+  CreateHandoffBody: routes.createHandoff.body,
+  HandoffRecord: handoffRecordSchema,
+  CreateHandoffResponse: routes.createHandoff.response,
+  ConversationHandoff: routes.handoff.response,
+  HandoffsCapability: handoffsCapabilitySchema,
+  HandoffsCapabilityV1: handoffsCapabilityV1Schema,
   ConversationSnapshot: routes.conversation.response,
   RequestReceipt: routes.requestStatus.response,
+  OwnerApprovalDetail: routes.approvalDetail.response,
   DecisionReceipt: routes.decide.response,
+  DecisionRecord: routes.decisionRecord.response,
+  DecisionReceiptsCapability: decisionReceiptsCapabilitySchema,
+  DecisionReceiptsCapabilityV1: decisionReceiptsCapabilityV1Schema,
   CreateMember: routes.createMember.body,
   OpenConversation: routes.openConversation.body,
   SubmitRequest: routes.submit.body,
@@ -98,19 +118,52 @@ for (const [operationId, route] of Object.entries(routes)) {
   };
   if (route.body)
     operation.requestBody = { required: true, content: content(route.body) };
+  if (route.unknownOutcomeErrors) {
+    operation["x-unknown-outcome-errors"] = route.unknownOutcomeErrors;
+    for (const status of new Set(route.unknownOutcomeErrors.map((failure) => failure.status))) {
+      const codes = route.unknownOutcomeErrors
+        .filter((failure) => failure.status === status).map((failure) => failure.code);
+      operation.responses[status] = {
+        description: `The command outcome is unknown for ${codes.join(", ")}. Reconcile the original identity. Other codes follow the ordinary command error rules.`,
+        content: content(errorSchema),
+      };
+    }
+  }
   if (route.query) {
     const query = z.toJSONSchema(route.query, { io: "input" });
     operation.parameters.push(
       ...Object.entries(query.properties).map(([name, value]) => ({
         name,
         in: "query",
+        ...(query.required?.includes(name) ? { required: true } : {}),
         schema: value,
       })),
     );
   }
+  if (operationId === "approvalDetail")
+    operation.description =
+      "Owner-only immutable complete record_work_item proposal, retained after settlement. Exact conversation, member, request, invocation, approval and decision version required. Unknown or repeated query parameters are rejected. Unsupported tools and scope mismatches return not_found. This read does not claim actionability or change approvals, grants, deadlines or effects. Responses use Cache-Control: no-store.";
+  if (operationId === "decisionRecord")
+    operation.description =
+      "Owner-only durable decision state of one card, for record_work_item and choose_next_step. Same identity, query and not_found rules as approvalDetail. decided reports the exact recorded choice and its decisionId, null when the decision carried none. closed means no decision can ever commit. undecided does not claim the card is still actionable, and a decide command may still commit after it. Responses use Cache-Control: no-store.";
+  if (operationId === "decide")
+    operation.description =
+      "Decide one card. An optional decisionId names this decision on this card and is echoed. Repeating the same decisionId and choice returns the recorded decision without a second effect. With a decisionId, a card that records another decisionId, another choice or a standing grant approval returns 409 decision_conflict: this decision never applied and never will. A card that records the same choice with no decisionId returns 409 decision_unverifiable: Crew cannot tell whether that was this caller's own earlier unnamed send, nothing new applied, and the outcome stays unknown to a caller that cannot rule it out. Without decisionId the behavior is unchanged.";
+  if (operationId === "listGrants")
+    operation.description =
+      "Every active grant for the authenticated owner's member, plus at most twenty inactive rows. No pagination or active-result truncation. A read does not acknowledge an earlier revoke command.";
+  if (operationId === "revokeGrant")
+    operation.description =
+      "Idempotently revoke the exact member/grant identity for later proposals only. Requires an empty JSON object. Already approved calls remain approved. Lost acknowledgement remains an unknown command outcome.";
   if (operationId === "submit")
     operation.description =
       "One admission attempt. Preserve requestId and exact UTF-8 text for reconciliation. Acceptance does not prove completion or effects.";
+  if (operationId === "createHandoff")
+    operation.description =
+      "One handoff attempt using the saved source conversation, requestId and target member. A successful response proves commit. firstRequestAdmitted reports admission, not execution. Reconcile unknown outcomes against the exact outgoing command before an explicit same-identity retry.";
+  if (operationId === "handoff")
+    operation.description =
+      "Read incoming and outgoing handoffs for the owner's conversation. A 404 or incoming-only response does not settle an earlier unknown outgoing command. Compare the outgoing source conversation, requestId and target member with the saved command.";
   if (operationId === "cancel")
     operation.description =
       "Durable cancellation intent. Delivery, native termination and effects are independent facts. This does not claim rollback.";
@@ -177,10 +230,7 @@ const document = {
     "/v1/instruction-packs and descendants",
     "/v1/webhooks and descendants",
     "/v1/usage and descendants",
-    "/v1/members/{memberId}/grants and descendants",
     "/v1/members/{memberId}/instructions",
-    "/v1/conversations/{conversationId}/handoff",
-    "/v1/conversations/{conversationId}/handoffs",
     "/v1/conversations/{conversationId}/inputs (legacy admission)",
     "/v1/conversations/{conversationId}/cancel (legacy cancellation)",
   ],

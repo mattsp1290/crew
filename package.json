@@ -23,13 +23,13 @@
     "test:live": "node tests/proof/live-members.ts",
     "test:proxy": "node --test tests/proxy-relay.test.ts tests/service/proxy-credential.test.ts tests/service/proxy-members.test.ts tests/service/proxy-scope.test.ts",
     "test:trusted": "node --test tests/service/trusted-*.test.ts",
-    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts tests/service/telemetry-agent.test.ts",
+    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts tests/service/telemetry-agent.test.ts tests/service/telemetry-exporter-*.test.ts",
     "test:proxy:restart": "node tests/proof/proxy-restart.mts",
     "recovery": "node src/service/recovery-cli.ts",
     "test:recovery": "node --test tests/service/recovery.test.ts",
     "test:recovery:native": "node tests/proof/recovery-native.mts",
     "test:rollover": "node tests/proof/rollover.mts",
-    "test:api": "node --test tests/service/integration-api.test.ts",
+    "test:api": "node --test tests/service/integration-api.test.ts tests/service/decision-receipts.test.ts",
     "test:observers": "node --test tests/service/observer-fanout.test.ts",
     "test:audit": "node --test tests/service/audit.test.ts",
     "test:routines": "node --test tests/service/routine-schedule.test.ts tests/service/routines.test.ts",
@@ -46,7 +46,7 @@
     "test:handoffs": "node --test tests/service/handoffs.test.ts",
     "test:usage": "node --test tests/service/usage.test.ts tests/service/usage-cost.test.ts",
     "test:usage:capture": "node --test tests/service/usage-capture.test.ts",
-    "test:child-targets": "node --test tests/service/child-targets.test.ts tests/service/child-target-workflow.test.ts",
+    "test:child-targets": "node --test tests/service/child-targets.test.ts tests/service/child-target-races.test.ts tests/service/child-budget.test.ts tests/service/child-target-workflow.test.ts",
     "test:webhooks": "node --test tests/service/webhook-target.test.ts tests/service/webhooks.test.ts",
     "test:api:service": "node tests/proof/integration-api.mts",
     "test:recovery:coordinated": "node tests/proof/coordinated-recovery.mts",
@@ -57,7 +57,11 @@
     "test:deskhand": "node scripts/generate-deskhand-vocabulary.mjs --check && node scripts/check-deskhand-boundary-imports.mjs && node --test tests/service/deskhand-contract.test.ts tests/service/deskhand-results/corpus.test.ts tests/service/deskhand-results/metadata.test.ts tests/service/deskhand-results/effects.test.ts tests/service/deskhand-results/tooling.test.ts",
     "test:client": "node --test tests/client/*.test.mts",
     "verify:client": "node scripts/verify-client-package.mjs",
-    "verify:observability": "node scripts/verify-observability.mjs"
+    "verify:observability": "node scripts/verify-observability.mjs",
+    "delegation-control": "node src/service/delegation-control-cli.ts",
+    "test:delegation-control:sql": "node --test tests/service/delegation-control-races.test.ts",
+    "test:delegation-control": "node --test tests/service/delegation-control.test.ts",
+    "test:delegation-control:workflow": "node --test tests/service/delegation-control-workflow.test.ts"
   },
   "dependencies": {
     "@ag-ui/claude-agent-sdk": "file:vendor/ag-ui/claude-agent-sdk-0.0.8.tgz",
@@ -79,6 +83,7 @@
     "@openai/codex-sdk": "0.167.1",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.208.0",
+    "@opentelemetry/otlp-exporter-base": "file:vendor/opentelemetry/opentelemetry-otlp-exporter-base-0.208.0-crew.1.tgz",
     "@opentelemetry/resources": "2.2.0",
     "@opentelemetry/sdk-trace-base": "2.2.0",
     "@temporalio/activity": "1.25.0",
@@ -104,5 +109,8 @@
   "homepage": "https://github.com/mattsp1290/crew#readme",
   "bugs": {
     "url": "https://github.com/mattsp1290/crew/issues"
+  },
+  "overrides": {
+    "@opentelemetry/otlp-exporter-base": "$@opentelemetry/otlp-exporter-base"
   }
 }

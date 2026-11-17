@@ -1,9 +1,8 @@
+import { testDatabaseName } from "./database-fixtures.ts";
+import { ajv, gatewayFixture, openApi, responseValidator, validateResponse } from "./gateway-fixtures.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import { fullFormats } from "ajv-formats/dist/formats.js";
 import { routes } from "@birbcrew/client/contract";
 import { once } from "node:events";
 import { connect as connectTcp, createServer as createTcpServer, type Socket } from "node:net";
@@ -18,28 +17,13 @@ import { ApprovalStore } from "../../src/service/approvals.ts";
 import { MemberStore } from "../../src/service/store.ts";
 import { createGateway, probeTimeout } from "../../src/service/gateway.ts";
 import { IntegrationApi } from "../../src/service/integration-api.ts";
-import { ownerInitiator, type TurnRequest } from "../../src/service/domain.ts";
-
-const openApi = JSON.parse(readFileSync(new URL("../../packages/client/openapi.json", import.meta.url), "utf8"));
-const ajv = new Ajv2020({ strict: false, allErrors: true, formats: fullFormats });
-function responseValidator(operation: keyof typeof routes, status: number) {
-  const route = routes[operation];
-  const response = openApi.paths[route.path][route.method.toLowerCase()].responses[status];
-  assert.ok(response?.content, `${operation} documents HTTP ${status}`);
-  return ajv.compile({ ...response.content["application/json"].schema, components: openApi.components });
-}
-async function validateResponse(operation: keyof typeof routes, response: Response) {
-  const validate = responseValidator(operation, response.status);
-  const body = await response.json();
-  assert.equal(validate(body), true, `${operation} HTTP ${response.status}: ${ajv.errorsText(validate.errors)}`);
-  return body;
-}
+import { ownerInitiator } from "../../src/service/domain.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
 const pool = new Pool({ connectionString: url });
 const store = new MemberStore(pool);
-const consumerDatabase = "integration_consumer_" + randomUUID().replaceAll("-", "");
+const consumerDatabase = testDatabaseName("integration_consumer_");
 const consumerUrl = new URL(url); consumerUrl.pathname = "/" + consumerDatabase;
 const consumerPool = new Pool({ connectionString: consumerUrl.toString() });
 let consumerCreated = false;
@@ -62,61 +46,7 @@ after(async () => {
   finally { await pool.end(); }
 });
 
-async function fixture(automaticallyComplete = false) {
-  const ownerId = randomUUID(), token = randomUUID(), stranger = randomUUID();
-  const member = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: "fixture-v1" });
-  const key = { ownerId, conversationId: randomUUID() };
-  await store.openConversation({ ...key, memberId: member.memberId });
-  let accepts = 0, cancels = 0, effects = 0;
-  async function finish(input: TurnRequest) {
-    if (await store.committedReply(input) !== undefined) return;
-    const turn = await store.beginTurn(input, { workflowRunId: randomUUID(), activityId: "fixture", attempt: 1 });
-    if (turn.kind === "start") {
-      effects++;
-      await store.commitTurn({ ...key, requestId: input.requestId, token: turn.token,
-        reply: "original result: " + input.text, checkpoint: { version: 1, engine: "pi", state: {} } });
-    }
-  }
-  const members = {
-    async open(input: Parameters<MemberStore["openConversation"]>[0]) { return store.openConversation(input); },
-    async decide(input: Parameters<ApprovalStore["decide"]>[0]) { return new ApprovalStore(pool).decide(input); },
-    async accept(input: TurnRequest) {
-      accepts++;
-      await store.recordAcceptance(input, ownerInitiator);
-      if (automaticallyComplete) await finish(input);
-      return { requestId: input.requestId };
-    },
-    async requestStatus(input: Parameters<MemberStore["requestStatus"]>[0]) { return store.requestStatus(input); },
-    async cancelPending() { cancels++; },
-  } as unknown as MemberClient;
-  const auth = { [createHash("sha256").update(token).digest("hex")]: ownerId,
-    [createHash("sha256").update(stranger).digest("hex")]: randomUUID() };
-  let server = createGateway(store, members, auth);
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  let endpoint = `http://127.0.0.1:${address.port}`;
-  async function api(path: string, body?: unknown, credential: string = token) {
-    return fetch(endpoint + path, { method: body === undefined ? "GET" : "POST",
-      headers: { Authorization: "Bearer " + credential, "Content-Type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  }
-  const stop = async () => {
-    const closed = once(server, "close");
-    server.close(); server.closeAllConnections(); await closed;
-  };
-  return { ...key, token, stranger, api, members, finish, get endpoint() { return endpoint; },
-    counts: () => ({ accepts, cancels, effects }), stop,
-    async restart() {
-      await stop();
-      server = createGateway(new MemberStore(pool), members, auth);
-      server.listen(0, "127.0.0.1"); await once(server, "listening");
-      const address = server.address(); assert.ok(address && typeof address !== "string");
-      endpoint = `http://127.0.0.1:${address.port}`;
-    },
-  };
-}
+const fixture = (automaticallyComplete = false) => gatewayFixture(store, automaticallyComplete);
 
 const child = `
   import { Pool } from 'pg';
@@ -615,8 +545,8 @@ test("v1 listings page an owner's members and conversations without gaps, duplic
     return { rows, sizes };
   }
 
-  const expectedMembers = [{ memberId: first, engine: "pi", profile: "fixture-v1" },
-    { memberId: second.memberId, engine: "claude", profile: "fixture-claude" }].sort((a, b) => a.memberId < b.memberId ? -1 : 1);
+  const expectedMembers = [{ memberId: first, engine: "pi", profile: "fixture-v1", subagents: { mode: "legacy", targets: [] } },
+    { memberId: second.memberId, engine: "claude", profile: "fixture-claude", subagents: { mode: "legacy", targets: [] } }].sort((a, b) => a.memberId < b.memberId ? -1 : 1);
   assert.deepEqual((await all("/v1/members", "members")).rows, expectedMembers);
   const members = await all("/v1/members?limit=1", "members");
   assert.deepEqual(members.sizes, [1, 1], "an exactly full final page reports no next cursor");
@@ -795,9 +725,39 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
   const approval = await new ApprovalStore(pool).propose({ ...key, memberId: conversation.memberId,
     invocationId: requestId, token: turn.token, nativeCallId: "openapi-call", toolName: "record_work_item",
     arguments: { operation_id: requestId, note: "OpenAPI decision" } });
-  await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
-    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "deny" });
+  await check("approvalDetail", conversationPath + `/requests/${requestId}/approvals/${approval.approvalId}?memberId=${conversation.memberId}&invocationId=${requestId}&version=1`);
+  const decisionId = randomUUID();
+  const decided = await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
+    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "allow_conversation", decisionId });
+  assert.equal(decided.decisionId, decisionId);
+  const record = await check("decisionRecord", conversationPath + `/requests/${requestId}/approvals/${approval.approvalId}/decision`
+    + `?memberId=${conversation.memberId}&invocationId=${requestId}&version=1`);
+  assert.deepEqual([record.state, record.decisionId, record.choice], ["decided", decisionId, "allow_conversation"]);
+  const grantsPath = `/v1/members/${conversation.memberId}/grants`;
+  const listed = await check("listGrants", grantsPath);
+  assert.equal(listed.active.length, 1);
+  const [grant] = listed.active;
+  assert.equal(grant.approvalId, approval.approvalId);
+  const revoked = await check("revokeGrant", grantsPath + `/${grant.grantId}/revoke`, {});
+  assert.equal(revoked.grant.grantId, grant.grantId);
+  assert.equal(revoked.grant.status, "revoked");
   await check("cancel", conversationPath + "/requests/" + requestId + "/cancel", {});
+  const source = { ownerId: f.ownerId, conversationId: opened.state.conversationId, requestId: randomUUID() };
+  const sourceTurn = await store.beginTurn({ ...source, text: "OpenAPI handoff" });
+  assert.equal(sourceTurn.kind, "start"); if (sourceTurn.kind !== "start") return;
+  await store.commitTurn({ ...source, token: sourceTurn.token, reply: "Stored context",
+    checkpoint: { version: 1, engine: "pi", state: {} } });
+  const handoffBody = { requestId: randomUUID(), memberId: member.memberId };
+  const created = await check("createHandoff", `/v1/conversations/${source.conversationId}/handoffs`, handoffBody);
+  const outgoing = await check("handoff", `/v1/conversations/${source.conversationId}/handoff`);
+  const incoming = await check("handoff", `/v1/conversations/${created.target.conversationId}/handoff`);
+  const { apiVersion, ...handoffRecord } = created;
+  assert.equal(apiVersion, "1");
+  assert.deepEqual(outgoing, { apiVersion: "1", conversationId: source.conversationId, incoming: null, outgoing: handoffRecord });
+  assert.deepEqual(incoming, { apiVersion: "1", conversationId: created.target.conversationId, incoming: handoffRecord, outgoing: null });
+  const handoffOperation = openApi.paths[routes.createHandoff.path].post;
+  assert.deepEqual(handoffOperation["x-unknown-outcome-errors"], routes.createHandoff.unknownOutcomeErrors);
+  assert.match(handoffOperation.responses[409].description, /unknown.*update_rejected/);
   assert.deepEqual([...checked].sort(), Object.keys(routes).sort());
 
   const validateMember = responseValidator("createMember", 201);
@@ -808,10 +768,12 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
   const requestBodies = {
     createMember: { requestId: randomUUID(), engine: "pi", profile },
     openConversation: { conversationId: randomUUID(), memberId: member.memberId },
+    createHandoff: handoffBody,
     submit: { requestId, text: input.text },
     cancel: {},
+    revokeGrant: {},
     decide: { requestId, memberId: conversation.memberId, invocationId: requestId,
-      approvalId: approval.approvalId, version: approval.version, choice: "deny" },
+      approvalId: approval.approvalId, version: approval.version, choice: "deny", decisionId: randomUUID() },
   };
   for (const [operation, body] of Object.entries(requestBodies)) {
     const route = routes[operation as keyof typeof requestBodies];
@@ -821,4 +783,111 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     assert.equal(validateBody({ ...body, ownerId: f.ownerId }), false,
       `${route.path} rejects extra request properties`);
   }
+  const validateHandoffBody = ajv.compile({
+    ...handoffOperation.requestBody.content["application/json"].schema, components: openApi.components,
+  });
+  for (const field of ["requestId", "memberId"] as const) {
+    assert.equal(validateHandoffBody({ ...handoffBody, [field]: "not-a-uuid" }), false);
+    const { [field]: omitted, ...missing } = handoffBody;
+    assert.ok(omitted);
+    assert.equal(validateHandoffBody(missing), false);
+  }
+  for (const field of ["ownerId", "conversationId", "kind", "text"]) {
+    assert.equal(validateHandoffBody({ ...handoffBody, [field]: "unexpected" }), false);
+  }
+});
+
+
+test("owner proposal details require the full identity, preserve exact arguments and remain immutable after settlement", async t => {
+  const f = await fixture(); t.after(f.stop);
+  const approvals = new ApprovalStore(pool);
+  const { memberId } = await store.getConversation({ ownerId: f.ownerId, conversationId: f.conversationId });
+  const requestId = randomUUID();
+  const turn = await store.beginTurn({ ownerId: f.ownerId, conversationId: f.conversationId, requestId, text: "details" });
+  assert.equal(turn.kind, "start"); if (turn.kind !== "start") return;
+  const scope = { ownerId: f.ownerId, conversationId: f.conversationId, memberId, requestId };
+  const proposal = { ...scope, token: turn.token, invocationId: requestId, nativeCallId: "private-native-call",
+    toolName: "record_work_item" as const, arguments: { operation_id: requestId, note: "  Exact\n\t é e\u0301 🪶 <script> & \" \\  " } };
+  const approval = await approvals.propose(proposal);
+  const identity = { conversationId: f.conversationId, memberId, requestId, invocationId: requestId,
+    approvalId: approval.approvalId, version: 1 };
+  const path = (key = identity) => `/v1/conversations/${key.conversationId}/requests/${key.requestId}/approvals/${key.approvalId}`
+    + `?memberId=${key.memberId}&invocationId=${key.invocationId}&version=${key.version}`;
+  async function stored() {
+    const tables = ["conversations", "turns", "deferred_calls", "work_items", "public_events", "public_snapshots"];
+    const records = await Promise.all(tables.map(table => pool.query(`SELECT * FROM birbcrew_ts.${table} WHERE conversation_id=$1`, [f.conversationId])));
+    const audit = await pool.query("SELECT * FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [f.ownerId]);
+    const grants = await pool.query("SELECT * FROM birbcrew_ts.tool_grants WHERE owner_id=$1", [f.ownerId]);
+    return [...records, audit, grants].map(result => result.rows);
+  }
+  const before = await stored();
+  const response = await f.api(path());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const detail = await validateResponse("approvalDetail", response);
+  assert.deepEqual(detail, { ...identity, apiVersion: "1", policyVersion: 1, toolName: "record_work_item", arguments: proposal.arguments });
+  const client = new CrewClient({ baseUrl: f.endpoint, token: f.token });
+  assert.deepEqual(await client.approvalDetail(identity), detail);
+  assert.deepEqual((await client.capabilities()).approvalDetails, { version: 1, tools: ["record_work_item"] });
+  for (const field of ["conversationId", "memberId", "requestId", "invocationId", "approvalId"] as const) {
+    const denied = await f.api(path({ ...identity, [field]: randomUUID() }));
+    assert.equal(denied.status, 404, field);
+    assert.deepEqual(await denied.json(), { error: "not_found" });
+  }
+  for (const version of [0, 2, 32768, -32769]) assert.equal((await f.api(path({ ...identity, version }))).status, 404);
+  const foreign = await f.api(path(), undefined, f.stranger);
+  assert.equal(foreign.status, 404); assert.deepEqual(await foreign.json(), { error: "not_found" });
+  assert.equal((await f.api(path(), undefined, "invalid")).status, 401);
+  assert.equal((await f.api(path(), {})).status, 405);
+  for (const suffix of ["&extra=x", "&memberId=" + memberId, "&invocationId=" + requestId, "&version=1", "&ownerId=" + f.ownerId]) {
+    assert.equal((await f.api(path() + suffix)).status, 400, suffix);
+  }
+  for (const query of ["", `?memberId=${memberId}&invocationId=${requestId}`, `?memberId=${memberId}&invocationId=${requestId}&version=1.0`]) {
+    assert.equal((await f.api(path().split("?")[0] + query)).status, 400);
+  }
+  assert.deepEqual(await stored(), before, "detail reads must not mutate proposal, deadlines, grants, effects or passive publications");
+  const passive = await (await f.api(`/v1/conversations/${f.conversationId}`)).json();
+  const events = await pool.query("SELECT event FROM birbcrew_ts.public_events WHERE conversation_id=$1", [f.conversationId]);
+  const audit = await pool.query("SELECT payload FROM birbcrew_ts.audit_events WHERE owner_id=$1", [f.ownerId]);
+  assert.ok(!JSON.stringify([passive, events.rows, audit.rows]).includes('"note"'));
+  assert.ok(!JSON.stringify(detail).includes(proposal.nativeCallId));
+  const callKey = { ...identity, ownerId: f.ownerId, nativeCallId: proposal.nativeCallId };
+  await approvals.decide({ ...callKey, argumentDigest: approval.argumentDigest, choice: "deny" });
+  const { version, ...settleKey } = callKey;
+  await approvals.settle({ ...settleKey, token: turn.token });
+  const settled = await stored();
+  assert.deepEqual(await client.approvalDetail(identity), detail);
+  assert.deepEqual(await stored(), settled);
+  assert.equal(f.counts().accepts, 0);
+  assert.equal(f.counts().effects, 0);
+});
+
+test("owner details preserve absent, empty and maximum UTF-8 notes and refuse unsupported tools or invalid stored arguments", async t => {
+  const f = await fixture(); t.after(f.stop);
+  const approvals = new ApprovalStore(pool);
+  const { memberId } = await store.getConversation({ ownerId: f.ownerId, conversationId: f.conversationId });
+  const requestId = randomUUID();
+  const turn = await store.beginTurn({ ownerId: f.ownerId, conversationId: f.conversationId, requestId, text: "details limits" });
+  assert.equal(turn.kind, "start"); if (turn.kind !== "start") return;
+  const proposal = { ownerId: f.ownerId, conversationId: f.conversationId, memberId, requestId,
+    invocationId: requestId, token: turn.token, nativeCallId: "limits", toolName: "record_work_item" as const };
+  const client = new CrewClient({ baseUrl: f.endpoint, token: f.token });
+  for (const args of [{ operation_id: requestId }, { operation_id: requestId, note: "" },
+    { operation_id: requestId, note: "🪶".repeat(1024) }, { operation_id: requestId, note: "\u0001".repeat(4096) }]) {
+    const approval = await approvals.propose({ ...proposal, invocationId: randomUUID(), arguments: args });
+    const key = { conversationId: f.conversationId, memberId, requestId, invocationId: approval.invocationId,
+      approvalId: approval.approvalId, version: 1 };
+    assert.deepEqual((await client.approvalDetail(key)).arguments, args);
+  }
+  for (const note of ["🪶".repeat(1024) + "x", "é".repeat(2049), "\0", "\ud800"]) {
+    await assert.rejects(approvals.propose({ ...proposal, invocationId: randomUUID(), arguments: { operation_id: requestId, note } }));
+  }
+  const unsupported = await approvals.propose({ ...proposal, invocationId: randomUUID(), toolName: "choose_next_step", arguments: {} });
+  const key = { conversationId: f.conversationId, memberId, requestId, invocationId: unsupported.invocationId,
+    approvalId: unsupported.approvalId, version: 1 };
+  await assert.rejects(client.approvalDetail(key), { status: 404, code: "not_found" });
+  const corrupt = await approvals.propose({ ...proposal, invocationId: randomUUID(), arguments: { operation_id: requestId } });
+  await pool.query("UPDATE birbcrew_ts.deferred_calls SET arguments=arguments || $2::jsonb WHERE approval_id=$1",
+    [corrupt.approvalId, JSON.stringify({ extra: "must not strip" })]);
+  await assert.rejects(client.approvalDetail({ ...key, invocationId: corrupt.invocationId, approvalId: corrupt.approvalId }), { status: 404, code: "not_found" });
 });

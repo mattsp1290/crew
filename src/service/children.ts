@@ -7,13 +7,16 @@ import type { Pool, PoolClient } from "pg";
 import type { ChildOutcome, Delegation } from "@birbcrew/pi-subagents";
 import { ApprovalStore, confirmedApproval, type Approval } from "./approvals.ts";
 import { appendAudit } from "./audit.ts";
-import { childTarget, ChildTargetError, holdsChildTools, keyTarget, proposedTarget, runsChild, storedTarget, type ChildProfile,
+import { overBudget } from "./usage.ts";
+import { childTarget, ChildTargetError, childConsentSchema, fixedProposal, keyTarget, sameDestination, storedTarget, type ChildProfile,
   type ChildTarget } from "./child-target.ts";
 import { checkpointSchema, MemberStoreError, type Conversation, type Checkpoint, type TurnRequest } from "./domain.ts";
+import { transaction } from "./transaction.ts";
 
-type PersistedDelegation = Omit<Delegation, "profile"> & {
-  profile: Omit<ChildProfile, "instructions"> & {instructions:string};
-};
+
+export class ChildNativeStopUnconfirmed extends Error {
+  constructor() { super("Child native stop unconfirmed"); this.name = "ChildNativeStopUnconfirmed"; }
+}
 
 export interface ChildKey {
   ownerId: string;
@@ -39,6 +42,10 @@ interface ChildRow {
   native_checkpoint: Checkpoint | null;
   outcome: ChildOutcome | null;
 }
+type ChildSettlement =
+  | { kind: "completed"; text: string; checkpoint: Checkpoint }
+  | { kind: "failed"; code: Extract<ChildOutcome, { kind: "failed" }>["code"] }
+  | { kind: "cancelled" };
 type Execution = { workflowRunId: string; activityId: string; attempt: number };
 type ChildStart =
   | { kind: "start"; generation: string; task: string }
@@ -46,20 +53,8 @@ type ChildStart =
   | { kind: "settled"; outcome: ChildOutcome }
   | { kind: "waiting"; approval: Approval };
 
-async function transaction<T>(pool: Pool, body: (db: PoolClient) => Promise<T>) {
-  const db = await pool.connect();
-  try {
-    await db.query("BEGIN");
-    const result = await body(db);
-    await db.query("COMMIT");
-    return result;
-  } catch (error) {
-    await db.query("ROLLBACK");
-    throw error;
-  } finally {
-    db.release();
-  }
-}
+const unbounded = ["BEGIN"] as const;
+const settlement = ["BEGIN", "SET LOCAL lock_timeout='8s'", "SET LOCAL statement_timeout='10s'"] as const;
 async function lockParent(db: PoolClient, key: Omit<ChildKey, "childId">) {
   const { rows: [conversation] } = await db.query<Conversation>(`SELECT c.owner_id AS "ownerId", c.member_id AS "memberId",
     c.conversation_id AS "conversationId",m.engine,m.profile FROM birbcrew_ts.conversations c
@@ -90,40 +85,21 @@ export async function childrenFor(db: PoolClient, conversation: Conversation, re
   });
 }
 
-/** Whether a target can run a child, as far as the profiles table shows: the target must run children
- * under the rule its Pi driver applies at launch (runsChild). That driver checks only the profile that
- * runs the child, so the parent must hold the child's tools too, as an untargeted child's launch checks.
- * The model pin, always the parent's, is checked only at launch: the table has no model column. */
-async function eligibleTarget(db: PoolClient, target: ChildTarget, parentProfile: string, child: Pick<ChildProfile, "tools">) {
-  const { rows: [facts] } = await db.query<{ delegate_task: boolean; protected_tool: string | null; parent_tool: string | null }>(
-    `SELECT t.delegate_task,t.protected_tool,p.protected_tool AS parent_tool FROM birbcrew_ts.profiles t
-      LEFT JOIN birbcrew_ts.profiles p ON p.name=$3 AND p.engine='pi' WHERE t.name=$1 AND t.engine=$2`,
-    [target.profile, target.engine, parentProfile]);
-  return !!facts && runsChild({ delegateTask: facts.delegate_task, protectedTool: facts.protected_tool }, child)
-    && holdsChildTools(facts.parent_tool, child);
-}
-async function cancelLocked(db: PoolClient, key: ChildKey, row: ChildRow, ledger: ApprovalStore) {
-  const outcome: ChildOutcome = { kind: "cancelled", nativeCallId: row.native_call_id };
-  await db.query("UPDATE birbcrew_ts.pi_children SET phase='cancelled',outcome=$2 WHERE child_id=$1",
-    [key.childId, JSON.stringify(outcome)]);
-  if (row.approval_id) await ledger.closeChildApproval(db, key, row.approval_id);
-  await publishObservation(db,key.conversationId,{kind:"childEnded",requestId:key.requestId,childId:key.childId,outcome:"cancelled"});
-  return outcome;
-}
-
 export class ChildStore {
   private readonly pool: Pool;
   private readonly ledger: ApprovalStore;
   constructor(pool: Pool) { this.pool = pool; this.ledger = new ApprovalStore(pool); }
 
-  async delegate(conversation: Conversation, requestId: string, token: string, proposals: PersistedDelegation[], rawCheckpoint: unknown) {
+  async delegate(conversation: Conversation, requestId: string, token: string, rawProposals: readonly unknown[], rawCheckpoint: unknown) {
+    const proposals = rawProposals.map(fixedProposal);
     if (proposals.length < 1 || proposals.length > 2 || new Set(proposals.map(p => p.nativeCallId)).size !== proposals.length) {
       throw new MemberStoreError("input_limit");
     }
     const checkpoint = checkpointSchema.parse(rawCheckpoint);
     if (checkpoint.engine !== "pi") throw new MemberStoreError("conflict");
-    const planned = proposals.map(proposal => ({ proposal, target: proposedTarget(proposal.profile.target) }));
-    return transaction(this.pool, async db => {
+    return transaction(this.pool, unbounded, async db => {
+      const active = await db.query("SELECT 1 FROM birbcrew_ts.recovery_control WHERE singleton AND phase='active' FOR SHARE");
+      if (!active.rowCount) throw new Error("Installation is held for recovery");
       const parent = await lockParent(db, { ...conversation, requestId });
       const args = [conversation.conversationId, requestId];
       // Only the parent turn's own token delegates: a child's launch generation is never a turn
@@ -131,15 +107,29 @@ export class ChildStore {
       const admitted = await db.query(`SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2
         AND token=$3 AND phase='started'`, [...args, token]);
       if (!admitted.rowCount) throw new MemberStoreError("stale");
-      for (const { proposal, target } of planned) {
-        if (target && !(await eligibleTarget(db, target, parent.profile, proposal.profile))) throw new ChildTargetError("ineligible_target");
-      }
+      await db.query("SELECT birbcrew_ts.lock_child_authority($1,$2)", [parent.engine, parent.profile]);
+      const { rows: [authority] } = await db.query<{ consent: unknown; seal: unknown; active: string[] | null }>(
+        `SELECT m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active
+         FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
+         WHERE m.owner_id=$1 AND m.member_id=$2`, [parent.ownerId, parent.memberId]);
+      const consent = childConsentSchema.parse(authority.consent);
+      const planned = proposals.map(proposal => {
+        if (consent.mode === "legacy") return proposal;
+        const seal = childConsentSchema.parse(authority.seal);
+        const role = proposal.profile.role;
+        const destination = consent.roles[role];
+        if (!destination || seal.mode !== "named" || !authority.active?.includes(role) || !sameDestination(destination, seal.roles[role])) {
+          throw new ChildTargetError("ineligible_target");
+        }
+        if (destination.engine !== "pi") throw new ChildTargetError("unsupported_engine");
+        return { ...proposal, profile: { ...proposal.profile, model: destination.model, target: { version: 1, ...destination } } };
+      });
       await db.query(`INSERT INTO birbcrew_ts.delegations (conversation_id,request_id,parent_checkpoint)
         VALUES ($1,$2,$3)`, [...args, JSON.stringify(checkpoint)]);
-      for (const [index, { proposal, target }] of planned.entries()) {
+      for (const [index, proposal] of planned.entries()) {
         await db.query(`INSERT INTO birbcrew_ts.pi_children (conversation_id,request_id,native_call_id,ordinal,task,role_profile)
           VALUES ($1,$2,$3,$4,$5,$6)`, [...args, proposal.nativeCallId, index, proposal.task,
-          JSON.stringify(target ? { ...proposal.profile, target } : proposal.profile)]);
+          JSON.stringify(proposal.profile)]);
       }
       const children = await childrenFor(db, conversation, requestId);
       await publishObservation(db, conversation.conversationId, {kind:"delegation",requestId,
@@ -160,8 +150,8 @@ export class ChildStore {
   }
 
   async begin(key: ChildKey, exec: Execution, resume = false): Promise<ChildStart> {
-    return transaction(this.pool, async db => {
-      await lockParent(db, key);
+    return transaction(this.pool, unbounded, async db => {
+      const parent = await lockParent(db, key);
       const row = await childRow(db, key);
       if (row.outcome) return { kind: "settled", outcome: row.outcome };
       const turn = await db.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2 AND phase='started'",
@@ -188,21 +178,36 @@ export class ChildStore {
           [key.childId,row.generation]);
         if (prior.rowCount) return {kind:"draining",generation:row.generation};
       }
+      const firstLaunch = !resume && row.phase === "ready" && row.generation === null;
+      if (firstLaunch && await overBudget(db, parent.ownerId, parent.memberId)) {
+        const cancelled = await db.query("SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2",
+          [key.conversationId, key.requestId]);
+        const outcome = await this.settleLocked(db, key, row, cancelled.rowCount
+          ? { kind: "cancelled" } : { kind: "failed", code: "budget_exhausted" });
+        return { kind: "settled", outcome };
+      }
       const admitted = await db.query<{ generation: string }>(`UPDATE birbcrew_ts.pi_children SET generation=gen_random_uuid(),
         workflow_run_id=$2,activity_id=$3,attempt=$4,phase=$5 WHERE child_id=$1 RETURNING generation`,
         [key.childId, exec.workflowRunId, exec.activityId, exec.attempt, resume ? "resuming" : "running"]);
       await publishObservation(db, key.conversationId, { kind: resume ? "childResumed" : "childStarted", requestId: key.requestId, childId: key.childId });
+      if (firstLaunch) {
+        const target = childTarget(storedTarget(row.role_profile.target), parent.profile);
+        await appendAudit(db, { type: "delegation.started", ...parent, requestId: key.requestId,
+          payload: { childId: key.childId, role: row.role_profile.role, engine: target.engine, profile: target.profile } });
+      }
       return { kind: "start", generation: admitted.rows[0].generation, task: row.task };
     });
   }
 
   async reconcile(key: ChildKey, runId: string, resuming: boolean) {
-    const interrupted = await transaction(this.pool, async db => {
+    const interrupted = await transaction(this.pool, unbounded, async db => {
       await lockParent(db,key);
       const row = await childRow(db,key);
       if (row.workflow_run_id && row.workflow_run_id !== runId) throw new MemberStoreError("stale");
       if (row.outcome) return {kind:"complete"} as const;
-      if (!resuming && row.phase === "waiting" && row.approval_id) {
+      const { rows: [{ retired }] } = await db.query<{ retired: boolean }>(
+        "SELECT birbcrew_ts.delegation_child_retired($1) AS retired", [key.childId]);
+      if (!retired && !resuming && row.phase === "waiting" && row.approval_id) {
         const approval = await confirmedApproval(db,{...key,invocationId:key.childId,approvalId:row.approval_id});
         return {kind:"pending",approval} as const;
       }
@@ -216,7 +221,7 @@ export class ChildStore {
   }
 
   async closeExitedChild(key: ChildKey, cancelled: boolean) {
-    const generation = await transaction(this.pool, async db => {
+    const generation = await transaction(this.pool, settlement, async db => {
       await lockParent(db, key);
       const row = await childRow(db, key);
       await retireChild(db, key, row);
@@ -228,7 +233,7 @@ export class ChildStore {
   }
 
   async quarantineDelegation(conversation: Conversation, request: TurnRequest, runId: string) {
-    await transaction(this.pool, async db => {
+    await transaction(this.pool, unbounded, async db => {
       const parent = await lockParent(db, {...conversation, requestId: request.requestId});
       const args = [conversation.conversationId, request.requestId];
       const retired = await db.query(`UPDATE birbcrew_ts.turns SET phase='uncertain'
@@ -246,33 +251,35 @@ export class ChildStore {
   }
 
   async waitStopped(key: ChildKey, token: string) {
-    for (let i = 0; i < 60; i++) {
+    const deadline = performance.now() + 6000;
+    while (performance.now() < deadline) {
       const { rows: [launch] } = await this.pool.query<{stopped:boolean}>(
-        "SELECT stopped FROM birbcrew_ts.native_launches WHERE child_id=$1 AND token=$2", [key.childId,token]);
+        "SELECT stopped FROM birbcrew_ts.native_launches WHERE child_id=$1 AND token=$2", [key.childId, token]);
       if (!launch || launch.stopped) return;
-      await delay(100);
+      const remaining = deadline - performance.now();
+      if (remaining > 0) await delay(Math.min(100, remaining));
     }
-    throw new Error("Child native stop unconfirmed");
+    throw new ChildNativeStopUnconfirmed();
   }
 
   private async cancel(key: ChildKey) {
-    return transaction(this.pool, async db => {
+    return transaction(this.pool, settlement, async db => {
       await lockParent(db, key);
       const row = await childRow(db, key);
       if (row.outcome) return row.outcome;
-      return cancelLocked(db,key,row,this.ledger);
+      return this.settleLocked(db, key, row, { kind: "cancelled" });
     });
   }
 
   async finish(key: ChildKey, generation: string | null, result: { text: string; checkpoint: unknown } | null, reconciled = false) {
-    return transaction(this.pool, async db => {
+    return transaction(this.pool, reconciled ? settlement : unbounded, async db => {
       await lockParent(db, key);
       const row = await childRow(db, key);
       if (row.generation !== generation) throw new MemberStoreError("stale");
       if (row.outcome) return row.outcome;
       const cancelled = await db.query("SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2",
         [key.conversationId,key.requestId]);
-      if (cancelled.rowCount) return cancelLocked(db,key,row,this.ledger);
+      if (cancelled.rowCount) return this.settleLocked(db, key, row, { kind: "cancelled" });
       if (!reconciled) {
         const stopped = await db.query("SELECT 1 FROM birbcrew_ts.native_stop_requests WHERE conversation_id=$1 AND request_id=$2 AND token=$3",
           [key.conversationId,key.requestId,generation]);
@@ -282,16 +289,27 @@ export class ChildStore {
       if (result && (Buffer.byteLength(result.text) > 16384 || !result.text.trim() || !result.text.isWellFormed() || result.text.includes("\0"))) {
         result = null;
       }
-      const outcome: ChildOutcome = result ? { kind: "completed", nativeCallId: row.native_call_id, text: result.text }
-        : { kind: "failed", nativeCallId: row.native_call_id, code: "child_failed" };
       const checkpoint = result ? checkpointSchema.parse(result.checkpoint) : null;
       if (checkpoint && checkpoint.engine !== "pi") throw new MemberStoreError("conflict");
-      await db.query(`UPDATE birbcrew_ts.pi_children SET phase=$2,outcome=$3,native_checkpoint=$4 WHERE child_id=$1`,
-        [key.childId, result ? "complete" : "failed", JSON.stringify(outcome), checkpoint && JSON.stringify(checkpoint)]);
-      if (!result && row.approval_id) await this.ledger.closeChildApproval(db,key,row.approval_id);
-      await publishObservation(db,key.conversationId,{kind:"childEnded",requestId:key.requestId,childId:key.childId,outcome:outcome.kind,
-        ...(outcome.kind === "completed" && {text:(await textProjection(db,key.conversationId))(outcome.text,true)})});
-      return outcome;
+      return this.settleLocked(db, key, row, result && checkpoint
+        ? { kind: "completed", text: result.text, checkpoint } : { kind: "failed", code: "child_failed" });
     });
+  }
+
+  private async settleLocked(db: PoolClient, key: ChildKey, row: ChildRow, settlement: ChildSettlement): Promise<ChildOutcome> {
+    const outcome: ChildOutcome = settlement.kind === "completed"
+      ? { kind: "completed", nativeCallId: row.native_call_id, text: settlement.text }
+      : { ...settlement, nativeCallId: row.native_call_id };
+    const checkpoint = settlement.kind === "completed" ? settlement.checkpoint : null;
+    await db.query(`UPDATE birbcrew_ts.pi_children SET phase=$2,outcome=$3,
+      native_checkpoint=CASE WHEN $2='cancelled' THEN native_checkpoint ELSE $4::jsonb END WHERE child_id=$1`,
+      [key.childId, outcome.kind === "completed" ? "complete" : outcome.kind, JSON.stringify(outcome), checkpoint && JSON.stringify(checkpoint)]);
+    if (outcome.kind !== "completed" && row.approval_id) await this.ledger.closeChildApproval(db, key, row.approval_id);
+    await publishObservation(db, key.conversationId, { kind: "childEnded", requestId: key.requestId, childId: key.childId, outcome: outcome.kind,
+      ...(outcome.kind === "completed" && { text: (await textProjection(db, key.conversationId))(outcome.text, true) }) });
+    await appendAudit(db, { type: "delegation.finished", ownerId: key.ownerId, memberId: key.memberId,
+      conversationId: key.conversationId, requestId: key.requestId, payload: outcome.kind === "failed"
+        ? { childId: key.childId, outcome: outcome.kind, code: outcome.code } : { childId: key.childId, outcome: outcome.kind } });
+    return outcome;
   }
 }

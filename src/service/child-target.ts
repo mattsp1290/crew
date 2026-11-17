@@ -1,21 +1,26 @@
-import type { Delegation } from "@birbcrew/pi-subagents";
+import { fixedRoles, type Delegation } from "@birbcrew/pi-subagents";
 import { z } from "zod";
 import { engineSchema, spawnSchema, type Engine } from "./domain.ts";
 
-/** Where a delegated child runs: the engine and registered profile whose activity queue and
- * driver execute it. It is stored as `target` in the child row's role_profile JSON. A row
- * without one runs on its parent's Pi profile, as every child did before targets existed.
- * This module owns the rules for reading a target. The one reader outside it is the usage
- * ledger's insert (usage.ts), which takes the engine in SQL from `role_profile->'target'`. */
+export const childRoleSchema = z.enum(["analyst", "recorder"]);
+export type ChildRole = z.infer<typeof childRoleSchema>;
 export const childTargetSchema = z.strictObject({ engine: engineSchema, profile: spawnSchema.shape.profile });
 export type ChildTarget = z.infer<typeof childTargetSchema>;
-/** A child's stored role profile. */
-export type ChildProfile = Delegation["profile"] & { target?: ChildTarget };
-
-/** Why a child target was refused. Until the other engines have child drivers, a target must be a
- * registered delegating Pi profile that holds every tool its child gets, as its parent must. Its
- * driver also requires the child's pinned model, always the parent's, to be its own; the profiles
- * table has no model column, so only a launch checks that. */
+export const destinationSchema = childTargetSchema.extend({
+  model: z.string().min(1).max(256), providerHost: z.string().min(1).max(512), accountDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export const sealedTargetSchema = destinationSchema.extend({ version: z.literal(1) });
+export type SealedTarget = z.infer<typeof sealedTargetSchema>;
+const rolesSchema = z.strictObject({ analyst: destinationSchema.optional(), recorder: destinationSchema.optional() });
+export const childConsentSchema = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal("legacy") }), z.strictObject({ mode: z.literal("named"), roles: rolesSchema }),
+]);
+export type MemberChildConsent = z.infer<typeof childConsentSchema>;
+export type ProfileTargetSeal = MemberChildConsent;
+export type ChildProfile = Delegation["profile"] & { target?: ChildTarget | SealedTarget };
+export type MemberSubagents = { mode: MemberChildConsent["mode"]; targets: (z.infer<typeof destinationSchema> & {
+  role: ChildRole; availability: "executable" | "unsupported_engine" | "removed";
+})[] };
 export class ChildTargetError extends Error {
   readonly code: "invalid_target" | "unsupported_engine" | "ineligible_target";
   constructor(code: ChildTargetError["code"]) {
@@ -24,51 +29,47 @@ export class ChildTargetError extends Error {
     this.code = code;
   }
 }
-
-/** Only Pi has a child driver so far (profiles.ts). */
-export function hasChildDriver(engine: Engine) {
-  return engine === "pi";
-}
-
-/** The (engine, profile) a child runs on. */
+export function hasChildDriver(engine: Engine) { return engine === "pi"; }
 export function childTarget(target: ChildTarget | undefined, parentProfile: string): ChildTarget {
-  return target ?? { engine: "pi", profile: parentProfile };
+  return target ? { engine: target.engine, profile: target.profile } : { engine: "pi", profile: parentProfile };
 }
-
-function parsedTarget(value: unknown): ChildTarget {
-  const parsed = childTargetSchema.safeParse(value);
+export function storedTarget(value: unknown): SealedTarget | undefined {
+  if (value === null || value === undefined) return undefined;
+  const parsed = sealedTargetSchema.safeParse(value);
   if (!parsed.success) throw new ChildTargetError("invalid_target");
   return parsed.data;
 }
-
-/** Reads a target stored in a child row (null or absent when the child has none). */
-export function storedTarget(value: unknown): ChildTarget | undefined {
-  return value === null || value === undefined ? undefined : parsedTarget(value);
-}
-
-/** The target a ChildKey carries. One this release cannot read is left off, so it never fails the
- * parent turn: the child's own activity reads its row and refuses it (ChildStore.target). */
 export function keyTarget(value: unknown): ChildTarget | undefined {
-  return childTargetSchema.safeParse(value).data;
+  const parsed = z.union([sealedTargetSchema, childTargetSchema]).safeParse(value);
+  return parsed.success ? { engine: parsed.data.engine, profile: parsed.data.profile } : undefined;
 }
-
-/** A delegation's proposed target, refused before anything is written. Absent, the child runs on its
- * parent's profile. */
-export function proposedTarget(value: unknown): ChildTarget | undefined {
-  if (value === undefined) return undefined;
-  const target = parsedTarget(value);
-  if (!hasChildDriver(target.engine)) throw new ChildTargetError("unsupported_engine");
-  return target;
-}
-
-/** Whether a profile holding this protected tool (if any) holds every tool the child gets. */
 export function holdsChildTools(protectedTool: string | null | undefined, child: Pick<ChildProfile, "tools">) {
   return child.tools.every(tool => tool === protectedTool);
 }
-
-/** Whether a profile can run a child: it delegates and holds every tool the child gets. The Pi driver
- * applies this at launch (profiles.ts), and ChildStore.delegate applies it to a target before writing.
- * A launch also requires the child's pinned model, which the profiles table cannot show. */
-export function runsChild(profile: { delegateTask: boolean; protectedTool?: string | null }, child: Pick<ChildProfile, "tools">) {
-  return profile.delegateTask && holdsChildTools(profile.protectedTool, child);
+const proposalSchema = z.strictObject({
+  nativeCallId: z.string().min(1).max(256), task: z.string().min(1).max(4096),
+  profile: z.strictObject({ role: childRoleSchema, version: z.literal(1), instructions: z.string(),
+    model: z.string().min(1).max(256), tools: z.array(z.literal("record_work_item")).max(1) }),
+});
+export function fixedProposal(raw: unknown): Delegation {
+  const proposal = proposalSchema.parse(raw);
+  const fixed = fixedRoles[proposal.profile.role];
+  if (proposal.profile.instructions !== fixed.instructions || JSON.stringify(proposal.profile.tools) !== JSON.stringify(fixed.tools)) {
+    throw new ChildTargetError("invalid_target");
+  }
+  return { ...proposal, profile: { ...proposal.profile, instructions: fixed.instructions } };
+}
+export function memberSubagents(engine: Engine, rawConsent: unknown, rawSeal: unknown, active: string[] | null): MemberSubagents {
+  const consent = childConsentSchema.parse(rawConsent);
+  if (consent.mode === "legacy") return { mode: "legacy", targets: [] };
+  const seal = childConsentSchema.parse(rawSeal);
+  return { mode: "named", targets: childRoleSchema.options.flatMap(role => {
+    const destination = consent.roles[role];
+    if (!destination) return [];
+    const allowed = seal.mode === "named" && active?.includes(role) && sameDestination(destination, seal.roles[role]);
+    return [{ ...destination, role, availability: !allowed ? "removed" : engine === "pi" && destination.engine === "pi" ? "executable" : "unsupported_engine" }];
+  }) };
+}
+export function sameDestination(a: z.infer<typeof destinationSchema>, b: z.infer<typeof destinationSchema> | undefined) {
+  return b !== undefined && a.engine === b.engine && a.profile === b.profile && a.model === b.model && a.providerHost === b.providerHost && a.accountDigest === b.accountDigest;
 }

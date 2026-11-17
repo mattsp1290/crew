@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
 import { z } from "zod";
-import { createProxyProfile } from "../../src/service/proxy-profiles.ts";
+import { configuredDestination } from "../../src/service/provider-identity.ts";
+import { createProxyProfile, type ProxyProfileOptions } from "../../src/service/proxy-profiles.ts";
 import { runClaudeSegment, runClaudeTurn } from "../../src/service/claude.ts";
 import { runPiSegment, runPiTurn } from "../../src/service/pi.ts";
 import { runCodexTurn } from "../../src/service/codex.ts";
@@ -101,11 +102,22 @@ for (const engine of ["claude", "codex", "pi"] as const) {
     t.after(() => rm(stateDir, { recursive: true, force: true }));
     const identity = { stateDir, ownerId: "fixture-owner", memberId: randomUUID() };
     let credentials = 0;
-    const create = () => createProxyProfile({ engine, model, protocol, endpoint: fixture.endpoint,
+    const create = async () => {
+      const options: ProxyProfileOptions = { engine, model, protocol, endpoint: fixture.endpoint,
       accountId: "fixture-account", allowHttpLoopback: true, protectedTool: "record_work_item",
       headers: { "x-fixture-route": engine }, resolveCredential: async () => ({
         headers: { Authorization: "Bearer synthetic-" + (++credentials) }, expiresAt: Date.now() + 500,
-      }) });
+      }) };
+      const created = await createProxyProfile(options);
+      const destination = configuredDestination(new Map([["proxy", created.profile]]), { engine, profile: "proxy" });
+      assert.equal(destination.providerHost, new URL(fixture.endpoint).host);
+      assert.equal(destination.model, model);
+      options.endpoint = "https://changed.invalid";
+      options.model = "changed-model";
+      assert.deepEqual(configuredDestination(new Map([["proxy", created.profile]]), { engine, profile: "proxy" }), destination);
+      assert.ok(Object.isFrozen(created.profile.upstreamIdentity?.[engine]));
+      return created;
+    };
     let active = await create();
     t.after(() => active.close());
     const input = { threadId: randomUUID(), runId: randomUUID(), text: "", checkpoint: null as Checkpoint | null, signal: t.signal };

@@ -1,3 +1,4 @@
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -226,7 +227,7 @@ test("a spawn attaches packs in order, a replay must repeat them, and packs shar
   const spawned = await g.api("/v1/members", body);
   assert.equal(spawned.status, 201, spawned.text);
   const { memberId } = spawned.body;
-  assert.deepEqual(spawned.body, { ownerId: g.ownerId, memberId, engine: "pi", profile,
+  assert.deepEqual(spawned.body, { ownerId: g.ownerId, memberId, engine: "pi", profile, subagents: { mode: "legacy", targets: [] },
     instructions: { bytes: Buffer.byteLength(role), digest: sha(role) }, instructionPacks: [b.packId, a.packId] });
   assert.deepEqual(await g.api("/v1/members", body), spawned, "an identical spawn is a replay");
   assert.deepEqual(await g.api("/v1/members", { ...body, instructionPacks: body.instructionPacks.map(id => id.toUpperCase()) }), spawned);
@@ -240,7 +241,7 @@ test("a spawn attaches packs in order, a replay must repeat them, and packs shar
   // Without packs, a spawn answers as before, and a replay cannot add them.
   const plainBody = { requestId: randomUUID(), engine: "codex", profile };
   const plain = await g.api("/v1/members", plainBody);
-  assert.deepEqual(plain.body, { ownerId: g.ownerId, memberId: plain.body.memberId, engine: "codex", profile });
+  assert.deepEqual(plain.body, { ownerId: g.ownerId, memberId: plain.body.memberId, engine: "codex", profile, subagents: { mode: "legacy", targets: [] } });
   assert.deepEqual((await g.api("/v1/members", { ...plainBody, instructionPacks: [a.packId] })).body, { error: "conflict" });
   // A spawn with packs racing one without, under one requestId: one member, and the loser conflicts.
   const raced = { requestId: randomUUID(), engine: "pi", profile };
@@ -304,8 +305,8 @@ test("the owner reads a member's packs with its instructions; listings carry IDs
   const listed = await g.api("/v1/members");
   assert.equal(listed.text.includes(marker), false);
   assert.deepEqual(listed.body.members.find((row: { memberId: string }) => row.memberId === member.memberId),
-    { memberId: member.memberId, engine: "claude", profile, instructionPacks: [a.packId, b.packId] });
-  assert.deepEqual(listed.body.members.find((row: { memberId: string }) => row.memberId === plain.memberId), { memberId: plain.memberId, engine: "pi", profile });
+    { memberId: member.memberId, engine: "claude", profile, subagents: { mode: "legacy", targets: [] }, instructionPacks: [a.packId, b.packId] });
+  assert.deepEqual(listed.body.members.find((row: { memberId: string }) => row.memberId === plain.memberId), { memberId: plain.memberId, engine: "pi", profile, subagents: { mode: "legacy", targets: [] } });
   assert.deepEqual((await g.api(`/v1/instruction-packs/${b.packId}`)).body.memberCount, 2);
 
   // Another owner can neither read, list, delete nor attach the owner's packs, and sees none of their events.
@@ -615,7 +616,7 @@ test("a handoff target gets its own member's packs, and the handoff carries none
 
 /** A database migrated only up to `version`, as that release left it; dropped after the test. */
 async function databaseAt(t: TestContext, version: number) {
-  const name = "packs_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("packs_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -699,10 +700,11 @@ test("migration 033 completes while a native turn holds its admission", async (t
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 33).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 033 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
   await current.commitTurn({ ownerId, conversationId, requestId, token: start.token, reply: "still running", checkpoint: { version: 1, engine: "pi", state: {} } });
 });
 

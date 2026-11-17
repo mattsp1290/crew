@@ -6,6 +6,7 @@ import { Client, type Pool, type PoolClient } from 'pg';
 import { z } from 'zod';
 import { fenceEpochLimit, RecoveryRefusedError, type RecoveryFence } from './recovery-fence.ts';
 import { appendAudit } from './audit.ts';
+import { changeDelegationControl, controlState } from './delegation-control.ts';
 import { settleRestoredWebhooks } from './webhooks.ts';
 export { RecoveryRefusedError } from './recovery-fence.ts';
 
@@ -48,6 +49,9 @@ async function settleRestoredState(db:PoolClient,activate:()=>Promise<boolean>) 
  await db.query(`SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id IN
   (SELECT conversation_id FROM birbcrew_ts.tool_grants WHERE revoked_at IS NULL) ORDER BY conversation_id FOR UPDATE`);
  if(!await activate()) return;
+ await changeDelegationControl(db,{commandId:randomUUID(),expectedRevision:(await controlState(db)).revision,scope:{kind:'global'},
+  enabled:false,actor:'recovery',reason:'restored installation activation'});
+ await db.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE child_target_seal->>'mode'='named'");
  const {rows}=await db.query<{grant_id:string;owner_id:string;member_id:string;conversation_id:string|null}>(`WITH revoked AS
   (UPDATE birbcrew_ts.tool_grants SET revoked_at=clock_timestamp(),revocation_reason='recovery_restore' WHERE revoked_at IS NULL
    RETURNING grant_id,owner_id,member_id,conversation_id,created_at)

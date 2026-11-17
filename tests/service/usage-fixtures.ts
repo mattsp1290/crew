@@ -1,3 +1,4 @@
+import { spawnHistoricalMember, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -24,7 +25,7 @@ export const sql = new URL("../../src/service/sql/", import.meta.url);
 
 /** A database migrated only up to `version`, as that release left it; dropped after the test. */
 export async function databaseAt(t: TestContext, version = Infinity, skip: readonly number[] = []) {
-  const name = "usage_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("usage_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -54,6 +55,9 @@ export const reported = (input: number, output = 0, more: Partial<Extract<Segmen
 export async function member(db: MemberStore, ownerId = "owner-" + randomUUID(), engine: Engine = "pi") {
   const spawned = await db.spawn({ ownerId, requestId: randomUUID(), engine, profile: "fixture" });
   return { ownerId, memberId: spawned.memberId };
+}
+export function memberBeforeTargets(db: MemberStore, engine: Engine) {
+  return spawnHistoricalMember(db, { ownerId: "owner-" + randomUUID(), requestId: randomUUID(), engine, profile: "fixture" });
 }
 export async function conversation(db: MemberStore, owner: { ownerId: string; memberId: string }) {
   const conversationId = randomUUID();

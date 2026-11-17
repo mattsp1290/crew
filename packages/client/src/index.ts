@@ -1,24 +1,45 @@
 import { z } from "zod";
 import { connection, type ConnectionOptions } from "./config.js";
 import {
+  approvalDetailIdentitySchema,
   conversationIdentitySchema,
+  createHandoffSchema,
   createMemberSchema,
   decideSchema,
   errorSchema,
   listMembersSchema,
+  listGrantsSchema,
+  revokeGrantSchema,
   openConversationSchema,
   requestIdentitySchema,
   routes,
   submitRequestSchema,
+  type ApprovalDetailIdentity,
+  type OwnerApprovalDetail,
   type CreateMember,
+  type CreateHandoff,
+  type CreateHandoffResponse,
+  type ConversationHandoff,
   type Decide,
+  type DecisionRecord,
+  type ListGrants,
+  type RevokeGrant,
   type OpenConversation,
   type RequestIdentity,
   type SubmitRequest,
 } from "./contract.js";
 export type {
+  RecordWorkItemArguments,
+  ApprovalDetailIdentity,
+  OwnerApprovalDetail,
   Engine,
   CreateMember,
+  CreateHandoff,
+  HandoffRecord,
+  CreateHandoffResponse,
+  ConversationHandoff,
+  HandoffsCapability,
+  HandoffsCapabilityV1,
   OpenConversation,
   SubmitRequest,
   RequestIdentity,
@@ -31,9 +52,19 @@ export type {
   Member,
   MemberPage,
   Decide,
+  DecisionRecord,
+  DecisionReceiptsCapability,
+  DecisionReceiptsCapabilityV1,
   ConversationSnapshot,
   Capabilities,
   Health,
+  StandingGrantsCapability,
+  StandingGrantsCapabilityV1,
+  PublicGrant,
+  GrantList,
+  ListGrants,
+  RevokeGrant,
+  RevokeGrantResponse,
 } from "./contract.js";
 export interface CrewClientOptions extends ConnectionOptions {
   readonly fetch?: typeof globalThis.fetch;
@@ -41,7 +72,11 @@ export interface CrewClientOptions extends ConnectionOptions {
 export interface CallOptions {
   readonly signal?: AbortSignal;
 }
+export type HandoffCommandIdentity = Readonly<
+  { kind: "handoff" } & z.output<typeof createHandoffSchema>
+>;
 export type CommandIdentity =
+  | HandoffCommandIdentity
   | { readonly kind: "member"; readonly requestId: string }
   | { readonly kind: "conversation"; readonly conversationId: string }
   | {
@@ -50,10 +85,16 @@ export type CommandIdentity =
       readonly requestId: string;
     }
   | {
+      readonly kind: "grant_revocation";
+      readonly memberId: string;
+      readonly grantId: string;
+    }
+  | {
       readonly kind: "decision";
       readonly conversationId: string;
       readonly requestId: string;
       readonly approvalId: string;
+      readonly decisionId?: string;
     };
 export class CrewHttpError extends Error {
   readonly status: number;
@@ -128,6 +169,7 @@ export class CrewClient {
       path: string;
       response: z.ZodType<T>;
       statuses: readonly number[];
+      unknownOutcomeErrors?: readonly { readonly status: number; readonly code: string }[];
     },
     input: {
       params?: Record<string, string>;
@@ -197,6 +239,8 @@ export class CrewClient {
         input.command &&
         (code === "retry_same_request" ||
           response.status >= 500 ||
+          route.unknownOutcomeErrors?.some((failure) =>
+            failure.status === response.status && failure.code === code) ||
           !parsed.success)
       ) {
         throw new CrewUnknownOutcomeError(input.command, failure);
@@ -219,6 +263,34 @@ export class CrewClient {
   async capabilities(options: CallOptions = {}) {
     return this.#call(routes.capabilities, options);
   }
+  async approvalDetail(input: ApprovalDetailIdentity, options: CallOptions = {}): Promise<OwnerApprovalDetail> {
+    const key = approvalDetailIdentitySchema.parse(input);
+    const query = new URLSearchParams({
+      memberId: key.memberId, invocationId: key.invocationId, version: String(key.version),
+    });
+    return this.#call(routes.approvalDetail, {
+      ...options,
+      params: { conversationId: key.conversationId, requestId: key.requestId, approvalId: key.approvalId },
+      query: query.toString(),
+      expect: (detail) => detail.conversationId === key.conversationId && detail.memberId === key.memberId
+        && detail.requestId === key.requestId && detail.invocationId === key.invocationId
+        && detail.approvalId === key.approvalId && detail.version === key.version,
+    });
+  }
+  async decisionRecord(input: ApprovalDetailIdentity, options: CallOptions = {}): Promise<DecisionRecord> {
+    const key = approvalDetailIdentitySchema.parse(input);
+    const query = new URLSearchParams({
+      memberId: key.memberId, invocationId: key.invocationId, version: String(key.version),
+    });
+    return this.#call(routes.decisionRecord, {
+      ...options,
+      params: { conversationId: key.conversationId, requestId: key.requestId, approvalId: key.approvalId },
+      query: query.toString(),
+      expect: (record) => record.conversationId === key.conversationId && record.memberId === key.memberId
+        && record.requestId === key.requestId && record.invocationId === key.invocationId
+        && record.approvalId === key.approvalId && record.version === key.version,
+    });
+  }
   async health(options: CallOptions = {}) {
     return this.#call(routes.health, options);
   }
@@ -233,6 +305,22 @@ export class CrewClient {
     return this.#call(routes.listMembers, {
       ...options,
       query: query.toString(),
+    });
+  }
+  async listGrants(input: ListGrants, options: CallOptions = {}) {
+    const params = listGrantsSchema.parse(input);
+    return this.#call(routes.listGrants, {
+      ...options, params,
+      expect: (list) => list.memberId === params.memberId,
+    });
+  }
+  async revokeGrant(input: RevokeGrant, options: CallOptions = {}) {
+    const params = revokeGrantSchema.parse(input);
+    return this.#call(routes.revokeGrant, {
+      ...options, params, body: {},
+      command: { kind: "grant_revocation", ...params },
+      expect: ({ grant }) => grant.memberId === params.memberId
+        && grant.grantId === params.grantId,
     });
   }
   async createMember(input: CreateMember, options: CallOptions = {}) {
@@ -272,6 +360,28 @@ export class CrewClient {
         expect: (value) => value.state.conversationId === params.conversationId,
       }),
     );
+  }
+  async createHandoff(input: CreateHandoff, options: CallOptions = {}): Promise<CreateHandoffResponse> {
+    const { conversationId, ...body } = createHandoffSchema.parse(input);
+    return this.#call(routes.createHandoff, {
+      ...options,
+      params: { conversationId },
+      body,
+      command: { kind: "handoff", conversationId, ...body },
+      expect: (record) => record.source.conversationId === conversationId
+        && record.requestId === body.requestId && record.target.memberId === body.memberId,
+    });
+  }
+  async handoff(
+    input: z.input<typeof conversationIdentitySchema>,
+    options: CallOptions = {},
+  ): Promise<ConversationHandoff> {
+    const params = conversationIdentitySchema.parse(input);
+    return this.#call(routes.handoff, {
+      ...options,
+      params,
+      expect: (chain) => chain.conversationId === params.conversationId,
+    });
   }
   async #receipt(
     route:
@@ -332,13 +442,15 @@ export class CrewClient {
       conversationId,
       requestId: body.requestId,
       approvalId: body.approvalId,
+      ...(body.decisionId !== undefined && { decisionId: body.decisionId }),
     } as const;
     return this.#call(routes.decide, {
       ...options,
       params: { conversationId },
       body,
       command,
-      expect: (value) => value.approvalId === body.approvalId,
+      expect: (value) => value.approvalId === body.approvalId && value.decision === body.choice
+        && value.decisionId === body.decisionId,
     });
   }
 }

@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { memberSchema } from "@birbcrew/client/contract";
 import { Client, Connection } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { Pool } from "pg";
@@ -22,6 +23,7 @@ import { registerProfiles } from "../../src/service/deployment.ts";
 import { createGateway } from "../../src/service/gateway.ts";
 import { activityQueue, memberTaskQueue } from "../../src/service/queues.ts";
 import { MemberStore } from "../../src/service/store.ts";
+import { recordSegmentUsage, UsageApi } from "../../src/service/usage.ts";
 import { startSupervisor } from "../../src/service/supervisor.ts";
 import { memberQueueActivities } from "../../src/service/worker.ts";
 
@@ -40,7 +42,7 @@ process.env.BIRBCREW_PROOF_ENGINE = "pi";
 const logs = { parent: join(directory, "parent.jsonl"), target: join(directory, "target.jsonl") };
 process.env.BIRBCREW_PROOF_REQUESTS = logs.parent;
 process.env.BIRBCREW_PROOF_TARGET_REQUESTS = logs.target;
-const parentProfile = "fixture.crew.v1", targetProfile = "fixture.crew-target.v1";
+const readyProfile = "fixture.ready.v1", legacyProfile = "fixture.crew.v1", parentProfile = "fixture.named.v1", targetProfile = "fixture.crew-target.v1";
 const target: ChildTarget = { engine: "pi", profile: targetProfile };
 const workflowsPath = fileURLToPath(new URL("../../src/service/workflow.ts", import.meta.url));
 // The supervisor loads the profiles from this module; the environment above must be set first.
@@ -66,8 +68,7 @@ const connection = await Connection.connect({ address: server.address });
 const temporal = new Client({ connection });
 const native = await NativeConnection.connect({ address: server.address });
 const supervisor = await startSupervisor(config, stateDir);
-// The Claude queue only shows that a non-Pi target is refused before anything launches.
-const engines = await Promise.all(([["pi", parentProfile], ["pi", targetProfile], ["claude", targetProfile]] as const).map(async ([engine, profile]) => {
+const engines = await Promise.all(([["pi", readyProfile], ["pi", legacyProfile], ["pi", parentProfile], ["pi", targetProfile]] as const).map(async ([engine, profile]) => {
   const worker = await Worker.create({ connection: native, taskQueue: activityQueue(engine, profile),
     activities: memberActivities(store, supervisor, profiles, stateDir, engine) });
   return { worker, done: worker.run() };
@@ -154,10 +155,9 @@ const prompts = async (log: string) => (await readFile(log, "utf8").catch(() => 
 const childRow = async (key: ChildKey) => (await pool.query<{ phase: string; native_call_id: string; outcome: unknown }>(
   "SELECT phase,native_call_id,outcome FROM birbcrew_ts.pi_children WHERE child_id=$1", [key.childId])).rows[0];
 
-/** A Pi parent turn admitted and started, with one analyst child delegated as given. No parent
- * workflow runs: nothing a parent can produce yet carries a target. */
-async function delegated(task: string, childTarget?: ChildTarget, role: "analyst" | "recorder" = "analyst") {
-  const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: parentProfile });
+
+async function delegated(task: string, role: "analyst" | "recorder" = "analyst", profile = parentProfile) {
+  const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
   const conversationId = randomUUID();
   await store.openConversation({ ownerId, conversationId, memberId });
   const request = { ownerId, conversationId, requestId: randomUUID(), text: "delegate" };
@@ -166,9 +166,25 @@ async function delegated(task: string, childTarget?: ChildTarget, role: "analyst
   const [key] = await children.delegate(turn.conversation, request.requestId, turn.token, [{ nativeCallId: "call_" + randomUUID(), task,
     profile: { role, version: 1, instructions: role === "analyst" ? "Answer the assigned question using only the supplied task context."
       : "Complete the assigned task. Request owner approval to record a work item when asked.", model,
-      tools: role === "recorder" ? ["record_work_item"] : [], ...(childTarget && { target: childTarget }) } }], { version: 1, engine: "pi", state: {} });
+      tools: role === "recorder" ? ["record_work_item"] : [] } }], { version: 1, engine: "pi", state: {} });
   return { key, memberId, conversationId, requestId: request.requestId };
 }
+
+async function exhaustParentBudget(key: ChildKey) {
+  const { rows: [turn] } = await pool.query<{ token: string; workflow_run_id: string; activity_id: string; attempt: number }>(
+    "SELECT token,workflow_run_id,activity_id,attempt FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",
+    [key.conversationId, key.requestId]);
+  const execution = { workflowRunId: turn.workflow_run_id, activityId: turn.activity_id, attempt: turn.attempt };
+  await pool.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
+    VALUES ($1,$2,$3,$4,$5,$6)`, [key.conversationId, key.requestId, turn.token, execution.workflowRunId, execution.activityId, execution.attempt]);
+  await recordSegmentUsage(pool, { ownerId: key.ownerId, conversationId: key.conversationId, requestId: key.requestId,
+    token: turn.token, execution, text: "delegate" }, { state: "reported", model, inputTokens: 9, outputTokens: 1,
+    cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null, costUsd: null });
+  const budget = await new UsageApi(store).setBudget(key.ownerId, key.memberId, { tokenLimit: 10 });
+  assert.equal(budget.admitting, false);
+}
+const childAudit = async (key: ChildKey) => (await pool.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE payload->>'childId'=$1 ORDER BY event_id",
+  [key.childId])).rows;
 
 /** Starts the child's workflow, as its parent's executeChild would. */
 async function startChild(key: ChildKey) {
@@ -202,13 +218,15 @@ test("a child whose row names a Pi target runs on that profile's queue and drive
   const worker = await workflowWorker();
   try {
     const nonce = randomUUID();
-    const { key, memberId } = await delegated("remember " + nonce, target);
+    const { key, memberId } = await delegated("remember " + nonce);
     assert.deepEqual(key.target, target);
     const workflowId = await runChild(key);
     const row = await childRow(key);
     assert.deepEqual([row.phase, row.outcome], ["complete", { kind: "completed", nativeCallId: row.native_call_id, text: "stored " + nonce }]);
     assert.ok((await prompts(logs.target)).includes("remember " + nonce), "the target profile's driver ran the child");
     assert.ok(!(await prompts(logs.parent)).includes("remember " + nonce), "the parent profile's driver did not");
+    const recorded = (await readFile(logs.target, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(recorded.find(entry => entry.prompt === "remember " + nonce).model, "fixture-child-model");
     const usage = await pool.query("SELECT member_id,engine FROM birbcrew_ts.usage_ledger WHERE child_id=$1", [key.childId]);
     assert.deepEqual(usage.rows, [{ member_id: memberId, engine: "pi" }]);
     const replayed = await replay(workflowId);
@@ -224,7 +242,7 @@ test("a workflow worker from before targets schedules a targeted child on its pa
   const worker = await workflowWorker(legacyPath);
   try {
     const nonce = randomUUID();
-    const { key } = await delegated("remember " + nonce, target);
+    const { key } = await delegated("remember " + nonce);
     const workflowId = await runChild(key);
     const row = await childRow(key);
     assert.deepEqual([row.phase, row.outcome], ["failed", { kind: "failed", nativeCallId: row.native_call_id, code: "child_failed" }]);
@@ -237,14 +255,93 @@ test("a workflow worker from before targets schedules a targeted child on its pa
   } finally { await worker.stop(); }
 });
 
-test("a targeted recorder's card is settled, and its resume runs, on the target's queue", { timeout: 180_000 }, async () => {
+test("an exhausted child finishes its actual workflow without a native launch or provider request", { timeout: 180_000 }, async () => {
   const worker = await workflowWorker();
   try {
+    const task = "remember " + randomUUID();
+    const { key } = await delegated(task);
+    await exhaustParentBudget(key);
+    const workflowId = await runChild(key);
+    const row = await childRow(key);
+    assert.deepEqual(row.outcome, { kind: "failed", nativeCallId: row.native_call_id, code: "budget_exhausted" });
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1", [key.childId])).rowCount, 0);
+    for (const log of Object.values(logs)) assert.ok(!(await prompts(log)).includes(task));
+    assert.deepEqual(await childAudit(key), [{ event_type: "delegation.finished",
+      payload: { childId: key.childId, outcome: "failed", code: "budget_exhausted" } }]);
+    await replay(workflowId);
+  } finally { await worker.stop(); }
+});
+
+test("a sealed child target cannot be replaced with an unsupported engine in SQL", async () => {
+  const { key } = await delegated("remember sealed");
+  await assert.rejects(pool.query(`UPDATE birbcrew_ts.pi_children SET role_profile=jsonb_set(role_profile,'{target,engine}','"claude"')
+    WHERE child_id=$1`, [key.childId]), { code: "23514" });
+  assert.deepEqual(await children.target(key), target);
+});
+
+test("HTTP spawn and actual parent delegation run the analyst on its sealed target model", { timeout: 180_000 }, async () => {
+  const worker = await workflowWorker();
+  try {
+    const spawnRequest = { requestId: randomUUID(), engine: "pi", profile: parentProfile, instructions: "BIRBNOTE_PARENT_ONLY" };
+    const spawned = await api("/v1/members", spawnRequest);
+    assert.equal(spawned.status, 201);
+    assert.equal(spawned.body.subagents.mode, "named");
+    assert.deepEqual(memberSchema.parse(spawned.body).subagents, spawned.body.subagents);
+    assert.equal(spawned.body.subagents.targets[0].model, "fixture-child-model");
+    const { memberId } = spawned.body;
+    const conversationId = randomUUID(), requestId = randomUUID(), nonce = randomUUID();
+    const base = `/v1/conversations/${conversationId}`;
+    assert.equal((await api("/v1/conversations", { conversationId, memberId })).status, 201);
+    const workflowId = `birbcrew-ts/member/${memberId}/conversation/${conversationId}`;
+    workflows.push(workflowId);
+    assert.equal((await api(`${base}/requests`, { requestId, text: "delegate " + JSON.stringify([{ role: "analyst", task: "remember " + nonce }]) })).status, 202);
+    const reply = await until(async () => (await pool.query<{ reply: string }>(
+      "SELECT reply FROM birbcrew_ts.turns WHERE request_id=$1 AND phase='committed'", [requestId])).rows[0]?.reply, "named parent completion");
+    assert.match(reply, /"kind":"completed"/);
+    assert.ok((await prompts(logs.target)).includes("remember " + nonce));
+    const childRequests = (await readFile(logs.target, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(!JSON.stringify(childRequests.filter(entry => entry.prompt === "remember " + nonce)).includes("BIRBNOTE_PARENT_ONLY"));
+    const listed = await api("/v1/members");
+    assert.deepEqual(listed.body.members.find((m: { memberId: string }) => m.memberId === memberId).subagents, spawned.body.subagents);
+    assert.deepEqual((await api("/v1/members", spawnRequest)).body.subagents, spawned.body.subagents);
+    assert.equal((await api("/v1/members", { ...spawnRequest, target })).status, 400);
+  } finally { await worker.stop(); }
+});
+
+test("a ready sealed child still launches after removal and a running named child still cancels", { timeout: 180_000 }, async () => {
+  const worker = await workflowWorker();
+  try {
+    const task = "remember " + randomUUID();
+    const ready = await delegated(task, "analyst", readyProfile);
+    await pool.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE name=$1 AND engine='pi'", [readyProfile]);
+    await runChild(ready.key);
+    assert.equal((await childRow(ready.key)).phase, "complete");
+    assert.ok((await prompts(logs.target)).includes(task));
+    const waiting = await delegated("wait");
+    const { handle } = await startChild(waiting.key);
+    await until(async () => (await prompts(logs.target)).includes("wait") || undefined, "running child provider request");
+    await handle.cancel(); await assert.rejects(handle.result());
+    assert.equal((await childRow(waiting.key)).phase, "cancelled");
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1 AND NOT stopped", [waiting.key.childId])).rowCount, 0);
+  } finally { await worker.stop(); }
+});
+
+test("a targeted recorder resumes over budget on its target queue with one start and finish audit", { timeout: 180_000 }, async () => {
+  const worker = await workflowWorker();
+  try {
+    const spawnRequest = { requestId: randomUUID(), engine: "pi", profile: parentProfile };
+    const consent = await api("/v1/members", spawnRequest);
+    assert.equal(consent.status, 201);
     const task = "record assigned " + randomUUID();
-    const { key, memberId, conversationId, requestId } = await delegated(task, target, "recorder");
+    const { key, memberId, conversationId, requestId } = await delegated(task, "recorder");
     const { workflowId, handle } = await startChild(key);
     const card = await until(async () => (await ledger.pending({ ownerId, memberId, conversationId }))
       .find(approval => approval.invocationId === key.childId), "the child's card");
+    await exhaustParentBudget(key);
+    await pool.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE name=$1 AND engine='pi'", [parentProfile]);
+    const replayedSpawn = await api("/v1/members", spawnRequest);
+    assert.deepEqual(replayedSpawn.body.subagents, { ...consent.body.subagents,
+      targets: consent.body.subagents.targets.map((destination: object) => ({ ...destination, availability: "removed" })) });
     const { approvalId, invocationId, nativeCallId, argumentDigest, version } = card;
     assert.equal(await ledger.decide({ ownerId, memberId, conversationId, requestId, invocationId, nativeCallId, approvalId,
       argumentDigest, version, choice: "approve" }), "approve");
@@ -255,6 +352,7 @@ test("a targeted recorder's card is settled, and its resume runs, on the target'
     const outcome = row.outcome as { kind: string; text: string };
     assert.equal(outcome.kind, "completed");
     assert.equal(JSON.parse(outcome.text.slice("settled ".length)).kind, "recorded");
+    assert.deepEqual((await childAudit(key)).map(fact => fact.event_type), ["delegation.started", "delegation.finished"]);
     // Both segments, the proposal and the resume after the card, ran on the target's driver.
     assert.equal((await prompts(logs.target)).filter(prompt => prompt === task).length, 2);
     assert.equal((await prompts(logs.parent)).filter(prompt => prompt === task).length, 0);
@@ -264,29 +362,10 @@ test("a targeted recorder's card is settled, and its resume runs, on the target'
   } finally { await worker.stop(); }
 });
 
-test("a child whose row names a Claude target is refused on that queue before anything launches", { timeout: 180_000 }, async () => {
-  const worker = await workflowWorker();
-  try {
-    const nonce = randomUUID();
-    const { key } = await delegated("remember " + nonce, target);
-    // The store refuses a Claude target, so write one directly, as a later release or an operator might.
-    await pool.query(`UPDATE birbcrew_ts.pi_children SET role_profile=jsonb_set(role_profile,'{target,engine}','"claude"')
-      WHERE child_id=$1`, [key.childId]);
-    const workflowId = await runChild({ ...key, target: { engine: "claude", profile: targetProfile } });
-    const row = await childRow(key);
-    assert.deepEqual([row.phase, row.outcome], ["failed", { kind: "failed", nativeCallId: row.native_call_id, code: "child_failed" }]);
-    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1", [key.childId])).rowCount, 0);
-    for (const log of Object.values(logs)) assert.ok(!(await prompts(log)).includes("remember " + nonce));
-    const replayed = await replay(workflowId);
-    assert.deepEqual(replayed.queues, [activityQueue("claude", targetProfile)]);
-    assert.deepEqual(replayed.failures, ["ChildTargetError"]);
-  } finally { await worker.stop(); }
-});
-
 test("histories recorded with the workflow source before targets replay, and a child card it left waiting is answered under this one",
   { timeout: 240_000 }, async () => {
     async function delegation(tasks: { role: "analyst" | "recorder"; task: string }[]) {
-      const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: parentProfile });
+      const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: legacyProfile });
       const conversationId = randomUUID(), requestId = randomUUID(), base = `/v1/conversations/${conversationId}`;
       assert.equal((await api("/v1/conversations", { conversationId, memberId })).status, 201);
       const workflowId = `birbcrew-ts/member/${memberId}/conversation/${conversationId}`;
@@ -295,7 +374,9 @@ test("histories recorded with the workflow source before targets replay, and a c
       assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
       return {
         memberId, requestId, workflowId, base,
-        settled: (phase: string) => until(async () => (await api(base)).body.state.phase === phase || undefined, "phase " + phase),
+        settled: (phase: string) => until(async () =>
+          (await api(`${base}/requests/${requestId}`)).body.status === "completed" &&
+          (await api(base)).body.state.phase === phase || undefined, "completed request at phase " + phase),
         reply: async () => (await pool.query<{ reply: string }>("SELECT reply FROM birbcrew_ts.turns WHERE request_id=$1", [requestId])).rows[0].reply,
         children: async () => (await pool.query<{ child_id: string }>("SELECT child_id FROM birbcrew_ts.pi_children WHERE request_id=$1 ORDER BY ordinal",
           [requestId])).rows.map(row => `birbcrew-ts/child/${row.child_id}`),
@@ -319,7 +400,7 @@ test("histories recorded with the workflow source before targets replay, and a c
       const outcomes = JSON.parse((await waiting.reply()).slice("delegated ".length)) as { kind: string; text: string }[];
       assert.deepEqual(outcomes.map(outcome => outcome.kind), ["completed", "completed"]);
       assert.equal(JSON.parse(outcomes[1].text.slice("settled ".length)).kind, "recorded");
-      const parentQueue = activityQueue("pi", parentProfile);
+      const parentQueue = activityQueue("pi", legacyProfile);
       // Analysts run one segment; the recorder's second segment and its card's settlement were
       // scheduled by this release, on the same queue the previous one would have used.
       const expected = [[[parentQueue]], [[parentQueue], [parentQueue, parentQueue]]];

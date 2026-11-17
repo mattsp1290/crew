@@ -4,6 +4,7 @@ import { MemberStore } from "./store.ts";
 import { runLiveTool } from "./codex-live.ts";
 import { conversationContext } from "./memories.ts";
 import { flushTelemetry, observedAgent, traced, turnFlushBudgetMs } from "./telemetry.ts";
+import { verifyChildConfiguration } from "./supervisor-child.ts";
 import { withNativeAdmission } from "./native-admission.ts";
 import type { Launch } from "./supervisor.ts";
 import { pathToFileURL } from "node:url";
@@ -49,11 +50,12 @@ process.once("message", async (command: AdmittedTurn) => {
       const driver = memberProfiles(profiles, stateDir, process.pid).get(member.profile)?.[member.engine];
       if (!driver) throw new Error("Unsupported member profile");
       // Read at every launch, outside workflow code. Claude and Codex reuse what their native session recorded on its first turn.
-      const projectContext = command.childProfile ? undefined : await conversationContext(pool, member);
+      const projectContext = command.launch.childId ? undefined : await conversationContext(pool, member);
       const profile = profiles.get(member.profile);
       const tool = profile?.protectedTool ?? profile?.humanTool;
       const store = new MemberStore(pool);
-      reply = await withNativeAdmission(pool,command.launch,AbortSignal.any([controller.signal,AbortSignal.timeout(170_000)]), async signal => {
+      reply = await withNativeAdmission(pool,command.launch,AbortSignal.any([controller.signal,AbortSignal.timeout(170_000)]), async (signal, db) => {
+        await verifyChildConfiguration(db, command.launch, profiles, member, command.childProfile);
         const items = member.engine === "codex" ? codexItemWriter(await nativeCallIds(pool,member.conversationId), !!tool,
           (index,text,receipt) => store.appendCodexItem(command.launch,index,text,receipt)) : undefined;
         const input: DriverInput = {

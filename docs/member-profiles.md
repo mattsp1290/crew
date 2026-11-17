@@ -197,3 +197,49 @@ A subscription proof uses the same Codex verifier command with its own approval:
 The verifier creates a disposable database, Temporal server, authenticated gateway and worker. Two independent observation clients compare their histories with the gateway. The verifier approves one synthetic work item, checks the provider's returned receipt, replaces the worker container and asks the member to recall a random marker. Pi also delegates to a separate analyst. Codex checks the native rollout contains exactly the two submitted user messages on the same thread.
 
 A private loopback relay signs provider requests, rereads the approval before each upstream request and enforces the model, official route and request limit. The worker presents a disposable credential to that endpoint. API-key Codex uses the stock OpenAI provider and its HTTP Responses fallback. Subscription Codex uses ChatGPT’s Codex Responses endpoint and the approved workspace header. The hosted verifier keeps the operator’s login on the host. The verifier does not check billing or any console setting, and its result says so. The command emits one redacted JSON result and removes its private transcripts and service state. A nonzero exit marks an incomplete gate. To rehearse all three journeys with synthetic accounts and local responses, run `PATH="$PWD/.proof/bin:$PATH" node --test tests/proof/live-controlled.test.ts tests/proof/live-native-controlled.test.ts`.
+
+
+## Configure named child destinations
+
+Use a new parent profile name when first enabling named delegation. Add fixed role destinations to the trusted profile module before the first worker registers that name. Both profiles must exist in the same exported map.
+
+```ts
+profiles.set("research.v1", {
+  accountId: "parent-account",
+  pi: parentPiOptions,
+  delegateTask: true,
+  childTargets: {
+    pi: { analyst: { engine: "pi", profile: "analysis.v1" } },
+  },
+});
+profiles.set("analysis.v1", {
+  accountId: "analysis-account",
+  pi: analystPiOptions,
+});
+```
+
+Start workers for both profiles, then spawn a Pi member with `research.v1`. Its spawn response and member listing include `subagents`. Confirm the destination model, provider host, and account digest before submitting work. Availability is `executable` for an active Pi-to-Pi role, `unsupported_engine` for a future engine combination, or `removed` after removal. Availability does not report worker liveness. The client accepts an absent `subagents` field from an older v1 server as legacy with no named targets.
+
+Use `recorder` only when both parent and target have `protectedTool: "record_work_item"`. Analyst has no tools. Named child targets do not need `delegateTask`. Children cannot delegate further. The runner and HTTP schemas accept no destination override.
+
+To remove a role, publish an explicit narrower map. Use `childTargets: { pi: {} }` to remove all named roles for a Pi parent. Omitting the engine's declaration leaves existing authority unchanged. A stale configuration that names an original removed role can start, but cannot restore that role. Changing an original destination or adding a role fails registration, even after removal. Use a new parent profile name for either change.
+
+Keep target configurations available for recorded children after removal. Ready children and approval resumes use their recorded identity. Changing the target's model, provider host, account, or engine prevents the next provider call. The identity uses canonical `URL.host`, including a non-default port. It excludes scheme and path. Endpoints containing userinfo, query, or fragment are refused.
+
+For proxy profiles, use `createProxyProfile`. It captures immutable `upstreamIdentity` from the same copied endpoint and model used by the relay. It also binds that metadata to the local relay host. Registration never calls credential or transport callbacks. Operator-authored transport code and identity metadata remain trusted. A custom callback's honest routing cannot be proved by metadata. Unknown routing fails registration.
+
+Before upgrading to migration 037, inventory nonterminal historical targeted children:
+
+```sql
+SELECT child_id, conversation_id, request_id, phase
+FROM birbcrew_ts.pi_children
+WHERE role_profile ? 'target'
+  AND NOT (role_profile->'target' ? 'version')
+  AND phase NOT IN ('complete', 'failed', 'cancelled');
+```
+
+Finish or reconcile those children under the prerequisite release, or explicitly accept that the new release refuses their launch. Their original provider identity is unknown. The migration preserves their stored data for inspection and settlement.
+
+Drain native calls before the upgrade. Migration 037 needs exclusive locks on profiles, members, and children. It retries `NOWAIT` acquisition for up to 60 seconds and rolls back the migration if those tables stay busy. Retry after the calls drain. This does not change model or approval deadlines.
+
+After restoring a backup, reconcile outstanding work through the existing recovery procedure. Activation permanently removes all named roles under restored profile names. It also globally disables delegation and permanently retires unfinished restored children without changing their sealed identity. Matching workers reconcile those children as failed, or cancelled when request cancellation already applies. Re-enabling delegation permits future children only. Create a new parent profile name to enable new named delegation, then use the private [delegation-control CLI](delegation-control.md#re-enable-future-delegation). Backups do not retain removals made after the backup was captured.

@@ -1,0 +1,846 @@
+--- a/src/exporter-transport.ts
++++ b/src/exporter-transport.ts
+@@ -12,11 +12,21 @@
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
++ * Modified by Crew to bound HTTP responses and export lifetimes.
+  */
+ 
+ import { ExportResponse } from './export-response';
+ 
++export interface ExportDeadline {
++  expiresAt: number;
++  signal: AbortSignal;
++}
++
+ export interface IExporterTransport {
+-  send(data: Uint8Array, timeoutMillis: number): Promise<ExportResponse>;
++  send(
++    data: Uint8Array,
++    timeoutMillis: number,
++    deadline?: ExportDeadline
++  ): Promise<ExportResponse>;
+   shutdown(): void;
+ }
+--- a/src/otlp-export-delegate.ts
++++ b/src/otlp-export-delegate.ts
+@@ -12,10 +12,12 @@
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
++ * Modified by Crew to bound HTTP responses and export lifetimes.
+  */
+ 
+ import { ExportResult, ExportResultCode } from '@opentelemetry/core';
+-import { IExporterTransport } from './exporter-transport';
++import { ExportDeadline, IExporterTransport } from './exporter-transport';
++import { ExportResponse } from './export-response';
+ import { IExportPromiseHandler } from './bounded-queue-export-promise-handler';
+ import { ISerializer } from '@opentelemetry/otlp-transformer';
+ import { OTLPExporterError } from './types';
+@@ -39,12 +41,15 @@
+   implements IOtlpExportDelegate<Internal>
+ {
+   private _diagLogger: DiagLogger;
++  private _activeExports = new Set<AbortController>();
++  private _shutdownPromise?: Promise<void>;
+   constructor(
+     private _transport: IExporterTransport,
+     private _serializer: ISerializer<Internal, Response>,
+     private _responseHandler: IOtlpResponseHandler<Response>,
+     private _promiseQueue: IExportPromiseHandler,
+-    private _timeout: number
++    private _timeout: number,
++    private _useExportDeadline: boolean
+   ) {
+     this._diagLogger = diag.createComponentLogger({
+       namespace: 'OTLPExportDelegate',
+@@ -55,6 +60,17 @@
+     internalRepresentation: Internal,
+     resultCallback: (result: ExportResult) => void
+   ): void {
++    const expiresAt = this._useExportDeadline
++      ? performance.now() + this._timeout
++      : undefined;
++    if (this._useExportDeadline && this._shutdownPromise != null) {
++      resultCallback({
++        code: ExportResultCode.FAILED,
++        error: new Error('Exporter has been shut down'),
++      });
++      return;
++    }
++
+     this._diagLogger.debug('items to be sent', internalRepresentation);
+ 
+     // don't do any work if too many exports are in progress.
+@@ -78,54 +94,92 @@
+       return;
+     }
+ 
++    let deadline: ExportDeadline | undefined;
++    let dispose = () => {};
++    if (expiresAt != null) {
++      const remaining = expiresAt - performance.now();
++      if (remaining <= 0) {
++        resultCallback({
++          code: ExportResultCode.FAILED,
++          error: new Error('Request Timeout'),
++        });
++        return;
++      }
++      const controller = new AbortController();
++      const timer = setTimeout(() => controller.abort(), remaining);
++      deadline = { expiresAt, signal: controller.signal };
++      this._activeExports.add(controller);
++      dispose = () => {
++        clearTimeout(timer);
++        this._activeExports.delete(controller);
++      };
++    }
++
++    let responsePromise: Promise<ExportResponse>;
++    if (deadline == null) {
++      responsePromise = this._transport.send(serializedRequest, this._timeout);
++    } else {
++      try {
++        responsePromise = this._transport.send(
++          serializedRequest,
++          this._timeout,
++          deadline
++        );
++      } catch (error) {
++        dispose();
++        responsePromise = Promise.reject(error);
++      }
++    }
++
++    const exportPromise = responsePromise.then(
++      response => {
++        if (response.status === 'success') {
++          if (response.data != null) {
++            try {
++              this._responseHandler.handleResponse(
++                this._serializer.deserializeResponse(response.data)
++              );
++            } catch (e) {
++              this._diagLogger.warn(
++                'Export succeeded but could not deserialize response - is the response specification compliant?',
++                e,
++                response.data
++              );
++            }
++          }
++          // No matter the response, we can consider the export still successful.
++          resultCallback({
++            code: ExportResultCode.SUCCESS,
++          });
++          return;
++        } else if (response.status === 'failure' && response.error) {
++          resultCallback({
++            code: ExportResultCode.FAILED,
++            error: response.error,
++          });
++          return;
++        } else if (response.status === 'retryable') {
++          resultCallback({
++            code: ExportResultCode.FAILED,
++            error: new OTLPExporterError(
++              'Export failed with retryable status'
++            ),
++          });
++        } else {
++          resultCallback({
++            code: ExportResultCode.FAILED,
++            error: new OTLPExporterError('Export failed with unknown error'),
++          });
++        }
++      },
++      reason =>
++        resultCallback({
++          code: ExportResultCode.FAILED,
++          error: reason,
++        })
++    );
+     this._promiseQueue.pushPromise(
+-      this._transport.send(serializedRequest, this._timeout).then(
+-        response => {
+-          if (response.status === 'success') {
+-            if (response.data != null) {
+-              try {
+-                this._responseHandler.handleResponse(
+-                  this._serializer.deserializeResponse(response.data)
+-                );
+-              } catch (e) {
+-                this._diagLogger.warn(
+-                  'Export succeeded but could not deserialize response - is the response specification compliant?',
+-                  e,
+-                  response.data
+-                );
+-              }
+-            }
+-            // No matter the response, we can consider the export still successful.
+-            resultCallback({
+-              code: ExportResultCode.SUCCESS,
+-            });
+-            return;
+-          } else if (response.status === 'failure' && response.error) {
+-            resultCallback({
+-              code: ExportResultCode.FAILED,
+-              error: response.error,
+-            });
+-            return;
+-          } else if (response.status === 'retryable') {
+-            resultCallback({
+-              code: ExportResultCode.FAILED,
+-              error: new OTLPExporterError(
+-                'Export failed with retryable status'
+-              ),
+-            });
+-          } else {
+-            resultCallback({
+-              code: ExportResultCode.FAILED,
+-              error: new OTLPExporterError('Export failed with unknown error'),
+-            });
+-          }
+-        },
+-        reason =>
+-          resultCallback({
+-            code: ExportResultCode.FAILED,
+-            error: reason,
+-          })
+-      )
++      deadline == null ? exportPromise : exportPromise.finally(dispose)
+     );
+   }
+ 
+@@ -133,10 +187,26 @@
+     return this._promiseQueue.awaitAll();
+   }
+ 
+-  async shutdown(): Promise<void> {
+-    this._diagLogger.debug('shutdown started');
+-    await this.forceFlush();
+-    this._transport.shutdown();
++  shutdown(): Promise<void> {
++    if (this._useExportDeadline) {
++      if (this._shutdownPromise == null) {
++        this._shutdownPromise = Promise.resolve().then(() => {
++          this._diagLogger.debug('shutdown started');
++          for (const controller of this._activeExports) {
++            controller.abort();
++          }
++          this._transport.shutdown();
++          return this.forceFlush();
++        });
++      }
++      return this._shutdownPromise;
++    }
++
++    return (async () => {
++      this._diagLogger.debug('shutdown started');
++      await this.forceFlush();
++      this._transport.shutdown();
++    })();
+   }
+ }
+ 
+@@ -150,13 +220,14 @@
+     serializer: ISerializer<Internal, Response>;
+     promiseHandler: IExportPromiseHandler;
+   },
+-  settings: { timeout: number }
++  settings: { timeout: number; useExportDeadline?: boolean }
+ ): IOtlpExportDelegate<Internal> {
+   return new OTLPExportDelegate(
+     components.transport,
+     components.serializer,
+     createLoggingPartialSuccessResponseHandler(),
+     components.promiseHandler,
+-    settings.timeout
++    settings.timeout,
++    settings.useExportDeadline ?? false
+   );
+ }
+--- a/src/otlp-http-export-delegate.ts
++++ b/src/otlp-http-export-delegate.ts
+@@ -12,6 +12,7 @@
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
++ * Modified by Crew to bound HTTP responses and export lifetimes.
+  */
+ import {
+   createOtlpExportDelegate,
+@@ -35,6 +36,6 @@
+       serializer: serializer,
+       promiseHandler: createBoundedQueueExportPromiseHandler(options),
+     },
+-    { timeout: options.timeoutMillis }
++    { timeout: options.timeoutMillis, useExportDeadline: true }
+   );
+ }
+--- a/src/retrying-transport.ts
++++ b/src/retrying-transport.ts
+@@ -12,9 +12,10 @@
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
++ * Modified by Crew to bound HTTP responses and export lifetimes.
+  */
+ 
+-import { IExporterTransport } from './exporter-transport';
++import { ExportDeadline, IExporterTransport } from './exporter-transport';
+ import { ExportResponse } from './export-response';
+ 
+ const MAX_ATTEMPTS = 5;
+@@ -36,8 +37,36 @@
+   private retry(
+     data: Uint8Array,
+     timeoutMillis: number,
+-    inMillis: number
++    inMillis: number,
++    deadline?: ExportDeadline
+   ): Promise<ExportResponse> {
++    if (deadline != null) {
++      return new Promise((resolve, reject) => {
++        const onAbort = () => {
++          clearTimeout(timer);
++          deadline.signal.removeEventListener('abort', onAbort);
++          resolve({ status: 'failure', error: new Error('Request Timeout') });
++        };
++        const timer = setTimeout(() => {
++          deadline.signal.removeEventListener('abort', onAbort);
++          const remaining = deadline.expiresAt - performance.now();
++          if (deadline.signal.aborted || remaining <= 0) {
++            onAbort();
++            return;
++          }
++          try {
++            this._transport.send(data, remaining, deadline).then(resolve, reject);
++          } catch (error) {
++            reject(error);
++          }
++        }, inMillis);
++        deadline.signal.addEventListener('abort', onAbort, { once: true });
++        if (deadline.signal.aborted) {
++          onAbort();
++        }
++      });
++    }
++
+     return new Promise((resolve, reject) => {
+       setTimeout(() => {
+         this._transport.send(data, timeoutMillis).then(resolve, reject);
+@@ -45,9 +74,19 @@
+     });
+   }
+ 
+-  async send(data: Uint8Array, timeoutMillis: number): Promise<ExportResponse> {
++  async send(
++    data: Uint8Array,
++    timeoutMillis: number,
++    exportDeadline?: ExportDeadline
++  ): Promise<ExportResponse> {
+     const deadline = Date.now() + timeoutMillis;
+-    let result = await this._transport.send(data, timeoutMillis);
++    if (exportDeadline != null) {
++      timeoutMillis = exportDeadline.expiresAt - performance.now();
++      if (exportDeadline.signal.aborted || timeoutMillis <= 0) {
++        return { status: 'failure', error: new Error('Request Timeout') };
++      }
++    }
++    let result = await this._transport.send(data, timeoutMillis, exportDeadline);
+     let attempts = MAX_ATTEMPTS;
+     let nextBackoff = INITIAL_BACKOFF;
+ 
+@@ -63,12 +102,26 @@
+       const retryInMillis = result.retryInMillis ?? backoff;
+ 
+       // return when expected retry time is after the export deadline.
+-      const remainingTimeoutMillis = deadline - Date.now();
++      const remainingTimeoutMillis =
++        exportDeadline == null
++          ? deadline - Date.now()
++          : exportDeadline.expiresAt - performance.now();
++      if (
++        exportDeadline != null &&
++        (exportDeadline.signal.aborted || remainingTimeoutMillis <= 0)
++      ) {
++        return { status: 'failure', error: new Error('Request Timeout') };
++      }
+       if (retryInMillis > remainingTimeoutMillis) {
+         return result;
+       }
+ 
+-      result = await this.retry(data, remainingTimeoutMillis, retryInMillis);
++      result = await this.retry(
++        data,
++        remainingTimeoutMillis,
++        retryInMillis,
++        exportDeadline
++      );
+     }
+ 
+     return result;
+--- a/src/transport/http-exporter-transport.ts
++++ b/src/transport/http-exporter-transport.ts
+@@ -12,6 +12,7 @@
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
++ * Modified by Crew to bound HTTP responses and export lifetimes.
+  */
+ 
+ // NOTE: do not change these type imports to actual imports. Doing so WILL break `@opentelemetry/instrumentation-http`,
+@@ -19,7 +20,7 @@
+ import type * as https from 'https';
+ import type * as http from 'http';
+ import { ExportResponse } from '../export-response';
+-import { IExporterTransport } from '../exporter-transport';
++import { ExportDeadline, IExporterTransport } from '../exporter-transport';
+ import { sendWithHttp } from './http-transport-utils';
+ import { NodeHttpRequestParameters } from './node-http-transport-types';
+ 
+@@ -29,48 +30,134 @@
+ }
+ 
+ class HttpExporterTransport implements IExporterTransport {
+-  private _utils: Utils | null = null;
++  private _utils: Promise<Utils> | null = null;
++  private _agent?: http.Agent | https.Agent;
++  private _closed = false;
+ 
+   constructor(private _parameters: NodeHttpRequestParameters) {}
+ 
+-  async send(data: Uint8Array, timeoutMillis: number): Promise<ExportResponse> {
+-    const { agent, request } = await this._loadUtils();
+-    const headers = await this._parameters.headers();
++  send(
++    data: Uint8Array,
++    timeoutMillis: number,
++    deadline?: ExportDeadline
++  ): Promise<ExportResponse> {
++    return new Promise<ExportResponse>(resolve => {
++      let pending: { data: Uint8Array; resolve: typeof resolve } | undefined = {
++        data,
++        resolve,
++      };
++      const finish = (result: ExportResponse) => {
++        const current = pending;
++        if (current == null) {
++          return;
++        }
++        pending = undefined;
++        deadline?.signal.removeEventListener('abort', onAbort);
++        current.resolve(
++          deadline != null &&
++            (deadline.signal.aborted || deadline.expiresAt <= performance.now())
++            ? { status: 'failure', error: new Error('Request Timeout') }
++            : result
++        );
++      };
++      const onAbort = () => {
++        finish({ status: 'failure', error: new Error('Request Timeout') });
++      };
++      const canSend = () => {
++        if (pending == null) {
++          return false;
++        }
++        if (this._closed) {
++          finish({
++            status: 'failure',
++            error: new Error('Exporter has been shut down'),
++          });
++          return false;
++        }
++        if (
++          deadline != null &&
++          (deadline.signal.aborted || deadline.expiresAt <= performance.now())
++        ) {
++          onAbort();
++          return false;
++        }
++        return true;
++      };
++      deadline?.signal.addEventListener('abort', onAbort, { once: true });
++      if (!canSend()) {
++        return;
++      }
+ 
+-    return new Promise<ExportResponse>(resolve => {
+-      sendWithHttp(
+-        request,
+-        this._parameters.url,
+-        headers,
+-        this._parameters.compression,
+-        this._parameters.userAgent,
+-        agent,
+-        data,
+-        result => {
+-          resolve(result);
+-        },
+-        timeoutMillis
+-      );
++      this._loadUtils()
++        .then(async ({ agent, request }) => {
++          if (!canSend()) {
++            return;
++          }
++          const headers = await this._parameters.headers();
++          if (!canSend()) {
++            return;
++          }
++          const current = pending;
++          if (current == null) {
++            return;
++          }
++          deadline?.signal.removeEventListener('abort', onAbort);
++          sendWithHttp(
++            request,
++            this._parameters.url,
++            { ...headers },
++            this._parameters.compression,
++            this._parameters.userAgent,
++            agent,
++            current.data,
++            finish,
++            deadline == null
++              ? timeoutMillis
++              : deadline.expiresAt - performance.now(),
++            deadline
++          );
++        })
++        .catch((error: unknown) => {
++          finish({
++            status: 'failure',
++            error: error instanceof Error ? error : new Error('HTTP export failed'),
++          });
++        });
+     });
+   }
+ 
+   shutdown() {
+-    // intentionally left empty, nothing to do.
++    if (this._closed) {
++      return;
++    }
++    this._closed = true;
++    this._agent?.destroy();
++    this._agent = undefined;
++    this._utils = null;
+   }
+ 
+-  private async _loadUtils(): Promise<Utils> {
+-    let utils = this._utils;
+-
+-    if (utils === null) {
+-      const protocol = new URL(this._parameters.url).protocol;
+-      const [agent, request] = await Promise.all([
+-        this._parameters.agentFactory(protocol),
+-        requestFunctionFactory(protocol),
+-      ]);
+-      utils = this._utils = { agent, request };
++  private _loadUtils(): Promise<Utils> {
++    if (this._utils === null) {
++      this._utils = (async () => {
++        const protocol = new URL(this._parameters.url).protocol;
++        const request = await requestFunctionFactory(protocol);
++        if (this._closed) {
++          throw new Error('Exporter has been shut down');
++        }
++        const agent = await this._parameters.agentFactory(protocol);
++        if (this._closed) {
++          agent.destroy();
++          throw new Error('Exporter has been shut down');
++        }
++        this._agent = agent;
++        return { agent, request };
++      })();
++      this._utils.catch(() => {
++        this._utils = null;
++      });
+     }
+ 
+-    return utils;
++    return this._utils;
+   }
+ }
+ 
+--- a/src/transport/http-transport-utils.ts
++++ b/src/transport/http-transport-utils.ts
+@@ -12,12 +12,15 @@
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
++ * Modified by Crew to bound HTTP responses and export lifetimes.
+  */
+ import type * as http from 'http';
+ import type * as https from 'https';
+ import * as zlib from 'zlib';
+ import { Readable } from 'stream';
++import type { Duplex } from 'stream';
+ import { ExportResponse } from '../export-response';
++import { ExportDeadline } from '../exporter-transport';
+ import {
+   isExportRetryable,
+   parseRetryAfterToMills,
+@@ -25,6 +28,7 @@
+ import { OTLPExporterError } from '../types';
+ import { VERSION } from '../version';
+ 
++const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+ const DEFAULT_USER_AGENT = `OTel-OTLP-Exporter-JavaScript/${VERSION}`;
+ 
+ /**
+@@ -45,8 +49,18 @@
+   agent: http.Agent | https.Agent,
+   data: Uint8Array,
+   onDone: (response: ExportResponse) => void,
+-  timeoutMillis: number
++  timeoutMillis: number,
++  deadline?: ExportDeadline
+ ): void {
++  const signal = deadline?.signal;
++  if (
++    deadline != null &&
++    (deadline.signal.aborted || deadline.expiresAt <= performance.now())
++  ) {
++    onDone({ status: 'failure', error: new Error('Request Timeout') });
++    return;
++  }
++
+   const parsedUrl = new URL(url);
+ 
+   if (userAgent) {
+@@ -64,56 +78,137 @@
+     agent,
+   };
+ 
+-  const req = request(options, (res: http.IncomingMessage) => {
+-    const responseData: Buffer[] = [];
+-    res.on('data', chunk => responseData.push(chunk));
+-
+-    res.on('end', () => {
+-      if (res.statusCode && res.statusCode < 299) {
+-        onDone({
+-          status: 'success',
+-          data: Buffer.concat(responseData),
+-        });
+-      } else if (res.statusCode && isExportRetryable(res.statusCode)) {
+-        onDone({
++  let settled = false;
++  let req: http.ClientRequest | undefined;
++  let response: http.IncomingMessage | undefined;
++  let disposeUpload: (() => void) | undefined;
++  const responseData: Buffer[] = [];
++  let retainedBytes = 0;
++
++  const finish = (result: ExportResponse, cancelRequest: boolean) => {
++    if (settled) {
++      return;
++    }
++    settled = true;
++    signal?.removeEventListener('abort', onTimeout);
++    req?.setTimeout(0);
++    req?.removeListener('timeout', onTimeout);
++    response?.removeListener('data', onData);
++    response?.removeListener('end', onEnd);
++    responseData.length = 0;
++    disposeUpload?.();
++    if (cancelRequest || !req?.writableFinished) {
++      response?.destroy();
++      req?.destroy();
++    }
++    onDone(result);
++  };
++  const onError = (error: Error) => {
++    finish({ status: 'failure', error }, true);
++  };
++  const onTimeout = () => {
++    onError(new Error('Request Timeout'));
++  };
++  const onData = (chunk: unknown) => {
++    if (settled) {
++      return;
++    }
++    if (!Buffer.isBuffer(chunk)) {
++      onError(new Error('Invalid OTLP response body chunk'));
++      return;
++    }
++    if (chunk.byteLength > MAX_RESPONSE_BYTES - retainedBytes) {
++      onError(new Error('OTLP response body exceeded 4194304 bytes'));
++      return;
++    }
++    retainedBytes += chunk.byteLength;
++    responseData.push(chunk);
++  };
++  const onEnd = () => {
++    if (settled || response == null) {
++      return;
++    }
++    if (response.statusCode && response.statusCode < 299) {
++      finish({ status: 'success', data: Buffer.concat(responseData) }, false);
++    } else if (response.statusCode && isExportRetryable(response.statusCode)) {
++      finish(
++        {
+           status: 'retryable',
+-          retryInMillis: parseRetryAfterToMills(res.headers['retry-after']),
+-        });
+-      } else {
+-        const error = new OTLPExporterError(
+-          res.statusMessage,
+-          res.statusCode,
+-          Buffer.concat(responseData).toString()
+-        );
+-        onDone({
+-          status: 'failure',
+-          error,
+-        });
++          retryInMillis: parseRetryAfterToMills(response.headers['retry-after']),
++        },
++        false
++      );
++    } else {
++      const error = new OTLPExporterError(
++        response.statusMessage,
++        response.statusCode,
++        Buffer.concat(responseData).toString()
++      );
++      finish({ status: 'failure', error }, false);
++    }
++  };
++  const onAborted = () => {
++    onError(new Error('OTLP response aborted'));
++  };
++  const onResponseClose = () => {
++    response?.removeListener('error', onError);
++    response?.removeListener('aborted', onAborted);
++    if (!settled) {
++      onError(new Error('OTLP response closed before completion'));
++    }
++  };
++  const onRequestClose = () => {
++    req?.removeListener('error', onError);
++    req?.removeListener('upgrade', onUpgrade);
++    if (!settled) {
++      onError(new Error('OTLP request closed before completion'));
++    }
++  };
++  const onUpgrade = (_response: http.IncomingMessage, socket: Duplex) => {
++    socket.destroy();
++    onError(new Error('Unexpected OTLP HTTP upgrade'));
++  };
++
++  try {
++    if (
++      deadline != null &&
++      (deadline.signal.aborted || deadline.expiresAt <= performance.now())
++    ) {
++      onTimeout();
++      return;
++    }
++    req = request(options, (res: http.IncomingMessage) => {
++      response = res;
++      res.on('error', onError);
++      res.on('aborted', onAborted);
++      res.once('close', onResponseClose);
++      if (settled) {
++        res.destroy();
++        return;
+       }
++      res.on('data', onData);
++      res.once('end', onEnd);
+     });
+-  });
+-
+-  req.setTimeout(timeoutMillis, () => {
+-    req.destroy();
+-    onDone({
+-      status: 'failure',
+-      error: new Error('Request Timeout'),
+-    });
+-  });
+-
+-  req.on('error', (error: Error) => {
+-    onDone({
+-      status: 'failure',
+-      error,
+-    });
+-  });
+-
+-  compressAndSend(req, compression, data, (error: Error) => {
+-    onDone({
+-      status: 'failure',
+-      error,
+-    });
+-  });
++    req.on('error', onError);
++    req.once('close', onRequestClose);
++    req.on('upgrade', onUpgrade);
++    req.on('timeout', onTimeout);
++    req.setTimeout(timeoutMillis);
++    signal?.addEventListener('abort', onTimeout, { once: true });
++    if (signal?.aborted) {
++      onTimeout();
++      return;
++    }
++    disposeUpload = compressAndSend(req, compression, data, onError);
++    if (settled) {
++      disposeUpload();
++    }
++  } catch (error) {
++    if (settled) {
++      throw error;
++    }
++    onError(error instanceof Error ? error : new Error('HTTP export failed'));
++  }
+ }
+ 
+ export function compressAndSend(
+@@ -121,18 +216,33 @@
+   compression: 'gzip' | 'none',
+   data: Uint8Array,
+   onError: (error: Error) => void
+-) {
+-  let dataStream = readableFromUint8Array(data);
+-
+-  if (compression === 'gzip') {
+-    req.setHeader('Content-Encoding', 'gzip');
+-    dataStream = dataStream
+-      .on('error', onError)
+-      .pipe(zlib.createGzip())
+-      .on('error', onError);
+-  }
+-
+-  dataStream.pipe(req).on('error', onError);
++): () => void {
++  const source = readableFromUint8Array(data);
++  const gzip = compression === 'gzip' ? zlib.createGzip() : undefined;
++  for (const stream of gzip == null ? [source] : [source, gzip]) {
++    stream.on('error', onError);
++    stream.once('close', () => stream.removeListener('error', onError));
++  }
++  const dispose = () => {
++    source.unpipe();
++    gzip?.unpipe();
++    source.destroy();
++    gzip?.destroy();
++  };
++
++  try {
++    if (gzip != null) {
++      req.setHeader('Content-Encoding', 'gzip');
++      source.pipe(gzip).pipe(req);
++    } else {
++      source.pipe(req);
++    }
++  } catch (error) {
++    dispose();
++    throw error;
++  }
++
++  return dispose;
+ }
+ 
+ function readableFromUint8Array(buff: string | Uint8Array): Readable {

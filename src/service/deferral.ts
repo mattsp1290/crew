@@ -1,13 +1,13 @@
-import { nextStep, standingChoice } from "@birbcrew/client/contract";
+import { nextStep, standingChoice, recordWorkItemArgumentsSchema } from "@birbcrew/client/contract";
 import { z } from "zod";
-import { turnKey } from "./domain.ts";
 
-export const recordWorkItemArguments = z.strictObject({
-  operation_id: turnKey.shape.requestId,
-  note: z.string().refine((s) => s.isWellFormed() && !s.includes("\0") && Buffer.byteLength(s) <= 4096).optional(),
-});
+export const recordWorkItemArguments = recordWorkItemArgumentsSchema;
 export const toolNameSchema = z.enum(["record_work_item", "choose_next_step"]);
 export type DeferredTool = z.infer<typeof toolNameSchema>;
+
+export function publicToolArguments(tool: DeferredTool, requestId: string) {
+  return tool === "choose_next_step" ? {} : { operation_id: requestId };
+}
 export { nextStep, standingChoice };
 export const toolChoices = {
   record_work_item: ["approve", "deny"],

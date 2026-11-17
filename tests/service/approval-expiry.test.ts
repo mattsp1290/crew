@@ -1,3 +1,4 @@
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -327,7 +328,7 @@ const window = (minutes: number) => new Date(Date.parse(T0) + minutes * 60_000);
 
 /** A database migrated up to `version` (all of them by default); dropped after the test. */
 async function databaseAt(t: TestContext, version = Infinity) {
-  const name = "expiry_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("expiry_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -511,8 +512,9 @@ test("migration 028 completes while a native turn holds its admission", async (t
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 28).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 028 must not wait for a running native turn");
   });
+  await current.migrate();
   await current.commitTurn({ ownerId, conversationId, requestId, token: start.token, reply: "still running", checkpoint: { version: 1, engine: "pi", state: {} } });
 });
