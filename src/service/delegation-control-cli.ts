@@ -9,7 +9,8 @@ const [operation, ...args] = process.argv.slice(2);
 let pool: Pool | undefined;
 let connection: Connection | undefined;
 // Connects on the first observation only, so an empty cohort needs no Temporal, and a failed connection
-// is kept: every observation reports unavailable and drain still prints its report and exits 0.
+// is kept: every Temporal observation reports unavailable and drain still prints its report and exits 0.
+// A parent without a settled reply is reported from SQL alone and never asks Temporal.
 function lazyWorkflows(): ChildWorkflowControl {
   let adapter: Promise<TemporalDelegationWorkflows> | undefined;
   const workflows = () => adapter ??= (async () => {
