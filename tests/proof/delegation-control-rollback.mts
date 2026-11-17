@@ -1,13 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { once } from "node:events";
+import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createServer as portProbe } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client, Connection } from "@temporalio/client";
 import { Worker } from "@temporalio/worker";
@@ -16,7 +12,8 @@ import { z } from "zod";
 import { approvalSchema } from "../../src/service/approvals.ts";
 import { controlReceiptSchema, drainObservationSchema } from "../../src/service/delegation-control.ts";
 import { activityQueue, memberTaskQueue } from "../../src/service/queues.ts";
-import { before, boundedCommand, completedCommandFailure, describe, durableLog, now, signalOwnedChild } from "./member-service-diagnostics.mts";
+import { absent, controlProvider, digest, ownedProcess, redact, runnerLoads, temporalDevServer, until } from "./delegation-control-fixture.mts";
+import { before, boundedCommand, completedCommandFailure, describe, now } from "./member-service-diagnostics.mts";
 import { workingState } from "./member-services.mts";
 
 assert.equal(process.version, "v24.22.3");
@@ -43,39 +40,26 @@ const pool = new Pool({ connectionString: database, application_name: "retained-
 const cleanup: (() => Promise<unknown>)[] = [];
 const steps: unknown[] = [];
 let phaseWorker: ChildProcess | undefined;
-const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 async function evidence(name: string, value: unknown) {
   assert.match(name, /^[a-z0-9-]+$/);
   const bytes = JSON.stringify(value, null, 2) + "\n";
   assert.ok(Buffer.byteLength(bytes) <= 1024 * 1024, "Bounded rollback evidence");
   await writeFile(join(artifacts, name + ".json"), bytes, { mode: 0o600 });
 }
-async function until<T>(check: () => Promise<T | undefined>, label: string, timeout = 120_000): Promise<T> {
+/** `until` that also fails at once on a provider failure or a dead phase worker, and bounds each check by the deadline. */
+async function untilLive<T>(check: () => Promise<T | undefined>, label: string, timeout = 120_000): Promise<T> {
   const deadline = now() + timeout;
-  while (now() < deadline) {
+  return until(async () => {
     if (providerFailures.length) throw new AggregateError(providerFailures, "Rollback fixture provider failed");
     if (phaseWorker) {
       assert.equal(phaseWorker.exitCode, null, "Current phase worker exited");
       assert.equal(phaseWorker.signalCode, null, "Current phase worker was signalled");
     }
-    const result = await before(check(), deadline, label);
-    if (result !== undefined) return result;
-    await delay(100);
-  }
-  throw new Error("Timed out waiting for " + label);
+    return before(check(), deadline, label);
+  }, label, timeout);
 }
-function absent(pid: number) {
-  try { process.kill(pid, 0); return false; }
-  catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return true; throw error; }
-}
-const runnerSchema = z.strictObject({ kind: z.literal("profile-load"), pid: z.number().int().positive(), loadedBy: z.string() });
 async function runners() {
-  let text: string;
-  try { text = await readFile(runnerLog, "utf8"); }
-  catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
-  assert.ok(Buffer.byteLength(text) < 128 * 1024);
-  return text.trim().split("\n").filter(Boolean).map(line => runnerSchema.parse(JSON.parse(line)))
-    .filter(row => row.loadedBy === "supervisor-runner.ts");
+  return (await runnerLoads(runnerLog, 128 * 1024)).filter(row => row.loadedBy === "supervisor-runner.ts");
 }
 async function noRunners() {
   const observed = (await runners()).map(row => ({ ...row, absent: absent(row.pid) }));
@@ -85,94 +69,26 @@ async function noRunners() {
 const processReports: unknown[] = [];
 function owned(label: string, program: string, args: string[], env: NodeJS.ProcessEnv) {
   const logPath = join(directory, label + ".log");
-  const log = durableLog(logPath);
-  const child = spawn(program, args, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-  const errors: unknown[] = [];
-  child.on("error", error => errors.push(error));
-  child.stdout.on("error", error => errors.push(error));
-  child.stderr.on("error", error => errors.push(error));
-  child.stdout.on("data", (bytes: Buffer) => log.append(bytes));
-  child.stderr.on("data", (bytes: Buffer) => log.append(bytes));
-  const closed = new Promise<void>(done => child.once("close", () => done()));
-  let stopping: Promise<void> | undefined;
-  const stop = () => stopping ??= (async () => {
-    if (phaseWorker === child) phaseWorker = undefined;
-    if (label === "temporal") signalOwnedChild(child, "SIGTERM");
-    else child.kill("SIGTERM");
-    try { await before(closed, now() + 20_000, label + " close"); }
-    catch (error) {
-      signalOwnedChild(child, "SIGKILL");
-      await before(closed, now() + 3000, label + " forced close");
-      errors.push(error);
-    }
-    const capture = log.close();
-    assert.ok(child.pid && absent(child.pid), label + " owned PID must be absent");
-    assert.ok(absent(-child.pid), label + " owned process group must be absent");
-    const bytes = await readFile(logPath);
-    assert.ok(bytes.length <= 1024 * 1024);
-    const password = new URL(database).password;
-    let safe = bytes.toString("utf8").replaceAll(database, "[owned-database]");
-    if (password) safe = safe.replaceAll(password, "[database-password]");
-    safe = safe.replace(/Bearer\s+[^\s"']+/g, "Bearer [synthetic-credential]");
-    await writeFile(join(artifacts, label + ".log"), safe, { mode: 0o600 });
-    processReports.push({ label, pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, capture, stoppedAt: new Date().toISOString() });
-    if (errors.length) throw new AggregateError(errors, label + " process ownership failed");
-  })();
+  const owner = ownedProcess({ scope: label, program, args, env, logPath, shutdown: label === "temporal" ? "group" : "process",
+    async afterStop(child, capture) {
+      assert.ok(child.pid && absent(child.pid), label + " owned PID must be absent");
+      assert.ok(absent(-child.pid), label + " owned process group must be absent");
+      const bytes = await readFile(logPath);
+      assert.ok(bytes.length <= 1024 * 1024);
+      await writeFile(join(artifacts, label + ".log"), redact(bytes.toString("utf8"), database), { mode: 0o600 });
+      processReports.push({ label, pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, capture, stoppedAt: new Date().toISOString() });
+    } });
+  const stop = () => {
+    if (phaseWorker === owner.child) phaseWorker = undefined;
+    return owner.stop();
+  };
   cleanup.push(stop);
-  return { child, stop, logPath };
+  return { child: owner.child, stop, logPath };
 }
 
-const messageSchema = z.looseObject({ role: z.string(), content: z.union([z.string(), z.array(z.looseObject({ text: z.string().optional() }))]).nullish() });
-const bodySchema = z.looseObject({ model: z.enum(["control-parent", "control-analyst", "control-recorder"]), messages: z.array(messageSchema),
-  tools: z.array(z.looseObject({ function: z.looseObject({ name: z.string(), parameters: z.unknown() }) })).optional() });
-const taskSchema = z.strictObject({ role: z.enum(["analyst", "recorder"]), task: z.string() });
-const textOf = (message: z.infer<typeof messageSchema>) => typeof message.content === "string" ? message.content : message.content?.map(part => part.text ?? "").join("") ?? "";
-type RequestObservation = { model: string; promptDigest: string; continuation: boolean; closed: boolean; finished: boolean; recalled: boolean };
-const wire: RequestObservation[] = [];
 const providerFailures: unknown[] = [];
-const provider = createServer((request, response) => {
-  void respond(request, response).catch(error => { providerFailures.push(error); response.destroy(); });
-});
-async function respond(request: IncomingMessage, response: ServerResponse) {
-  assert.equal(request.method, "POST");
-  assert.equal(request.url, "/chat/completions");
-  assert.equal(request.headers.authorization, "Bearer synthetic-control-fixture");
-  const chunks: Buffer[] = []; let length = 0;
-  for await (const chunk of request) { length += chunk.length; assert.ok(length <= 1024 * 1024); chunks.push(chunk); }
-  const body = bodySchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-  const prompt = textOf(body.messages.findLast(row => row.role === "user") ?? { role: "user", content: "" });
-  const continuation = body.messages.at(-1)?.role === "tool";
-  assert.ok(wire.length < 100);
-  const observed = { model: body.model, promptDigest: digest(prompt), continuation, closed: false, finished: false, recalled: false };
-  wire.push(observed);
-  response.once("close", () => { observed.closed = true; });
-  const id = "chatcmpl_" + randomUUID();
-  const frame = (delta: object, finish_reason: string | null = null) => "data: " + JSON.stringify({ id, object: "chat.completion.chunk", created: 1,
-    model: body.model, choices: [{ index: 0, delta, finish_reason }] }) + "\n\n";
-  response.writeHead(200, { "content-type": "text/event-stream" });
-  response.write(frame({ role: "assistant" }));
-  function finish(content: string) { response.write(frame({ content })); response.write(frame({}, "stop")); observed.finished = true; response.end("data: [DONE]\n\n"); }
-  function call(name: string, args: unknown) {
-    response.write(frame({ tool_calls: [{ index: 0, id: "call_" + randomUUID(), type: "function", function: { name, arguments: JSON.stringify(args) } }] }));
-    response.write(frame({}, "tool_calls")); observed.finished = true; response.end("data: [DONE]\n\n");
-  }
-  if (prompt.startsWith("delegate ")) {
-    if (continuation) finish("delegated " + JSON.stringify(body.messages.filter(row => row.role === "tool").map(row => JSON.parse(textOf(row)))));
-    else call("delegate_task", taskSchema.parse(JSON.parse(prompt.slice(9))));
-  } else if (prompt.startsWith("record ")) {
-    if (continuation) finish("settled " + textOf(body.messages.at(-1) ?? { role: "tool" }));
-    else {
-      const tool = body.tools?.find(row => row.function.name === "record_work_item");
-      const schema = z.looseObject({ properties: z.looseObject({ operation_id: z.looseObject({ const: z.uuid() }) }) }).parse(tool?.function.parameters);
-      call("record_work_item", { operation_id: schema.properties.operation_id.const, note: "retained ordinary parent approval" });
-    }
-  } else if (prompt.startsWith("hold ")) return;
-  else if (prompt.startsWith("remember ")) finish("stored " + prompt.slice(9));
-  else if (prompt.startsWith("recall ")) {
-    assert.ok(body.messages.some(row => row.role === "assistant" && textOf(row) === "stored " + prompt.slice(7)), "Real native checkpoint retains earlier assistant content");
-    observed.recalled = true; finish("recalled " + prompt.slice(7));
-  } else throw new Error("Unsupported rollback provider request");
-}
+const provider = controlProvider({ note: "retained ordinary parent approval", limit: 100, failed: error => providerFailures.push(error) });
+const { wire, recalls } = provider;
 
 let connection: Connection | undefined;
 let result: { kind: "passed" } | { kind: "failed"; error: string } = { kind: "failed", error: "Proof did not complete" };
@@ -182,29 +98,15 @@ try {
   assert.equal((await pool.query("SELECT 1 FROM pg_namespace WHERE nspname='birbcrew_ts'")).rowCount, 0);
   assert.deepEqual(await readFile(join(oldRoot, "package-lock.json")), await readFile(join(newRoot, "package-lock.json")), "Dependency reuse requires identical lockfiles");
   assert.deepEqual(await readFile(join(oldRoot, "src/service/workflow.ts")), await readFile(join(newRoot, "src/service/workflow.ts")), "This proof's accepted floor has identical workflow source");
-  const version = await boundedCommand(temporalCli, ["--version"], now() + 5000);
-  assert.equal(version.stdout.kind, "complete");
-  if (version.stdout.kind !== "complete") throw new Error("Temporal version truncated");
-  assert.match(version.stdout.text, /^temporal version 1\.10\.0\b/);
-  const probe = portProbe().listen(0, "127.0.0.1");
-  await once(probe, "listening");
-  const bound = probe.address(); assert.ok(bound && typeof bound === "object");
-  await new Promise<void>(done => probe.close(() => done()));
-  const address = "127.0.0.1:" + bound.port;
-  owned("temporal", temporalCli, ["server", "start-dev", "--headless", "--port", String(bound.port), "--db-filename", join(directory, "temporal.db")], { PATH: process.env.PATH, HOME: directory });
-  await until(async () => {
-    try { await boundedCommand(temporalCli, ["operator", "cluster", "health", "--address", address, "--command-timeout", "1s"], now() + 2000); return true; }
-    catch { return undefined; }
-  }, "owned Temporal health");
+  const { address } = await temporalDevServer(temporalCli, directory,
+    args => owned("temporal", temporalCli, args, { PATH: process.env.PATH, HOME: directory }), 120_000);
   connection = await Connection.connect({ address });
   const temporal = new Client({ connection });
-  provider.listen(0, "127.0.0.1");
-  await once(provider, "listening");
-  const listening = provider.address(); assert.ok(listening && typeof listening === "object");
+  const endpoint = await provider.listen();
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: directory,
     BIRBCREW_DATABASE_URL: database, BIRBCREW_STATE_DIR: stateDir,
     BIRBCREW_TEMPORAL_ADDRESS: address, BIRBCREW_TEMPORAL_NAMESPACE: "default",
-    BIRBCREW_CONTROL_FIXTURE_ENDPOINT: `http://127.0.0.1:${listening.port}/chat/completions`, BIRBCREW_CONTROL_RUNNER_LOG: runnerLog };
+    BIRBCREW_CONTROL_FIXTURE_ENDPOINT: endpoint, BIRBCREW_CONTROL_RUNNER_LOG: runnerLog };
   const profileText = await readFile(new URL("./delegation-control-profiles.mts", import.meta.url), "utf8");
   async function config(root: string, label: string) {
     const target = join(directory, label + "-profiles.mts");
@@ -224,7 +126,7 @@ try {
   async function startWorker(root: string, configuration: string, label: string) {
     const worker = owned(label, process.execPath, [join(root, "src/service/cli.ts"), "worker", configuration], env);
     phaseWorker = worker.child;
-    const identity = await until(async () => {
+    const identity = await untilLive(async () => {
       assert.equal(worker.child.exitCode, null, label + " exited during startup");
       assert.equal(worker.child.signalCode, null, label + " was signalled during startup");
       const descriptions = await Promise.all(queues.map(queue => temporal.connection.workflowService.describeTaskQueue({
@@ -264,7 +166,7 @@ try {
   }
   const turn = (key: { conversationId: string }, text: string) => ({ ownerId, conversationId: key.conversationId, requestId: randomUUID(), text });
   async function reply(requestId: string) {
-    return until(async () => {
+    return untilLive(async () => {
       const row = (await pool.query("SELECT phase,reply FROM birbcrew_ts.turns WHERE request_id=$1", [requestId])).rows[0];
       return row?.phase === "committed" ? z.string().parse(row.reply) : undefined;
     }, "committed application reply");
@@ -282,18 +184,18 @@ try {
   const approvalConversation = await conversation(oldRoot, "control.recorder.v1");
   const approvalRequest = turn(approvalConversation, "record " + randomUUID());
   await members.accept(approvalRequest);
-  const card = await until(async () => {
+  const card = await untilLive(async () => {
     const pending = z.array(approvalSchema).parse(await cli(oldRoot, "pending", { ownerId, conversationId: approvalConversation.conversationId }));
     return pending.length === 1 ? pending[0] : undefined;
   }, "old application ordinary parent approval");
-  await until(async () => (await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE NOT stopped")).rowCount === 0 ? true : undefined, "old native runners stopped");
+  await untilLive(async () => (await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE NOT stopped")).rowCount === 0 ? true : undefined, "old native runners stopped");
   await seed.stop(); await noRunners(); await pollers("old-seed-stopped");
   const current = await startWorker(newRoot, newConfig, "current");
   assert.equal((await pool.query("SELECT max(version) AS version FROM birbcrew_ts.schema_versions")).rows[0].version, 38);
   const heldTask = "hold " + randomUUID();
   const retiredRequest = turn(await conversation(newRoot), "delegate " + JSON.stringify({ role: "analyst", task: heldTask }));
   await members.accept(retiredRequest);
-  const held = await until(async () => wire.find(row => row.promptDigest === digest(heldTask)), "actual child provider invocation");
+  const held = await untilLive(async () => wire.find(row => row.promptDigest === digest(heldTask)), "actual child provider invocation");
   const activeChildren = await children(retiredRequest.requestId);
   assert.equal(activeChildren.length, 1); assert.ok(activeChildren[0].workflow_run_id);
   workflowIds.push("birbcrew-ts/child/" + activeChildren[0].child_id);
@@ -303,7 +205,7 @@ try {
   const control = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
   const command = controlReceiptSchema.parse(await changeControl(pool, { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision,
     scope: { kind: "global" }, enabled: false, actor: "retained-rollback-proof", reason: "stop named child before exact old application rollback" }));
-  const drain = await until(async () => {
+  const drain = await untilLive(async () => {
     const output = await boundedCommand(process.execPath, [join(newRoot, "src/service/delegation-control-cli.ts"), "drain", command.commandId], now() + 20_000, { env });
     if (output.stdout.kind !== "complete") throw new Error("Truncated real drain command");
     const report = drainObservationSchema.parse(JSON.parse(output.stdout.text));
@@ -312,7 +214,7 @@ try {
   assert.equal(drain.valid, true); assert.equal(drain.admissionClosed, true); assert.deepEqual(drain.blockers, []);
   assert.equal(drain.children.length, 1); assert.equal(drain.children[0].retire, true);
   assert.equal(drain.children[0].workflow.kind, "closed"); assert.equal(drain.parents[0].workflow.kind, "observed");
-  assert.equal(held.closed, true); assert.equal(held.finished, false);
+  assert.equal(held.responseClosed, true); assert.equal(held.responseFinished, false);
   assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE NOT stopped")).rowCount, 0);
   const retiredReply = await reply(retiredRequest.requestId);
   await evidence("drain-before-rollback", drain);
@@ -367,7 +269,7 @@ try {
   assert.equal(wire.length, requestCount, "Committed reply retry through old CLI invokes no provider");
   const recalled = turn(remembered, "recall " + marker);
   assert.equal(z.looseObject({ text: z.string() }).parse(await cli(oldRoot, "turn", recalled)).text, "recalled " + marker);
-  assert.ok(wire.some(row => row.promptDigest === digest(recalled.text) && row.recalled));
+  assert.ok(wire.some(row => row.promptDigest === digest(recalled.text) && recalls.has(row)));
   await cli(oldRoot, "decide", { ownerId, memberId: card.memberId, conversationId: card.conversationId, requestId: card.requestId,
     approvalId: card.approvalId, invocationId: card.invocationId, nativeCallId: card.nativeCallId, argumentDigest: card.argumentDigest,
     version: card.version, choice: "approve" });
@@ -420,14 +322,12 @@ try {
   try { await connection?.close(); } catch (error) { failures.push(describe(error)); }
   try { await pool.end(); } catch (error) { failures.push(describe(error)); }
   try {
-    if (provider.listening) {
-      const closed = new Promise<void>(done => provider.close(() => done()));
-      provider.closeAllConnections(); await before(closed, now() + 3000, "Loopback provider close");
-    }
+    if (provider.server.listening) await before(provider.close(), now() + 3000, "Loopback provider close");
   } catch (error) { failures.push(describe(error)); }
   let runnerObservations: Awaited<ReturnType<typeof noRunners>> = [];
   try { runnerObservations = await noRunners(); } catch (error) { failures.push(describe(error)); }
-  await evidence("provider", { wire, failures: providerFailures.map(describe) });
+  await evidence("provider", { wire: wire.map(row => ({ model: row.model, promptDigest: row.promptDigest, continuation: row.continuation,
+    closed: row.responseClosed, finished: row.responseFinished, recalled: recalls.has(row) })), failures: providerFailures.map(describe) });
   await evidence("cleanup", { result, steps, processReports, runnerObservations, failures, workingState: "retained-in-disposable-hosted-vm", ancestry: "unproven" });
   if (failures.length && result.kind === "passed") throw new AggregateError(failures, "Retained rollback proof cleanup failed");
 }
