@@ -147,7 +147,8 @@ Use each blocker to decide what remains:
   `missing`, `unavailable`, `unknown`, and an open execution all block completion.
 - For `parent_pending` or `parent_workflow`, wait for the parent follow-up to commit
   and for Temporal to observe the matching result. A missing or unknown workflow
-  does not establish completion.
+  does not establish completion. Some of these blockers never clear; see
+  [blockers that never clear](#blockers-that-never-clear).
 - For `native_unconfirmed`, establish that every listed launch token has stopped
   through the supported native reconciliation path. Do not substitute a process
   restart or a manually changed database flag for that evidence.
@@ -158,6 +159,45 @@ Use each blocker to decide what remains:
 - For `target_unreadable`, keep delegation disabled for operator investigation.
   The command does not invent a destination or silently omit the child.
 - For `control_changed` or `admission_open`, inspect the current control state.
+
+### Blockers that never clear
+
+Waiting does not clear three kinds of blocker:
+
+- A parent turn that ended `uncertain` reports `parent_pending`. An uncertain
+  turn never returns to `committed`.
+- A parent run whose history Temporal no longer retains reports
+  `parent_workflow` with `missing`. This includes delegations made before
+  migration 038 and every delegation restored by a coordinated restore, unless
+  a worker observed the history before it expired.
+- A native launch left unstopped by a worker that was killed or lost PostgreSQL
+  during teardown reports `native_unconfirmed`. Only the supervisor's own
+  teardown records a stop.
+
+Each disable selects every child of such a request again, including finished
+children, so no later disable that covers it can report `complete: true`. Crew
+offers no override, because none of these states proves that delegated work and
+its effects have ended. List the requests that can block a drain, read-only:
+
+```sql
+SELECT d.conversation_id, d.request_id, t.phase,
+       birbcrew_ts.delegation_parent_result_observed(d.conversation_id, d.request_id) AS observed,
+       EXISTS (SELECT 1 FROM birbcrew_ts.native_launches n
+               WHERE (n.conversation_id, n.request_id) = (d.conversation_id, d.request_id)
+                 AND NOT n.stopped) AS unstopped_launch
+FROM birbcrew_ts.delegations d
+JOIN birbcrew_ts.turns t USING (conversation_id, request_id)
+WHERE t.phase <> 'committed' OR d.resume_activity_id IS NULL
+   OR NOT birbcrew_ts.delegation_parent_result_observed(d.conversation_id, d.request_id)
+   OR EXISTS (SELECT 1 FROM birbcrew_ts.native_launches n
+              WHERE (n.conversation_id, n.request_id) = (d.conversation_id, d.request_id)
+                AND NOT n.stopped);
+```
+
+Rows that keep a running worker busy can still clear. Rows with an uncertain
+phase, rows whose parent stays `missing` while workers run, and unstopped
+launches with no live worker cannot. Run this soon after upgrading, while
+workers can still observe recent histories, and before relying on a drain.
   Drain requires a current disable receipt for the same installation, recovery
   instance, and revision, with recovery phase `active`.
 
@@ -227,8 +267,10 @@ After a restore, activation creates a new global disable command for the new
 instance and permanently retires unfinished restored children in the same
 transaction. Restored parent observations belong to the previous instance and
 cannot establish observation for the new instance. Matching workers must observe
-the parent histories again. Old enable commands cannot return a valid receipt
-for that instance. Keep ingress disabled while workers reconcile those children.
+the parent histories again. A restored parent whose history Temporal no longer
+retains becomes a permanent blocker; see
+[blockers that never clear](#blockers-that-never-clear). Old enable commands
+cannot return a valid receipt for that instance. Keep ingress disabled while workers reconcile those children.
 Re-enable only future work after reconciliation. Named roles removed by restore
 activation also require a new parent profile name, as described in
 [named child destinations](member-profiles.md#configure-named-child-destinations).
@@ -250,7 +292,9 @@ Use this sequence:
 1. While the new application still runs, submit a global disable and save its
    receipt.
 2. Keep its workers running until an actual `drain` observation for that receipt
-   reports `complete: true`. Resolve every blocker first.
+   reports `complete: true`. Resolve every blocker first. If a
+   [blocker never clears](#blockers-that-never-clear), this rollback is not
+   qualified for that installation.
 3. Stop all Crew pollers, workers, native descendants, gateways, and CLI processes,
    including scheduled jobs, before starting the older application.
 4. Retain the application database, Temporal persistence, and native state. Keep
