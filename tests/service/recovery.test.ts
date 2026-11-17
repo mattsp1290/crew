@@ -792,7 +792,7 @@ test('restoring an older snapshot atomically retires named roles and delegation 
  const t=await setup(context);
  const {ChildStore}=await import('../../src/service/children.ts');
  const {withNativeAdmission}=await import('../../src/service/native-admission.ts');
- const {DelegationControl}=await import('../../src/service/delegation-control.ts');
+ const {drainDelegation}=await import('../../src/service/delegation-control.ts');
  const {fixedRoles}=await import('@birbcrew/pi-subagents');
  const account='a'.repeat(64),destination={engine:'pi',profile:'target',model:'fixture',providerHost:'fixture.invalid',accountDigest:account};
  await t.pool.query("INSERT INTO birbcrew_ts.profiles(name,engine,account_digest) VALUES('target','pi',decode($1,'hex'))",[account]);
@@ -894,12 +894,11 @@ test('restoring an older snapshot atomically retires named roles and delegation 
  assert.deepEqual(await archivedObservations(),observationRows);
  assert.deepEqual(await currentObservations(),[]);
  assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
- const controller=new DelegationControl({pool:restored,workflows:{
+ const drain=await drainDelegation({pool:restored,workflows:{
   signalDecision:async()=>({kind:'accepted'}),
   observe:async()=>({kind:'closed',runId:'restore-fixture-child',status:'COMPLETED'}),
   observeParentResult:async()=>({kind:'pending'}),
- }});
- const drain=await controller.drain(cohort[0].receipt.commandId);
+ }},cohort[0].receipt.commandId);
  assert.equal(drain.valid,true);assert.equal(drain.admissionClosed,true);assert.equal(drain.complete,false);
  assert.deepEqual(drain.blockers.filter(blocker=>blocker.kind==='parent_workflow'&&blocker.requestId===history.requestId),
   [{kind:'parent_workflow',requestId:history.requestId,observation:{kind:'pending'}}],

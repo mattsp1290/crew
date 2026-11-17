@@ -77,6 +77,15 @@ CREATE FUNCTION birbcrew_ts.delegation_parent_result_observed(cid uuid, rid uuid
    AND (o.workflow_run_id COLLATE "C",o.resume_activity_id COLLATE "C",o.reply COLLATE "C")
     =(t.workflow_run_id,d.resume_activity_id,t.reply));
 $$;
+CREATE FUNCTION birbcrew_ts.delegation_child_retired(child uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE child_id=child AND retire);
+$$;
+CREATE VIEW birbcrew_ts.delegation_settlement AS
+ SELECT d.conversation_id,d.request_id,t.workflow_run_id,d.resume_activity_id,t.reply,t.phase,
+  (t.phase='committed' AND t.reply IS NOT NULL AND d.resume_activity_id IS NOT NULL) AS parent_committed,
+  EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n
+   WHERE (n.conversation_id,n.request_id)=(d.conversation_id,d.request_id) AND NOT n.stopped) AS native_unconfirmed
+ FROM birbcrew_ts.delegations d JOIN birbcrew_ts.turns t USING(conversation_id,request_id);
 
 CREATE FUNCTION birbcrew_ts.record_delegation_parent_observation(p_installation uuid, p_instance uuid,
  p_conversation uuid, p_request uuid, p_run text, p_resume text, p_reply text)
@@ -142,7 +151,7 @@ BEGIN
  scope := birbcrew_ts.delegation_child_scope(cid,role_profile);
  IF scope IS NULL THEN RAISE EXCEPTION 'Delegation target is unreadable' USING ERRCODE='55000'; END IF;
  IF NOT control.global_enabled OR control.disabled_targets @> jsonb_build_array(scope)
-  OR EXISTS(SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE child_id=child AND retire) THEN
+  OR birbcrew_ts.delegation_child_retired(child) THEN
   RAISE EXCEPTION 'Delegation admission is disabled or retired' USING ERRCODE='55000';
  END IF;
 END $$;
@@ -261,11 +270,9 @@ BEGIN
  IF NOT enabled THEN
   INSERT INTO birbcrew_ts.delegation_control_children(command_id,child_id,retire)
    SELECT command,j.child_id,j.outcome IS NULL FROM birbcrew_ts.pi_children j
-   JOIN birbcrew_ts.delegations d USING(conversation_id,request_id) JOIN birbcrew_ts.turns t USING(conversation_id,request_id)
-   WHERE (j.outcome IS NULL OR d.resume_activity_id IS NULL OR t.phase<>'committed' OR t.reply IS NULL
-    OR NOT birbcrew_ts.delegation_parent_result_observed(j.conversation_id,j.request_id)
-    OR EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n
-     WHERE (n.conversation_id,n.request_id)=(j.conversation_id,j.request_id) AND NOT n.stopped))
+   JOIN birbcrew_ts.delegation_settlement s USING(conversation_id,request_id)
+   WHERE (j.outcome IS NULL OR NOT s.parent_committed OR s.native_unconfirmed
+    OR NOT birbcrew_ts.delegation_parent_result_observed(j.conversation_id,j.request_id))
     AND (scope->>'kind'='global' OR COALESCE(birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile)=scope,true));
   INSERT INTO birbcrew_ts.native_stop_requests(conversation_id,request_id,token)
    SELECT j.conversation_id,j.request_id,j.generation FROM birbcrew_ts.pi_children j

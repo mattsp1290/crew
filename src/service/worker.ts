@@ -4,8 +4,9 @@ import { answerLive, cancelLive } from "./codex-calls.ts";
 import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Client, Connection } from "@temporalio/client";
-import { DelegationControl } from "./delegation-control.ts";
+import { DelegationReconciler } from "./delegation-control.ts";
 import { TemporalDelegationWorkflows } from "./delegation-control-workflows.ts";
+import { startDelegationReconciliation } from "./delegation-reconciliation.ts";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { ChildStore } from "./children.ts";
 import { startSupervisor } from "./supervisor.ts";
@@ -40,15 +41,8 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
   let connection: NativeConnection | undefined;
   let supervisor;
   let clientConnection: Connection | undefined;
-  let lastSuccessfulPassAt: number | undefined;
-  let pass: Promise<void> | undefined;
-  let reconciliation: ReturnType<typeof setInterval> | undefined;
+  let reconciler: ReturnType<typeof startDelegationReconciliation> | undefined;
   let beats: ReturnType<typeof setInterval> | undefined;
-  const failed = (source: "pool" | "reconciliation") => () => {
-    lastSuccessfulPassAt = undefined;
-    console.error(JSON.stringify({ event: "delegation_control_failed", source }));
-  };
-  controlPool.on("error", failed("pool"));
   const serve = (worker: Worker) => {
     workers.push(worker);
     const run = worker.run();
@@ -58,7 +52,7 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
   try {
     connection = await NativeConnection.connect(await temporalConnectionOptions(temporal));
     clientConnection = await Connection.connect(await temporalConnectionOptions(temporal));
-    const control = new DelegationControl({ pool: controlPool, workflows: new TemporalDelegationWorkflows(
+    const control = new DelegationReconciler({ pool: controlPool, workflows: new TemporalDelegationWorkflows(
       new Client({ connection: clientConnection, namespace })) });
     serve(await Worker.create({
       connection, namespace, taskQueue: memberTaskQueue, activities: memberQueueActivities(store),
@@ -76,22 +70,10 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
       }
     }
     if (workers.length === 1) throw new Error("No member engines configured");
+    reconciler = startDelegationReconciliation(control, controlPool);
     let reported = false;
-    const reconcile = () => {
-      if (pass) return;
-      pass = control.flush().then(result => {
-        const healthy = !result.children.some(child => child.wake.kind === "unavailable");
-        lastSuccessfulPassAt = healthy ? performance.now() : undefined;
-        if (!healthy || result.children.some(child => child.settlement === "pending")) {
-          console.error(JSON.stringify({ event: "delegation_control_pending", ...result }));
-        }
-      }, failed("reconciliation")).finally(() => { pass = undefined; });
-    };
-    reconcile();
-    reconciliation = setInterval(reconcile, 2000);
     const beat = () => {
-      if (lastSuccessfulPassAt === undefined || performance.now() - lastSuccessfulPassAt > 60_000
-        || heartbeat === undefined || !workers.every((worker) => worker.getState() === "RUNNING")) return;
+      if (!reconciler?.healthy() || heartbeat === undefined || !workers.every((worker) => worker.getState() === "RUNNING")) return;
       void touch(heartbeat).catch(() => {
         if (!reported) console.error("Cannot update BIRBCREW_WORKER_HEARTBEAT_FILE");
         reported = true;
@@ -101,12 +83,13 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
     await Promise.race([Promise.all(running), supervisor.exited.then(() => { throw new Error("SDK supervisor stopped"); })]);
   } finally {
     clearInterval(beats);
-    clearInterval(reconciliation);
+    const settled = reconciler?.stop();
     try {
-      const shutdown = await Promise.allSettled(workers.filter(worker => worker.getState() === "RUNNING")
-        .map(async worker => { worker.shutdown(); }));
-      try { await pass; } finally { await Promise.allSettled(running); }
-      const errors = shutdown.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      const errors: unknown[] = [];
+      for (const worker of workers.filter(worker => worker.getState() === "RUNNING")) {
+        try { worker.shutdown(); } catch (error) { errors.push(error); }
+      }
+      try { await settled; } finally { await Promise.allSettled(running); }
       if (errors.length) throw new AggregateError(errors, "Member worker shutdown failed");
     } finally {
       try { await supervisor?.close(); }

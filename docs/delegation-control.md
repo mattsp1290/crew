@@ -190,18 +190,13 @@ offers no override, because none of these states proves that delegated work and
 its effects have ended. List the requests that can block a drain, read-only:
 
 ```sql
-SELECT d.conversation_id, d.request_id, t.phase,
-       birbcrew_ts.delegation_parent_result_observed(d.conversation_id, d.request_id) AS observed,
-       EXISTS (SELECT 1 FROM birbcrew_ts.native_launches n
-               WHERE (n.conversation_id, n.request_id) = (d.conversation_id, d.request_id)
-                 AND NOT n.stopped) AS unstopped_launch
-FROM birbcrew_ts.delegations d
-JOIN birbcrew_ts.turns t USING (conversation_id, request_id)
-WHERE t.phase <> 'committed' OR d.resume_activity_id IS NULL
-   OR NOT birbcrew_ts.delegation_parent_result_observed(d.conversation_id, d.request_id)
-   OR EXISTS (SELECT 1 FROM birbcrew_ts.native_launches n
-              WHERE (n.conversation_id, n.request_id) = (d.conversation_id, d.request_id)
-                AND NOT n.stopped);
+SELECT conversation_id, request_id, phase,
+       birbcrew_ts.delegation_parent_result_observed(conversation_id, request_id) AS observed,
+       native_unconfirmed AS unstopped_launch
+FROM birbcrew_ts.delegation_settlement
+WHERE NOT parent_committed
+   OR NOT birbcrew_ts.delegation_parent_result_observed(conversation_id, request_id)
+   OR native_unconfirmed;
 ```
 
 Rows that keep a running worker busy can still clear. Rows with an uncertain
