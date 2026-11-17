@@ -1,20 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createServer as portProbe } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { after, test } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure, Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
-import proto from "@temporalio/proto";
 import { Pool } from "pg";
 import { z } from "zod";
 import { memberActivities, type MemberActivities } from "../../src/service/activities.ts";
@@ -30,11 +25,13 @@ import { activityQueue, memberTaskQueue } from "../../src/service/queues.ts";
 import { MemberStore } from "../../src/service/store.ts";
 import { startSupervisor } from "../../src/service/supervisor.ts";
 import { memberQueueActivities } from "../../src/service/worker.ts";
-import { before, boundedCommand, durableLog, now, signalOwnedChild } from "../proof/member-service-diagnostics.mts";
+import { absent, controlProvider, digest, ownedProcess, redact, runnerLoads, temporalDevServer, until, type LogCapture,
+  type Task } from "../proof/delegation-control-fixture.mts";
+import { before, boundedCommand, now } from "../proof/member-service-diagnostics.mts";
 import { workingState } from "../proof/member-services.mts";
 import { spawnHistoricalMember, testDatabaseName } from "./database-fixtures.ts";
+import { adapterHistoryCases } from "./delegation-control-history-cases.ts";
 
-const { temporal: protocol } = proto;
 const configuredDatabase = process.env.BIRBCREW_TEST_DATABASE_URL;
 assert.ok(configuredDatabase, "Use this suite's own fresh disposable PostgreSQL 17 database");
 const database = configuredDatabase;
@@ -45,8 +42,7 @@ if (proof) { assert.ok(isAbsolute(proof)); await mkdir(proof, { recursive: true,
 const policy = workingState(process.env);
 const cleanupSteps: (() => Promise<unknown>)[] = [];
 const cleanupResults: { scope: string; state: string }[] = [];
-type OwnedProcess = { scope: string; child: ChildProcess; stopped: boolean; logPath: string;
-  capture: ReturnType<ReturnType<typeof durableLog>["close"]> | undefined };
+type OwnedProcess = { scope: string; child: ChildProcess; stopped: boolean; logPath: string; capture: LogCapture | undefined };
 const processes: OwnedProcess[] = [];
 const workflowIds = new Set<string>();
 const runnerLog = join(directory, "profile-loads.jsonl");
@@ -77,7 +73,7 @@ after(async () => {
   try { await retainProcessDiagnostics(); retained = true; } catch (error) { failures.push(error); }
   let runnerObservations: { pid: number; absent: boolean }[] = [];
   try {
-    const runners = await runnerLoads();
+    const runners = await runnerLoads(runnerLog);
     runnerObservations = runners.filter(row => row.loadedBy === "supervisor-runner.ts")
       .map(row => ({ pid: row.pid, absent: absent(row.pid) }));
   } catch (error) { failures.push(error); }
@@ -95,16 +91,13 @@ after(async () => {
 async function retainProcessDiagnostics() {
   if (!proof) return;
   const observations: unknown[] = [], failures: unknown[] = [];
-  const password = new URL(database).password;
   for (const process of processes) {
     try {
       const bytes = await readFile(process.logPath);
       assert.ok(bytes.length <= 1024 * 1024, "Canonical process log retention bound");
       const start = Math.max(0, bytes.length - 64 * 1024);
       const selected = bytes.subarray(start).toString("utf8");
-      let safe = selected.replaceAll(database, "[fixture-database-url]");
-      if (password) safe = safe.replaceAll(password, "[fixture-database-password]");
-      safe = safe.replace(/Bearer\s+[^\s"']+/g, "Bearer [fixture-credential]");
+      const safe = redact(selected, database);
       const artifact = process.scope + "-diagnostics.log";
       const output = Buffer.from(safe);
       assert.ok(output.length <= 96 * 1024, "Sanitized process diagnostic bound");
@@ -112,7 +105,7 @@ async function retainProcessDiagnostics() {
       observations.push({ scope: process.scope, artifact, pid: process.child.pid, observedAt: new Date().toISOString(),
         capture: process.capture ?? null, captureClosed: process.capture !== undefined, sourceFileBytes: bytes.length,
         selectedStartByte: start, selectedBytes: bytes.length - start, artifactBytes: output.length,
-        artifactSha256: createHash("sha256").update(output).digest("hex"), sanitized: safe !== selected,
+        artifactSha256: digest(output), sanitized: safe !== selected,
         selection: "last-64KiB-of-canonical-retained-prefix", selectedTailTruncated: start > 0 });
     } catch (error) {
       failures.push(error);
@@ -124,162 +117,47 @@ async function retainProcessDiagnostics() {
   if (failures.length) throw new AggregateError(failures, "Owned process diagnostic retention failed");
 }
 
-function absent(pid: number) {
-  try { process.kill(pid, 0); return false; }
-  catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return true; throw error; }
-}
-const loadSchema = z.strictObject({ kind: z.literal("profile-load"), pid: z.number().int().positive(), loadedBy: z.string() });
-async function runnerLoads() {
-  let bytes: string;
-  try { bytes = await readFile(runnerLog, "utf8"); }
-  catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
-  assert.ok(Buffer.byteLength(bytes) < 512 * 1024);
-  return bytes.trim().split("\n").filter(Boolean).map(line => loadSchema.parse(JSON.parse(line)));
-}
-async function until<T>(check: () => Promise<T | undefined>, label: string, timeout = 60_000): Promise<T> {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await check();
-    if (value !== undefined) return value;
-    await delay(100);
-  }
-  throw new Error("Timed out waiting for " + label);
-}
-
 function owned(scope: string, program: string, args: string[], env = process.env, shutdown: "group" | "process" = "group") {
   const logPath = join(directory, scope + ".log");
-  const log = durableLog(logPath);
-  const child = spawn(program, args, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-  const observation: OwnedProcess = { scope, child, stopped: false, logPath, capture: undefined };
+  const owner = ownedProcess({ scope, program, args, env, logPath, shutdown, async afterStop(child, capture) {
+    observation.capture = capture;
+    await evidence(scope + "-process", { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, capture });
+  } });
+  const observation: OwnedProcess = { scope, child: owner.child, stopped: false, logPath, capture: undefined };
   processes.push(observation);
-  child.stdout.on("data", (bytes: Buffer) => log.append(bytes));
-  child.stderr.on("data", (bytes: Buffer) => log.append(bytes));
-  const closed = once(child, "close");
-  void closed.catch(() => {});
-  let stopping: Promise<void> | undefined;
-  const stop = () => stopping ??= (async () => {
-    if (shutdown === "process") child.kill("SIGTERM");
-    else signalOwnedChild(child, "SIGTERM");
-    try { await before(closed, now() + 20_000, scope + " owned process close"); }
-    catch (error) { signalOwnedChild(child, "SIGKILL"); await before(closed, now() + 3_000, scope + " forced close"); throw error; }
-    finally {
-      observation.capture = log.close();
-      await evidence(scope + "-process", { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, capture: observation.capture });
-    }
-    observation.stopped = true;
-  })();
+  const stop = async () => { await owner.stop(); observation.stopped = true; };
   cleanupSteps.push(stop);
-  return { child, stop, logPath };
+  return { child: owner.child, stop, logPath };
 }
 
-async function temporalServer() {
-  assert.equal(process.env.BIRBCREW_TEMPORAL_ADDRESS, undefined, "This suite owns a fresh Temporal development server");
-  const cli = process.env.TEMPORAL_CLI;
-  assert.ok(cli, "TEMPORAL_CLI must name the official Temporal CLI 1.10.0 fixture");
-  const version = await boundedCommand(cli, ["--version"], now() + 5_000);
-  assert.equal(version.stdout.kind, "complete");
-  if (version.stdout.kind !== "complete") throw new Error("Truncated Temporal version");
-  assert.match(version.stdout.text, /^temporal version 1\.10\.0\b/);
-  const probe = portProbe().listen(0, "127.0.0.1");
-  await once(probe, "listening");
-  const bound = probe.address();
-  assert.ok(bound && typeof bound === "object");
-  const address = "127.0.0.1:" + bound.port;
-  await new Promise<void>(done => probe.close(() => done()));
-  const serverProcess = owned("temporal", cli, ["server", "start-dev", "--headless", "--port", String(bound.port), "--db-filename", join(directory, "temporal.db")]);
-  await until(async () => {
-    assert.equal(serverProcess.child.exitCode, null, "Owned Temporal server exited during startup");
-    try { await boundedCommand(cli, ["operator", "cluster", "health", "--address", address, "--command-timeout", "1s"], now() + 2_000); return true; }
-    catch { return undefined; }
-  }, "Temporal health");
-  await evidence("prerequisites", { temporalVersion: version.stdout.text.trim(), node: processVersion, platform: "linux", database: "separate-fresh-pg17" });
-  return address;
-}
-const processVersion = process.version;
-
-const messageSchema = z.looseObject({ role: z.string(), content: z.union([z.string(), z.array(z.looseObject({ text: z.string().optional() }))]).nullish() });
-const requestSchema = z.looseObject({ model: z.enum(["control-parent", "control-analyst", "control-recorder"]),
-  messages: z.array(messageSchema), tools: z.array(z.looseObject({ function: z.looseObject({ name: z.string(), parameters: z.unknown() }) })).optional() });
-const taskSchema = z.strictObject({ role: z.enum(["analyst", "recorder"]), task: z.string() });
 const childOutcomeSchema = z.discriminatedUnion("kind", [
   z.looseObject({ kind: z.literal("failed"), nativeCallId: z.string(), code: z.string() }),
   z.looseObject({ kind: z.literal("completed"), nativeCallId: z.string(), text: z.string() }),
   z.looseObject({ kind: z.literal("cancelled"), nativeCallId: z.string() }),
 ]);
-type WireObservation = { sequence: number; model: z.infer<typeof requestSchema>["model"]; promptDigest: string; continuation: boolean; responseClosed: boolean; responseFinished: boolean };
-const wire: WireObservation[] = [];
 const held = new Map<string, { release: () => void; closed: Promise<void> }>();
-const parentHolds = new Set<string>(), resumeHolds = new Set<string>();
-const digest = (value: string) => createHash("sha256").update(value).digest("hex");
-const text = (message: z.infer<typeof messageSchema>) => typeof message.content === "string" ? message.content : message.content?.map(part => part.text ?? "").join("") ?? "";
-const provider = createServer((request, response) => {
-  void respond(request, response).catch(() => {
-    if (!response.headersSent) { response.writeHead(502); response.end('{"error":{"message":"Control fixture request refused"}}'); }
-    else response.destroy();
-  });
-});
-async function respond(request: IncomingMessage, response: ServerResponse) {
-  assert.equal(request.method, "POST"); assert.equal(request.url, "/chat/completions");
-  assert.equal(request.headers.authorization, "Bearer synthetic-control-fixture");
-  const parts: Buffer[] = []; let bytes = 0;
-  for await (const part of request) { bytes += part.length; assert.ok(bytes <= 1024 * 1024); parts.push(part); }
-  const body = requestSchema.parse(JSON.parse(Buffer.concat(parts).toString("utf8")));
-  const prompt = text(body.messages.findLast(message => message.role === "user") ?? { role: "user", content: "" });
-  const continuation = body.messages.at(-1)?.role === "tool";
-  assert.ok(wire.length < 200, "Control fixture request bound");
-  const observation: WireObservation = { sequence: wire.length + 1, model: body.model, promptDigest: digest(prompt), continuation, responseClosed: false, responseFinished: false };
-  wire.push(observation);
-  const closed = new Promise<void>(done => response.once("close", () => { observation.responseClosed = true; done(); }));
-  const id = "chatcmpl_" + randomUUID();
-  const frame = (delta: object, finish_reason: string | null = null) => "data: " + JSON.stringify({ id, object: "chat.completion.chunk", created: 1,
-    model: body.model, choices: [{ index: 0, delta, finish_reason }] }) + "\n\n";
-  response.writeHead(200, { "content-type": "text/event-stream" }); response.write(frame({ role: "assistant" }));
-  function finish(content: string) {
-    if (response.destroyed) return;
-    response.write(frame({ content })); response.write(frame({}, "stop"));
-    observation.responseFinished = true; response.end("data: [DONE]\n\n");
-  }
-  function call(name: string, args: unknown, index = 0) {
-    response.write(frame({ tool_calls: [{ index, id: "call_" + randomUUID(), type: "function", function: { name, arguments: JSON.stringify(args) } }] }));
-  }
-  function hold(content: string, key: string) {
+/** Follow-up replies to hold, by provider hold key. Every `hold` prompt is held. */
+const holds = new Set<string>();
+const provider = controlProvider({ note: "synthetic control fixture note", limit: 200, outcome: value => childOutcomeSchema.parse(value),
+  hold(key, release, closed) {
+    if (!key.startsWith("child/") && !holds.has(key)) return false;
     assert.ok(!held.has(key), "A provider barrier can have only one live response");
-    held.set(key, { release: () => finish(content), closed });
+    held.set(key, { release, closed });
     void closed.finally(() => held.delete(key));
-  }
-  if (prompt.startsWith("delegate ")) {
-    if (!continuation) {
-      const tasks = z.array(taskSchema).min(1).max(2).parse(JSON.parse(prompt.slice(9)));
-      tasks.forEach((task, index) => call("delegate_task", task, index));
-      response.write(frame({}, "tool_calls")); response.end("data: [DONE]\n\n"); observation.responseFinished = true;
-    } else {
-      const results = body.messages.filter(message => message.role === "tool").map(message => childOutcomeSchema.parse(JSON.parse(text(message))));
-      const reply = "delegated " + JSON.stringify(results);
-      if (parentHolds.has(digest(prompt))) hold(reply, "parent/" + digest(prompt)); else finish(reply);
-    }
-  } else if (prompt.startsWith("record ")) {
-    if (continuation) {
-      const reply = "settled " + text(body.messages.at(-1) ?? { role: "tool", content: "" });
-      if (resumeHolds.has(digest(prompt))) hold(reply, "resume/" + digest(prompt)); else finish(reply);
-    } else {
-      const tool = body.tools?.find(tool => tool.function.name === "record_work_item");
-      const schema = z.looseObject({ properties: z.looseObject({ operation_id: z.looseObject({ const: z.uuid() }) }) }).parse(tool?.function.parameters);
-      call("record_work_item", { operation_id: schema.properties.operation_id.const, note: "synthetic control fixture note" });
-      response.write(frame({}, "tool_calls")); response.end("data: [DONE]\n\n"); observation.responseFinished = true;
-    }
-  } else if (prompt.startsWith("hold ")) hold("held complete", "child/" + digest(prompt));
-  else if (prompt.startsWith("remember ")) finish("stored " + prompt.slice(9));
-  else throw new Error("Unsupported control fixture prompt");
-}
-provider.listen(0, "127.0.0.1");
-await once(provider, "listening");
-cleanupSteps.push(async () => { const closed = new Promise<void>(done => provider.close(() => done())); provider.closeAllConnections(); await closed; cleanupResults.push({ scope: "provider", state: "closed" }); });
-const providerAddress = provider.address(); assert.ok(providerAddress && typeof providerAddress === "object");
-const address = await temporalServer();
+    return true;
+  } });
+const { wire } = provider;
+const providerEndpoint = await provider.listen();
+cleanupSteps.push(async () => { await provider.close(); cleanupResults.push({ scope: "provider", state: "closed" }); });
+assert.equal(process.env.BIRBCREW_TEMPORAL_ADDRESS, undefined, "This suite owns a fresh Temporal development server");
+const temporalCli = process.env.TEMPORAL_CLI;
+assert.ok(temporalCli, "TEMPORAL_CLI must name the official Temporal CLI 1.10.0 fixture");
+const { address, version: temporalVersion } = await temporalDevServer(temporalCli, directory, args => owned("temporal", temporalCli, args));
+await evidence("prerequisites", { temporalVersion, node: process.version, platform: "linux", database: "separate-fresh-pg17" });
 process.env.BIRBCREW_TEMPORAL_ADDRESS = address;
 process.env.BIRBCREW_TEMPORAL_NAMESPACE = "default";
 process.env.BIRBCREW_DATABASE_URL = database;
-process.env.BIRBCREW_CONTROL_FIXTURE_ENDPOINT = `http://127.0.0.1:${providerAddress.port}/chat/completions`;
+process.env.BIRBCREW_CONTROL_FIXTURE_ENDPOINT = providerEndpoint;
 process.env.BIRBCREW_CONTROL_RUNNER_LOG = runnerLog;
 const pool = new Pool({ connectionString: database, application_name: "control-workflow-fixture" });
 cleanupSteps.push(async () => { await pool.end(); cleanupResults.push({ scope: "main-pool", state: "ended" }); });
@@ -370,7 +248,62 @@ async function childRows(requestId: string) {
   return z.array(childRowSchema).parse((await pool.query(`SELECT child_id AS "childId",native_call_id AS "nativeCallId",ordinal,phase,
     workflow_run_id AS "workflowRunId",generation,approval_id AS "approvalId",outcome FROM birbcrew_ts.pi_children WHERE request_id=$1 ORDER BY ordinal`, [requestId])).rows);
 }
-async function delegation(tasks: z.infer<typeof taskSchema>[], profile = parentProfile) {
+type ParentRequest = Pick<SettledParentResult, "conversationId" | "requestId">;
+const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
+async function cohortRows(commandId: string) {
+  return cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
+    FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [commandId])).rows);
+}
+const parentRowSchema = settledParentResultSchema.extend({ phase: z.string() });
+async function parentRow(requestId: string) {
+  return parentRowSchema.parse((await pool.query(`SELECT c.member_id AS "memberId",
+    t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
+    d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
+    JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
+    WHERE t.request_id=$1`, [requestId])).rows[0]);
+}
+async function parentObserved(key: ParentRequest) {
+  return z.strictObject({ observed: z.boolean() }).parse((await pool.query(
+    "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
+}
+const positiveSchema = parentResultKeySchema.omit({ memberId: true }).extend({
+  workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
+  resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(),
+  reply: parentResultKeySchema.shape.reply.unwrap(),
+  installationId: z.uuid(), instanceId: z.uuid(), observedAt: z.iso.datetime(),
+});
+/** Positive parent-result observations recorded under the current recovery instance. */
+async function positiveRows(key: ParentRequest) {
+  return z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
+    o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
+    o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply,
+    to_char(o.observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "observedAt"
+    FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
+      ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
+    WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+}
+async function stoppedLaunches(requestId: string, label: string) {
+  return until(async () => {
+    const rows = z.array(z.looseObject({ token: z.uuid(), stopped: z.boolean() })).parse((await pool.query(
+      "SELECT * FROM birbcrew_ts.native_launches WHERE request_id=$1 ORDER BY child_id NULLS FIRST,token", [requestId])).rows);
+    return rows.length > 0 && rows.every(row => row.stopped) ? rows : undefined;
+  }, label);
+}
+async function untilAbsent(pids: number[], label: string, timeout?: number) {
+  return until(async () => {
+    const rows = pids.map(pid => ({ pid, absent: absent(pid) }));
+    return rows.every(row => row.absent) ? rows : undefined;
+  }, label, timeout);
+}
+async function heartbeatStamp(path: string) {
+  try { return (await stat(path)).mtimeMs; }
+  catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
+}
+async function childPids(pid: number) {
+  return z.array(z.coerce.number().int().positive()).parse((await readFile(`/proc/${pid}/task/${pid}/children`, "utf8"))
+    .trim().split(/\s+/).filter(Boolean));
+}
+async function delegation(tasks: Task[], profile = parentProfile) {
   const { memberId } = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
   const conversationId = randomUUID(), requestId = randomUUID();
   const conversation = { ownerId, memberId, conversationId };
@@ -404,7 +337,7 @@ async function flushUntilComplete(command: ControlReceipt) {
   return until(async () => { await control.flush(); const report = await drainDelegation(temporalControl, command.commandId); return report.complete ? report : undefined; }, "combined exact child and parent drain", 120_000);
 }
 async function countSnapshot() {
-  const loads = await runnerLoads();
+  const loads = await runnerLoads(runnerLog);
   return { providerRequests: wire.length, runnerProfileLoads: loads.filter(row => row.loadedBy === "supervisor-runner.ts").length };
 }
 async function recordCase(label: string, value: Delegation, command: ControlReceipt) {
@@ -412,7 +345,7 @@ async function recordCase(label: string, value: Delegation, command: ControlRece
     FROM birbcrew_ts.native_launches WHERE request_id=$1 ORDER BY child_id NULLS FIRST,token`, [value.request.requestId])).rows;
   const prompts = new Set([value.request.text, ...value.tasks.map(task => task.task)].map(digest));
   const requests = wire.filter(row => prompts.has(row.promptDigest));
-  const loads = (await runnerLoads()).filter(row => row.loadedBy === "supervisor-runner.ts");
+  const loads = (await runnerLoads(runnerLog)).filter(row => row.loadedBy === "supervisor-runner.ts");
   await evidence(label, { requestId: value.request.requestId, childRows: await childRows(value.request.requestId),
     nativeLaunchReservations: launches, providerRequests: requests, suiteCumulativeRunnerProfileLoads: loads,
     admissionEvidenceScope: "provider request proves final admission; reservation alone does not",
@@ -454,10 +387,10 @@ test("disabling a running Pi child closes its actual provider socket and known r
   await enable(); const workflow = await workflowWorker(), activities = await activityWorkers();
   try {
     const task = "hold " + randomUUID();
-    const baselineLoads = new Set((await runnerLoads()).map(row => row.pid));
+    const baselineLoads = new Set((await runnerLoads(runnerLog)).map(row => row.pid));
     const value = await delegation([{ role: "analyst", task }]);
     const request = await until(async () => wire.find(row => row.promptDigest === digest(task)), "actual running child provider request");
-    const running = (await runnerLoads()).filter(row => row.loadedBy === "supervisor-runner.ts" && !baselineLoads.has(row.pid) && !absent(row.pid));
+    const running = (await runnerLoads(runnerLog)).filter(row => row.loadedBy === "supervisor-runner.ts" && !baselineLoads.has(row.pid) && !absent(row.pid));
     assert.ok(running.length > 0, "At least the admitted child runner is live while its response is held");
     const command = await change(false);
     await flushUntilComplete(command); await committed(value);
@@ -476,7 +409,7 @@ test("unanswered recorder cards close without owner answers and ordered failures
   const barrier = { name: "control_stop_" + barrierId, key: BigInt("0x" + barrierId.slice(0, 15)).toString() };
   try {
     const tasks = [0, 1].map(() => ({ role: "recorder" as const, task: "record " + randomUUID() }));
-    const parentPrompt = "delegate " + JSON.stringify(tasks); parentHolds.add(digest(parentPrompt));
+    const parentPrompt = "delegate " + JSON.stringify(tasks); holds.add("parent/" + digest(parentPrompt));
     const value = await delegation(tasks);
     const cards = await until(async () => {
       const cards = await ledger.pending(value.conversation); return cards.length === 2 ? cards : undefined;
@@ -511,11 +444,11 @@ test("unanswered recorder cards close without owner answers and ordered failures
     await pool.query(`CREATE TRIGGER ${barrier.name} BEFORE UPDATE OF stopped ON birbcrew_ts.native_launches
       FOR EACH ROW WHEN (NEW.stopped AND NOT OLD.stopped)
       EXECUTE FUNCTION birbcrew_ts.${barrier.name}('${parentToken}', '${barrier.key}')`);
-    const beforeRelease = await runnerLoads();
+    const beforeRelease = await runnerLoads(runnerLog);
     assert.ok(beforeRelease.some(row => row.loadedBy === "supervisor-runner.ts" && !absent(row.pid)),
       "The held parent response has a live observed runner before release");
     const parentBarrier = held.get("parent/" + digest(parentPrompt)); assert.ok(parentBarrier);
-    parentBarrier.release(); parentHolds.delete(digest(parentPrompt));
+    parentBarrier.release(); holds.delete("parent/" + digest(parentPrompt));
     const wait = await until(async () => {
       const { rows: [row] } = await pool.query(`SELECT pid,wait_event_type,wait_event,state,query,pg_blocking_pids(pid) AS blocking_pids
         FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory'
@@ -526,10 +459,8 @@ test("unanswered recorder cards close without owner answers and ordered failures
     const reply = await committed(value);
     const outcomes = z.array(childOutcomeSchema).parse(JSON.parse(reply.slice(10)));
     assert.deepEqual(outcomes.map(outcome => [outcome.nativeCallId, outcome.kind]), rows.map(row => [row.nativeCallId, "failed"]));
-    const remaining = await until(async () => {
-      const rows = beforeRelease.filter(row => row.loadedBy === "supervisor-runner.ts").map(row => ({ pid: row.pid, absent: absent(row.pid) }));
-      return rows.every(row => row.absent) ? rows : undefined;
-    }, "known runner PIDs absent before withheld stopped update");
+    const remaining = await untilAbsent(beforeRelease.filter(row => row.loadedBy === "supervisor-runner.ts").map(row => row.pid),
+      "known runner PIDs absent before withheld stopped update");
     const nativePending = await drainDelegation(temporalControl, command.commandId);
     assert.equal(nativePending.complete, false);
     assert.ok(nativePending.blockers.some(blocker => blocker.kind === "native_unconfirmed" && blocker.tokens.includes(parentToken)));
@@ -559,7 +490,7 @@ test("unanswered recorder cards close without owner answers and ordered failures
 test("an approved resumed recorder keeps its committed receipt while control retires its native continuation", { timeout: 240_000 }, async () => {
   await enable(); const workflow = await workflowWorker(), activities = await activityWorkers();
   try {
-    const task = "record " + randomUUID(); resumeHolds.add(digest(task));
+    const task = "record " + randomUUID(); holds.add("resume/" + digest(task));
     const value = await delegation([{ role: "recorder", task }]);
     const card = await until(async () => (await ledger.pending(value.conversation))[0], "recorder approval");
     const { approvalId, invocationId, nativeCallId, argumentDigest, version } = card;
@@ -573,7 +504,7 @@ test("an approved resumed recorder keeps its committed receipt while control ret
     assert.deepEqual((await pool.query("SELECT receipt_id,approval_id FROM birbcrew_ts.work_items WHERE request_id=$1", [value.request.requestId])).rows, receipts);
     assert.equal((await pool.query("SELECT decision FROM birbcrew_ts.deferred_calls WHERE approval_id=$1", [card.approvalId])).rows[0].decision, "approve");
     assert.equal(wire.filter(row => row.promptDigest === digest(task)).length, 2, "The real proposal and admitted continuation were captured");
-    resumeHolds.delete(digest(task)); await recordCase("resumed-receipt-preserved", value, command); await replay(value);
+    holds.delete("resume/" + digest(task)); await recordCase("resumed-receipt-preserved", value, command); await replay(value);
   } finally { await activities.stop(); await workflow.stop(); }
 });
 
@@ -651,14 +582,9 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
   const tasks = [{ role: "analyst" as const, task: "remember " + randomUUID() }];
   const parentPrompt = "delegate " + JSON.stringify(tasks), holdKey = "parent/" + digest(parentPrompt);
   const observer = new TemporalDelegationWorkflows(temporal);
-  const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
-  let parentKey: SettledParentResult | undefined;
-  let command: ControlReceipt | undefined;
-  let originalCohort: z.infer<typeof cohortSchema> | undefined;
-  let retainedUnobservedParent = false;
-  parentHolds.add(digest(parentPrompt));
+  holds.add(holdKey);
   try {
-    const baselinePids = new Set((await runnerLoads()).map(row => row.pid));
+    const baselinePids = new Set((await runnerLoads(runnerLog)).map(row => row.pid));
     const value = await delegation(tasks);
     const barrier = await until(async () => held.get(holdKey), "actual parent follow-up provider hold");
     const requests = wire.filter(row => [digest(parentPrompt), digest(tasks[0].task)].includes(row.promptDigest));
@@ -670,27 +596,17 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     assert.equal(admission.approvalDeadlineSeconds, null, "The actual request admission has no owner deadline");
     assert.equal((await ledger.pending(value.conversation)).length, 0, "The analyst delegation needs no owner answer or deadline");
     assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.deferred_calls WHERE request_id=$1", [value.request.requestId])).rowCount, 0);
-    const runners = (await runnerLoads()).filter(row => row.loadedBy === "supervisor-runner.ts" && !baselinePids.has(row.pid));
+    const runners = (await runnerLoads(runnerLog)).filter(row => row.loadedBy === "supervisor-runner.ts" && !baselinePids.has(row.pid));
     assert.ok(runners.some(row => !absent(row.pid)), "The provider hold owns a live actual parent runner");
     await workflow.stop(); workflow = undefined;
-    barrier.release(); parentHolds.delete(digest(parentPrompt));
+    barrier.release(); holds.delete(holdKey);
     await before(barrier.closed, now() + 10_000, "released actual parent provider response closes");
     await committed(value);
-    const launches = await until(async () => {
-      const rows = z.array(z.looseObject({ token: z.uuid(), stopped: z.boolean() })).parse((await pool.query(
-        "SELECT * FROM birbcrew_ts.native_launches WHERE request_id=$1 ORDER BY child_id NULLS FIRST,token", [value.request.requestId])).rows);
-      return rows.length > 0 && rows.every(row => row.stopped) ? rows : undefined;
-    }, "all actual request native launches confirm stopped while the workflow worker is offline");
-    const knownRunners = await until(async () => {
-      const rows = runners.map(row => ({ pid: row.pid, absent: absent(row.pid) }));
-      return rows.every(row => row.absent) ? rows : undefined;
-    }, "all observed request runners exit while the workflow worker is offline");
-    const parent = settledParentResultSchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
-      t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
-      d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
-      JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
-      WHERE t.request_id=$1`, [value.request.requestId])).rows[0]);
-    const { phase, ...key } = parent; parentKey = key;
+    const launches = await stoppedLaunches(value.request.requestId,
+      "all actual request native launches confirm stopped while the workflow worker is offline");
+    const knownRunners = await untilAbsent(runners.map(row => row.pid), "all observed request runners exit while the workflow worker is offline");
+    const parent = await parentRow(value.request.requestId);
+    const { phase, ...key } = parent;
     assert.equal(phase, "committed"); assert.ok(key.workflowRunId); assert.ok(key.resumeActivityId); assert.ok(key.reply);
     const history = await until(async () => {
       const history = await temporal.workflow.getHandle(value.workflowId, key.workflowRunId ?? undefined).fetchHistory();
@@ -705,9 +621,7 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     }, "actual Temporal executeTurn completion without a workflow worker to process it");
     const children = await childRows(value.request.requestId);
     const observation = await observer.observeParentResult(key);
-    const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
-      "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed",
-      [key.conversationId, key.requestId])).rows[0]);
+    const applicable = await parentObserved(key);
     assert.ok(requests.every(request => request.responseFinished && request.responseClosed), "Every actual provider response finished and closed");
     await evidence("sql-settled-parent-unobserved-history", history.raw);
     await evidence("sql-settled-parent-unobserved-before-disable", { parent, children, launches, knownRunners, admission,
@@ -718,10 +632,8 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     assert.equal(history.postCompletionWorkflowTasks.length, 0, "No workflow task completed after the actual follow-up activity completion");
     assert.deepEqual(observation, { kind: "pending" }, "Actual Temporal history still lacks parent workflow observation");
     assert.equal(applicable.observed, false, "The pending actual history has no applicable positive SQL evidence");
-    command = await change(false);
-    const cohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
-      FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
-    originalCohort = cohort;
+    const command = await change(false);
+    const cohort = await cohortRows(command.commandId);
     const report = await drainDelegation(temporalControl, command.commandId);
     await evidence("sql-settled-parent-unobserved-disable", { requestId: value.request.requestId, childId: value.rows[0].childId,
       command, cohort, report, observation, workflowWorker: "stopped", activityWorkers: "running" });
@@ -733,89 +645,65 @@ test("disable retains a SQL-settled delegation until its actual parent workflow 
     assert.ok(report.parents.some(parent => parent.requestId === value.request.requestId && parent.workflow.kind === "pending"));
     assert.ok(report.blockers.some(blocker => blocker.kind === "parent_workflow" && blocker.requestId === value.request.requestId
       && blocker.observation.kind === "pending"), "The report names this unobserved parent workflow as a blocker");
-    retainedUnobservedParent = true;
+
+    workflow = await workflowWorker();
+    const recovered = await until(async () => {
+      const result = await observer.observeParentResult(key); return result.kind === "observed" ? result : undefined;
+    }, "restarted workflow worker observes the completed actual parent activity");
+    const recoveredReport = await flushUntilComplete(command);
+    await evidence("sql-settled-parent-unobserved-recovered", { parentKey: key, observation: recovered, report: recoveredReport });
+    assert.equal(recovered.kind, "observed");
+    assert.equal(recoveredReport.complete, true, "Drain completes after the parent workflow actually observes its result");
+    const noLaunchBaseline = await countSnapshot();
+    const positive = await until(async () => {
+      await control.flush();
+      if (!(await parentObserved(key)).observed) return undefined;
+      const rows = await positiveRows(key);
+      assert.equal(rows.length, 1, "The actual controller persisted one current-instance parent observation");
+      return rows[0];
+    }, "actual controller flush persists applicable exact parent-result evidence", 120_000);
+    const fresh = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
+    const current = await controlState(pool);
+    const { observedAt, ...identity } = positive;
+    assert.deepEqual(identity, { installationId: current.installationId, instanceId: current.instanceId,
+      conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
+      resumeActivityId: key.resumeActivityId, reply: key.reply });
+    assert.equal(current.installationId, command.installationId);
+    assert.equal(current.instanceId, command.instanceId);
+    const persistedReport = await drainDelegation(fresh, command.commandId);
+    assert.equal(persistedReport.complete, true, "A new manager drains the original command with durable evidence");
+    const cohortAfterPositive = await cohortRows(command.commandId);
+    assert.deepEqual(cohortAfterPositive, cohort, "Recording the positive preserves original cohort membership and retirement");
+    const { reply: observedReply, ...positiveIdentity } = positive;
+    const { reply: parentReply, ...parentIdentity } = key;
+    assert.equal(observedReply, parentReply);
+    const positiveProof = { ...positiveIdentity, replyDigest: digest(observedReply) };
+    await evidence("sql-settled-parent-observed-positive", { observation: recovered, positive: positiveProof, applicable: true,
+      source: "actual-Temporal-adapter-through-controller-flush", freshManagerState: current, originalCommand: command,
+      originalCohort: cohort, cohortAfterPositive, report: persistedReport });
+    const enabled = await changeControl(pool, { commandId: randomUUID(), expectedRevision: current.revision,
+      scope: { kind: "global" }, enabled: true, actor: "actual-pi-temporal-fixture", reason: "re-enable after actual parent observation" });
+    const later = await changeControl(pool, { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision,
+      scope: { kind: "global" }, enabled: false, actor: "actual-pi-temporal-fixture", reason: "exclude durably observed exact parent result" });
+    const laterCohort = await cohortRows(later.commandId);
+    const originalChildren = new Set(persistedReport.children.filter(child => child.requestId === key.requestId).map(child => child.childId));
+    assert.equal(originalChildren.size, tasks.length, "The original cohort identifies every child from this exact request");
+    assert.ok(laterCohort.every(row => !originalChildren.has(row.childId)), "The later disable excludes this durably observed request's children");
+    const laterReport = await drainDelegation(fresh, later.commandId);
+    assert.ok(laterReport.children.every(child => child.requestId !== key.requestId));
+    assert.ok(laterReport.parents.every(parent => parent.requestId !== key.requestId));
+    assert.ok(laterReport.siblings.every(sibling => sibling.requestId !== key.requestId));
+    const cohortAfterLaterDisable = await cohortRows(command.commandId);
+    assert.deepEqual(cohortAfterLaterDisable, cohort, "Re-enable and later disable preserve the original immutable cohort");
+    const noLaunchAfter = await countSnapshot();
+    assert.deepEqual(noLaunchAfter, noLaunchBaseline, "Positive persistence, manager restart and later control changes launch no additional SDK or provider work");
+    await evidence("sql-settled-parent-observed-later-disable", { parentKey: parentIdentity, positive: positiveProof, observedAt, enabled, later,
+      noLaunchBaseline, noLaunchAfter,
+      originalCohort: cohort, cohortAfterLaterDisable, laterCohort, laterReport,
+      exclusionScope: "this-exact-request-only-other-history-may-remain-selected" });
   } finally {
-    held.get(holdKey)?.release(); parentHolds.delete(digest(parentPrompt));
-    try {
-      workflow ??= await workflowWorker();
-      if (parentKey) {
-        const key = parentKey;
-        const observation = await until(async () => {
-          const result = await observer.observeParentResult(key); return result.kind === "observed" ? result : undefined;
-        }, "restarted workflow worker observes the completed actual parent activity");
-        const report = command ? await flushUntilComplete(command) : null;
-        await evidence("sql-settled-parent-unobserved-recovered", { parentKey: key, observation, report });
-        assert.equal(observation.kind, "observed");
-        if (report) assert.equal(report.complete, true, "Drain completes after the parent workflow actually observes its result");
-        if (retainedUnobservedParent && command && originalCohort) {
-          const noLaunchBaseline = await countSnapshot();
-          const positiveSchema = parentResultKeySchema.omit({ memberId: true }).extend({
-            workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
-            resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(),
-            reply: parentResultKeySchema.shape.reply.unwrap(),
-            installationId: z.uuid(), instanceId: z.uuid(), observedAt: z.iso.datetime(),
-          });
-          const positive = await until(async () => {
-            await control.flush();
-            const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
-              "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed",
-              [key.conversationId, key.requestId])).rows[0]);
-            if (!applicable.observed) return undefined;
-            const rows = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
-              o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
-              o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply,
-              to_char(o.observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "observedAt"
-              FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
-                ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
-              WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
-            assert.equal(rows.length, 1, "The actual controller persisted one current-instance parent observation");
-            return rows[0];
-          }, "actual controller flush persists applicable exact parent-result evidence", 120_000);
-          const fresh = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
-          const current = await controlState(pool);
-          const { observedAt, ...identity } = positive;
-          assert.deepEqual(identity, { installationId: current.installationId, instanceId: current.instanceId,
-            conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
-            resumeActivityId: key.resumeActivityId, reply: key.reply });
-          assert.equal(current.installationId, command.installationId);
-          assert.equal(current.instanceId, command.instanceId);
-          const persistedReport = await drainDelegation(fresh, command.commandId);
-          assert.equal(persistedReport.complete, true, "A new manager drains the original command with durable evidence");
-          const cohortAfterPositive = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
-            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
-          assert.deepEqual(cohortAfterPositive, originalCohort, "Recording the positive preserves original cohort membership and retirement");
-          const { reply: observedReply, ...positiveIdentity } = positive;
-          const { reply: parentReply, ...parentIdentity } = key;
-          assert.equal(observedReply, parentReply);
-          const positiveProof = { ...positiveIdentity, replyDigest: digest(observedReply) };
-          await evidence("sql-settled-parent-observed-positive", { observation, positive: positiveProof, applicable: true,
-            source: "actual-Temporal-adapter-through-controller-flush", freshManagerState: current, originalCommand: command,
-            originalCohort, cohortAfterPositive, report: persistedReport });
-          const enabled = await changeControl(pool, { commandId: randomUUID(), expectedRevision: current.revision,
-            scope: { kind: "global" }, enabled: true, actor: "actual-pi-temporal-fixture", reason: "re-enable after actual parent observation" });
-          const later = await changeControl(pool, { commandId: randomUUID(), expectedRevision: (await controlState(pool)).revision,
-            scope: { kind: "global" }, enabled: false, actor: "actual-pi-temporal-fixture", reason: "exclude durably observed exact parent result" });
-          const laterCohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
-            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [later.commandId])).rows);
-          const originalChildren = new Set(persistedReport.children.filter(child => child.requestId === key.requestId).map(child => child.childId));
-          assert.equal(originalChildren.size, tasks.length, "The original cohort identifies every child from this exact request");
-          assert.ok(laterCohort.every(row => !originalChildren.has(row.childId)), "The later disable excludes this durably observed request's children");
-          const laterReport = await drainDelegation(fresh, later.commandId);
-          assert.ok(laterReport.children.every(child => child.requestId !== key.requestId));
-          assert.ok(laterReport.parents.every(parent => parent.requestId !== key.requestId));
-          assert.ok(laterReport.siblings.every(sibling => sibling.requestId !== key.requestId));
-          const cohortAfterLaterDisable = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
-            FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
-          assert.deepEqual(cohortAfterLaterDisable, originalCohort, "Re-enable and later disable preserve the original immutable cohort");
-          const noLaunchAfter = await countSnapshot();
-          assert.deepEqual(noLaunchAfter, noLaunchBaseline, "Positive persistence, manager restart and later control changes launch no additional SDK or provider work");
-          await evidence("sql-settled-parent-observed-later-disable", { parentKey: parentIdentity, positive: positiveProof, observedAt, enabled, later,
-            noLaunchBaseline, noLaunchAfter,
-            originalCohort, cohortAfterLaterDisable, laterCohort, laterReport,
-            exclusionScope: "this-exact-request-only-other-history-may-remain-selected" });
-        }
-      }
-    } finally { try { await activities.stop(); } finally { await workflow?.stop(); } }
+    held.get(holdKey)?.release(); holds.delete(holdKey);
+    try { await activities.stop(); } finally { await workflow?.stop(); }
   }
 });
 
@@ -823,7 +711,7 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
   assert.equal(manualWorkers.size, 0, "Earlier fixture workflow and activity workers have stopped before CLI startup");
   const scope = "worker-health-" + randomUUID();
   const heartbeat = join(directory, scope + "-heartbeat");
-  const baselinePids = new Set((await runnerLoads()).map(row => row.pid));
+  const baselinePids = new Set((await runnerLoads(runnerLog)).map(row => row.pid));
   const worker = owned(scope, process.execPath, ["src/service/cli.ts", "worker", config], {
     ...process.env, PGAPPNAME: scope, BIRBCREW_STATE_DIR: stateDir, BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat,
   }, "process");
@@ -833,10 +721,6 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
     return z.array(sessionSchema).parse((await pool.query(`SELECT pid,application_name,state,wait_event_type,wait_event,query,
       pg_blocking_pids(pid) AS "blockingPids" FROM pg_stat_activity
       WHERE datname=current_database() AND application_name=$1 ORDER BY pid`, [scope])).rows);
-  }
-  async function heartbeatStamp() {
-    try { return (await stat(heartbeat)).mtimeMs; }
-    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
   }
   const eventSchema = z.looseObject({ event: z.string() });
   async function failures() {
@@ -866,12 +750,11 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
       return observations.every(row => row.observation.pollers?.some(poller => poller.identity?.startsWith(worker.child.pid + "@")))
         ? observations : undefined;
     }, "the owned CLI worker's workflow and every configured activity queue poller");
-    const initialHeartbeat = await until(async () => { alive(); return heartbeatStamp(); }, "owned CLI healthy heartbeat after startup");
-    const ownedLoads = (await runnerLoads()).filter(row => !baselinePids.has(row.pid));
+    const initialHeartbeat = await until(async () => { alive(); return heartbeatStamp(heartbeat); }, "owned CLI healthy heartbeat after startup");
+    const ownedLoads = (await runnerLoads(runnerLog)).filter(row => !baselinePids.has(row.pid));
     assert.ok(ownedLoads.some(row => row.pid === worker.child.pid && row.loadedBy === "cli.ts"));
     const workerPid = z.int().positive().parse(worker.child.pid);
-    const directChildPids = z.array(z.coerce.number().int().positive()).parse((await readFile(
-      `/proc/${workerPid}/task/${workerPid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean));
+    const directChildPids = await childPids(workerPid);
     const directChildren = await Promise.all(directChildPids.map(async pid => {
       const bytes = await readFile(`/proc/${pid}/cmdline`);
       assert.ok(bytes.length < 32 * 1024, "Bounded owned child command line");
@@ -896,7 +779,7 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
           && row.blockingPids.includes(blockerPid) && /^SELECT\s+c\.owner_id/.test(row.query)
           && row.query.includes("FROM birbcrew_ts.pi_children j"));
       }, label + " actual controller discovery SELECT blocked by the owned backend", 20_000);
-      await evidence("worker-health-" + label + "-blocked", { blockerPid, discovery, heartbeat: await heartbeatStamp(), observedAt: new Date().toISOString() });
+      await evidence("worker-health-" + label + "-blocked", { blockerPid, discovery, heartbeat: await heartbeatStamp(heartbeat), observedAt: new Date().toISOString() });
       return discovery;
     }
     const baselineFailures = await failures();
@@ -905,26 +788,26 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
     const firstFailureCount = await until(async () => {
       alive(); const count = await failures(); return count > baselineFailures ? count : undefined;
     }, "failed-control log while discovery remains blocked", 20_000);
-    const failedHeartbeat = await heartbeatStamp();
+    const failedHeartbeat = await heartbeatStamp(heartbeat);
     assert.ok(failedHeartbeat !== undefined);
     const secondBlocked = await until(async () => {
       alive();
-      assert.equal(await heartbeatStamp(), failedHeartbeat, "A failed control pass must not publish healthy heartbeats");
+      assert.equal(await heartbeatStamp(heartbeat), failedHeartbeat, "A failed control pass must not publish healthy heartbeats");
       return (await sessions()).find(row => row.state === "active" && row.wait_event_type === "Lock"
         && row.blockingPids.includes(blockerPid) && /^SELECT\s+c\.owner_id/.test(row.query)
         && row.query.includes("FROM birbcrew_ts.pi_children j"));
     }, "another actual controller discovery pass blocked after failure", 20_000);
     const repeatedFailureCount = await until(async () => {
       alive();
-      assert.equal(await heartbeatStamp(), failedHeartbeat, "The healthy heartbeat remains frozen through the next failed pass");
+      assert.equal(await heartbeatStamp(heartbeat), failedHeartbeat, "The healthy heartbeat remains frozen through the next failed pass");
       const count = await failures(); return count > firstFailureCount ? count : undefined;
     }, "a second failed-control log with unchanged heartbeat", 20_000);
     await evidence("worker-health-failed", { scope, blockerPid, firstBlocked, secondBlocked, baselineFailures,
       firstFailureCount, repeatedFailureCount, failedHeartbeat, observedBlockedIntervalMs: now() - failedAt,
-      heartbeatAfterRepeatedFailure: await heartbeatStamp(), sessions: await sessions() });
+      heartbeatAfterRepeatedFailure: await heartbeatStamp(heartbeat), sessions: await sessions() });
     await blocker.query("ROLLBACK"); locked = false;
     const recoveredHeartbeat = await until(async () => {
-      alive(); const stamp = await heartbeatStamp(); return stamp !== undefined && stamp > failedHeartbeat ? stamp : undefined;
+      alive(); const stamp = await heartbeatStamp(heartbeat); return stamp !== undefined && stamp > failedHeartbeat ? stamp : undefined;
     }, "fresh healthy heartbeat after the discovery lock is released", 20_000);
     await evidence("worker-health-recovered", { scope, failedHeartbeat, recoveredHeartbeat, failureCount: await failures(), sessions: await sessions() });
     const shutdownBlocked = await blockDiscovery("shutdown");
@@ -937,15 +820,12 @@ test("an actual worker stops healthy heartbeats on blocked control discovery, re
     assert.equal(heldLock.held, true, "The owned table lock remains held until after the worker has closed");
     const closedSessions = await until(async () => { const rows = await sessions(); return rows.length === 0 ? rows : undefined; },
       "all uniquely named worker database sessions close", 5000);
-    const knownProcesses = await until(async () => {
-      const rows = knownPids.map(pid => ({ pid, absent: absent(pid) }));
-      return rows.every(row => row.absent) ? rows : undefined;
-    }, "the known CLI and supervisor PIDs exit", 5000);
+    const knownProcesses = await untilAbsent(knownPids, "the known CLI and supervisor PIDs exit", 5000);
     await evidence("worker-health-shutdown", { scope, workerPid: worker.child.pid, shutdownBlocked, blockerPid,
       blockerLockStillHeld: heldLock.held, observedShutdownMs: now() - stopAt, exitCode: worker.child.exitCode,
       signalCode: worker.child.signalCode, sessions: closedSessions, knownProcesses, ancestry: "unproven" });
   } catch (error) {
-    await evidence("worker-health-failure", { scope, workerPid: worker.child.pid, heartbeat: await heartbeatStamp(),
+    await evidence("worker-health-failure", { scope, workerPid: worker.child.pid, heartbeat: await heartbeatStamp(heartbeat),
       failures: await failures(), sessions: await sessions(), error: error instanceof Error ? error.message : String(error) });
     throw error;
   } finally {
@@ -992,11 +872,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     assert.equal(delivered, reply, "The waiting caller receives the actual committed reply after activity acknowledgement loss");
     assert.ok(injected, "The production executeTurn returned a complete actual Pi result before injection");
     const fault = injected;
-    const parent = settledParentResultSchema.extend({ phase: z.string() }).parse((await pool.query(`SELECT c.member_id AS "memberId",
-      t.conversation_id AS "conversationId",t.request_id AS "requestId",t.workflow_run_id AS "workflowRunId",
-      d.resume_activity_id AS "resumeActivityId",t.reply,t.phase FROM birbcrew_ts.turns t
-      JOIN birbcrew_ts.conversations c USING(conversation_id) JOIN birbcrew_ts.delegations d USING(conversation_id,request_id)
-      WHERE t.request_id=$1`, [value.request.requestId])).rows[0]);
+    const parent = await parentRow(value.request.requestId);
     const { phase, ...key } = parent;
     assert.equal(phase, "committed");
     assert.deepEqual(fault, { requestId: key.requestId, workflowRunId: key.workflowRunId,
@@ -1047,11 +923,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
     assert.ok(history.postCompletionWorkflowTasks.length > 0, "The actual parent workflow processed reconciliation completion");
     assert.equal(history.raw.events?.some(event => event.activityTaskCompletedEventAttributes?.scheduledEventId?.toString()
       === history.execute.eventId?.toString()), false, "The recorded follow-up executeTurn has no successful activity completion");
-    const launches = await until(async () => {
-      const rows = z.array(z.looseObject({ token: z.uuid(), stopped: z.boolean() })).parse((await pool.query(
-        "SELECT * FROM birbcrew_ts.native_launches WHERE request_id=$1 ORDER BY child_id NULLS FIRST,token", [key.requestId])).rows);
-      return rows.length > 0 && rows.every(row => row.stopped) ? rows : undefined;
-    }, "all actual native launches stopped before recovered-parent control drain");
+    const launches = await stoppedLaunches(key.requestId, "all actual native launches stopped before recovered-parent control drain");
     const children = await childRows(key.requestId);
     assert.ok(children.every(child => child.phase === "complete" && child.outcome?.kind === "completed"));
     const observer = new TemporalDelegationWorkflows(temporal);
@@ -1063,9 +935,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
       reconcileCompletedEventId: history.completed.eventId?.toString(), reconcileResult: history.result,
       postCompletionWorkflowTasks: history.postCompletionWorkflowTasks, observation, expectedObservation: { kind: "observed" } });
     const command = await change(false);
-    const cohortSchema = z.array(z.strictObject({ commandId: z.uuid(), childId: z.uuid(), retire: z.boolean() }));
-    const cohort = cohortSchema.parse((await pool.query(`SELECT command_id AS "commandId",child_id AS "childId",retire
-      FROM birbcrew_ts.delegation_control_children WHERE command_id=$1 ORDER BY child_id`, [command.commandId])).rows);
+    const cohort = await cohortRows(command.commandId);
     assert.deepEqual(cohort.find(row => row.childId === value.rows[0].childId), {
       commandId: command.commandId, childId: value.rows[0].childId, retire: false,
     }, "Disable retains the already completed child without retiring it");
@@ -1094,271 +964,17 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
       }
     }
 
-    type Events = NonNullable<typeof history.raw.events>;
-    type Event = Events[number];
-    const actualHistoryBytes = protocol.api.history.v1.History.encode(history.raw).finish();
-    const cloneHistory = () => protocol.api.history.v1.History.decode(actualHistoryBytes);
-    const eventId = (event: Event) => { assert.ok(event.eventId); return event.eventId.toString(); };
-    const executeId = eventId(history.execute), failureId = eventId(history.failed);
-    const reconcileId = eventId(history.reconcile), resultId = eventId(history.completed);
-    const commandTaskId = history.reconcile.activityTaskScheduledEventAttributes?.workflowTaskCompletedEventId?.toString();
-    assert.ok(commandTaskId);
-    const consumingTaskId = eventId(history.postCompletionWorkflowTasks[0]);
-    function required(events: Events, id: string) {
-      const event = events.find(event => event.eventId?.toString() === id);
-      assert.ok(event, "The captured actual history contains required fixture event " + id);
-      return event;
-    }
-    function scheduled(events: Events, id: string) {
-      const attributes = required(events, id).activityTaskScheduledEventAttributes;
-      assert.ok(attributes); return attributes;
-    }
-    function completedTask(events: Events, id: string) {
-      const attributes = required(events, id).workflowTaskCompletedEventAttributes;
-      assert.ok(attributes); return attributes;
-    }
-    function payload(value: unknown) {
-      const encoded = temporal.options.loadedDataConverter.payloadConverter.toPayload(value);
-      assert.ok(encoded); return encoded;
-    }
-    function setArguments(events: Events, id: string, args: unknown[]) {
-      scheduled(events, id).input = { payloads: args.map(payload) };
-    }
-    function setResult(events: Events, values: unknown[]) {
-      const attributes = required(events, resultId).activityTaskCompletedEventAttributes;
-      assert.ok(attributes); attributes.result = { payloads: values.map(payload) };
-    }
-    function remove(events: Events, id: string) {
-      const index = events.findIndex(event => event.eventId?.toString() === id);
-      assert.ok(index >= 0); events.splice(index, 1);
-    }
-    function moveBefore(events: Events, id: string, beforeId: string) {
-      const event = required(events, id); remove(events, id);
-      const index = events.findIndex(event => event.eventId?.toString() === beforeId);
-      assert.ok(index >= 0); events.splice(index, 0, event);
-    }
-    const fixtureClient = new Client({ connection });
-    const fixtureHandle = fixtureClient.workflow.getHandle(value.workflowId, key.workflowRunId);
-    let fixture = cloneHistory();
-    assert.ok(fixture.events && fixture.events.length < 200, "Captured history bounds every cloned adapter fixture");
-    const historyMock = context.mock.method(fixtureHandle, "fetchHistory", async () => fixture);
-    const handleMock = context.mock.method(fixtureClient.workflow, "getHandle", () => fixtureHandle);
-    const fixtureObserver = new TemporalDelegationWorkflows(fixtureClient);
-    const fixtureChecks: { name: string; expected: "conservative" | "observed"; observation: Awaited<ReturnType<typeof observer.observeParentResult>> }[] = [];
-    async function checkFixture(name: string, alter: (events: Events) => void, expected: "conservative" | "observed" = "conservative") {
-      fixture = cloneHistory();
-      assert.ok(fixture.events); alter(fixture.events);
-      const observation = await fixtureObserver.observeParentResult(key);
-      fixtureChecks.push({ name, expected, observation });
-      if (expected === "observed") assert.deepEqual(observation, { kind: "observed" }, name);
-      else assert.ok(observation.kind === "pending" || observation.kind === "unknown", name + " must remain conservative");
-    }
-    try {
-      await checkFixture("unmodified-clone-control", () => {}, "observed");
-      for (const [name, args] of [
-        ["reconcile-other-request-same-text", [{ ...value.request, requestId: randomUUID() }, key.workflowRunId, true]],
-        ["reconcile-other-conversation-same-text", [{ ...value.request, conversationId: randomUUID() }, key.workflowRunId, true]],
-        ["reconcile-wrong-request-text", [{ ...value.request, text: value.request.text + " changed" }, key.workflowRunId, true]],
-        ["reconcile-wrong-owner", [{ ...value.request, ownerId: ownerId + "-other" }, key.workflowRunId, true]],
-        ["reconcile-wrong-run", [value.request, randomUUID(), true]],
-        ["reconcile-not-resuming", [value.request, key.workflowRunId, false]],
-        ["reconcile-extra-argument", [value.request, key.workflowRunId, true, false]],
-        ["reconcile-missing-argument", [value.request, key.workflowRunId]],
-      ] satisfies [string, unknown[]][]) await checkFixture(name, events => setArguments(events, reconcileId, args));
-      for (const [name, args] of [
-        ["anchor-other-request", [{ ...value.request, requestId: randomUUID() }, { children: true }]],
-        ["anchor-other-conversation", [{ ...value.request, conversationId: randomUUID() }, { children: true }]],
-        ["anchor-initial-turn", [value.request]],
-        ["anchor-not-child-resume", [value.request, { children: false }]],
-        ["anchor-approval-resume", [value.request, { approval: randomUUID() }]],
-        ["anchor-extra-argument", [value.request, { children: true }, true]],
-      ] satisfies [string, unknown[]][]) await checkFixture(name, events => setArguments(events, executeId, args));
-      for (const [name, values] of [
-        ["result-wrong-text", [{ kind: "complete", text: delivered + " changed" }]],
-        ["result-wrong-kind", [{ kind: "recover", text: delivered }]],
-        ["result-extra-field", [{ kind: "complete", text: delivered, unrelated: true }]],
-        ["result-empty", []],
-        ["result-duplicate", [{ kind: "complete", text: delivered }, { kind: "complete", text: delivered }]],
-      ] satisfies [string, unknown[]][]) await checkFixture(name, events => setResult(events, values));
-      for (const [name, id] of [
-        ["missing-anchor", executeId], ["missing-resume-terminal", failureId],
-        ["missing-reconciliation", reconcileId], ["missing-reconcile-completion", resultId],
-        ["missing-command-task-completion", commandTaskId], ["missing-consuming-task-completion", consumingTaskId],
-      ]) await checkFixture(name, events => remove(events, id));
-      for (const [name, id] of [
-        ["duplicate-anchor", executeId], ["duplicate-resume-terminal", failureId],
-        ["duplicate-reconciliation", reconcileId], ["duplicate-reconcile-completion", resultId],
-        ["duplicate-command-task-completion", commandTaskId], ["duplicate-consuming-task-completion", consumingTaskId],
-      ]) await checkFixture(name, events => events.push({ ...required(events, id) }));
-      await checkFixture("broken-resume-terminal-schedule-reference", events => {
-        const attributes = required(events, failureId).activityTaskFailedEventAttributes;
-        assert.ok(attributes); attributes.scheduledEventId = required(events, resultId).eventId;
-      });
-      await checkFixture("broken-result-schedule-reference", events => {
-        const attributes = required(events, resultId).activityTaskCompletedEventAttributes;
-        assert.ok(attributes); attributes.scheduledEventId = required(events, executeId).eventId;
-      });
-      await checkFixture("missing-anchor-input", events => { scheduled(events, executeId).input = null; });
-      await checkFixture("missing-reconciliation-input", events => { scheduled(events, reconcileId).input = null; });
-      await checkFixture("missing-result-payloads", events => {
-        const attributes = required(events, resultId).activityTaskCompletedEventAttributes;
-        assert.ok(attributes); attributes.result = {};
-      });
-      await checkFixture("missing-anchor-event-id", events => { required(events, executeId).eventId = null; });
-      await checkFixture("missing-reconciliation-event-id", events => { required(events, reconcileId).eventId = null; });
-      await checkFixture("missing-reconciliation-command-reference", events => { scheduled(events, reconcileId).workflowTaskCompletedEventId = null; });
-      await checkFixture("later-unrelated-command-task-despite-equal-reply", events => {
-        const reconciliation = required(events, reconcileId), result = required(events, resultId);
-        const resultAttributes = result.activityTaskCompletedEventAttributes;
-        assert.ok(resultAttributes);
-        const activityStartId = resultAttributes.startedEventId?.toString(); assert.ok(activityStartId);
-        const activityStart = required(events, activityStartId);
-        const task = required(events, consumingTaskId), taskAttributes = completedTask(events, consumingTaskId);
-        const startId = taskAttributes.startedEventId?.toString(), scheduleId = taskAttributes.scheduledEventId?.toString();
-        assert.ok(startId); assert.ok(scheduleId);
-        const laterSchedule = protocol.api.history.v1.HistoryEvent.fromObject({ ...reconciliation, eventId: "900101",
-          activityTaskScheduledEventAttributes: { ...scheduled(events, reconcileId), workflowTaskCompletedEventId: task.eventId },
-        });
-        const laterStart = protocol.api.history.v1.HistoryEvent.fromObject({ ...activityStart, eventId: "900102",
-          activityTaskStartedEventAttributes: { ...activityStart.activityTaskStartedEventAttributes, scheduledEventId: laterSchedule.eventId },
-        });
-        const laterResult = protocol.api.history.v1.HistoryEvent.fromObject({ ...result, eventId: "900103",
-          activityTaskCompletedEventAttributes: { ...resultAttributes, scheduledEventId: laterSchedule.eventId, startedEventId: laterStart.eventId },
-        });
-        const consumingSchedule = protocol.api.history.v1.HistoryEvent.fromObject({ ...required(events, scheduleId), eventId: "900104" });
-        const consumingStart = protocol.api.history.v1.HistoryEvent.fromObject({ ...required(events, startId), eventId: "900105",
-          workflowTaskStartedEventAttributes: { ...required(events, startId).workflowTaskStartedEventAttributes, scheduledEventId: consumingSchedule.eventId },
-        });
-        const consumingCompletion = protocol.api.history.v1.HistoryEvent.fromObject({ ...task, eventId: "900106",
-          workflowTaskCompletedEventAttributes: { ...taskAttributes, scheduledEventId: consumingSchedule.eventId, startedEventId: consumingStart.eventId },
-        });
-        for (const id of [reconcileId, activityStartId, resultId]) remove(events, id);
-        events.push(laterSchedule, laterStart, laterResult, consumingSchedule, consumingStart, consumingCompletion);
-      });
-      await checkFixture("resume-terminal-before-anchor", events => moveBefore(events, failureId, executeId));
-      await checkFixture("reconcile-result-before-schedule", events => moveBefore(events, resultId, reconcileId));
-      await checkFixture("nonterminal-cancellation-request", events => {
-        const event = required(events, failureId);
-        event.activityTaskFailedEventAttributes = null;
-        event.eventType = protocol.api.enums.v1.EventType.EVENT_TYPE_ACTIVITY_TASK_CANCEL_REQUESTED;
-        event.activityTaskCancelRequestedEventAttributes = { scheduledEventId: required(events, executeId).eventId };
-      });
-      await checkFixture("conflicting-resume-terminal", events => {
-        const completion = required(events, resultId);
-        assert.ok(completion.activityTaskCompletedEventAttributes);
-        events.push({ ...completion, activityTaskCompletedEventAttributes: {
-          ...completion.activityTaskCompletedEventAttributes, scheduledEventId: required(events, executeId).eventId,
-        } });
-      });
-      for (const taskId of [commandTaskId, consumingTaskId]) {
-        const boundaryId = taskId === commandTaskId ? failureId : resultId;
-        const label = taskId === commandTaskId ? "command" : "consuming";
-        await checkFixture(label + "-task-started-before-result-or-failure", events => {
-          const startedId = completedTask(events, taskId).startedEventId?.toString();
-          assert.ok(startedId); moveBefore(events, startedId, boundaryId);
-        });
-        await checkFixture(label + "-task-missing-start-reference", events => { completedTask(events, taskId).startedEventId = null; });
-        await checkFixture(label + "-task-broken-start-reference", events => {
-          completedTask(events, taskId).startedEventId = required(events, executeId).eventId;
-        });
-        await checkFixture(label + "-task-missing-start-event", events => {
-          const startedId = completedTask(events, taskId).startedEventId?.toString();
-          assert.ok(startedId); remove(events, startedId);
-        });
-        await checkFixture(label + "-task-duplicate-start-event", events => {
-          const startedId = completedTask(events, taskId).startedEventId?.toString();
-          assert.ok(startedId); events.push({ ...required(events, startedId) });
-        });
-        for (const outcome of ["failed", "timed-out"]) await checkFixture(label + "-task-" + outcome + "-retry-before-success", events => {
-          const completed = completedTask(events, taskId);
-          const startedId = completed.startedEventId?.toString();
-          assert.ok(startedId);
-          const started = required(events, startedId);
-          const scheduledId = started.workflowTaskStartedEventAttributes?.scheduledEventId?.toString();
-          assert.ok(scheduledId);
-          const retrySchedule = protocol.api.history.v1.HistoryEvent.fromObject({
-            ...required(events, scheduledId), eventId: "900001",
-          });
-          const retryStart = protocol.api.history.v1.HistoryEvent.fromObject({ ...started, eventId: "900002",
-            workflowTaskStartedEventAttributes: { ...started.workflowTaskStartedEventAttributes, scheduledEventId: retrySchedule.eventId },
-          });
-          const attributes = { scheduledEventId: retrySchedule.eventId, startedEventId: retryStart.eventId };
-          const retryTerminal = protocol.api.history.v1.HistoryEvent.fromObject({ eventId: "900003",
-            eventType: outcome === "failed" ? protocol.api.enums.v1.EventType.EVENT_TYPE_WORKFLOW_TASK_FAILED
-              : protocol.api.enums.v1.EventType.EVENT_TYPE_WORKFLOW_TASK_TIMED_OUT,
-            ...(outcome === "failed" ? { workflowTaskFailedEventAttributes: attributes } : { workflowTaskTimedOutEventAttributes: attributes }),
-          });
-          const index = events.indexOf(required(events, scheduledId));
-          events.splice(index, 0, retrySchedule, retryStart, retryTerminal);
-        }, "observed");
-      }
-    } finally {
-      handleMock.mock.restore(); historyMock.mock.restore();
-      await evidence("reconciled-parent-cloned-history-adapter-checks", {
-        source: "modified-deep-clones-of-captured-actual-history-public-adapter-only",
-        actualTemporalExecutionClaim: false, checks: fixtureChecks,
-      });
-    }
-
-    const packedSchema = z.strictObject({ fixturePayloadArray: z.array(z.unknown()) });
-    const codecClient = new Client({ connection, dataConverter: { payloadCodecs: [{
-      async encode(payloads) { return payloads; },
-      async decode(payloads) {
-        assert.ok(payloads[0]);
-        const packed = packedSchema.parse(temporal.options.loadedDataConverter.payloadConverter.fromPayload<unknown>(payloads[0]));
-        return packed.fixturePayloadArray.map(payload);
-      },
-    }] } });
-    const codecHandle = codecClient.workflow.getHandle(value.workflowId, key.workflowRunId);
-    const codecHistoryMock = context.mock.method(codecHandle, "fetchHistory", async () => fixture);
-    const codecHandleMock = context.mock.method(codecClient.workflow, "getHandle", () => codecHandle);
-    const codecObserver = new TemporalDelegationWorkflows(codecClient);
-    const codecChecks = [];
-    try {
-      for (const [name, args, results, expected] of [
-        ["encoded-one-to-decoded-two-and-three-arguments-and-encoded-two-to-decoded-one-result",
-          [value.request, key.workflowRunId, true], [{ kind: "complete", text: delivered }], "observed"],
-        ["codec-decoded-extra-reconcile-argument", [value.request, key.workflowRunId, true, false], [{ kind: "complete", text: delivered }], "unknown"],
-        ["codec-decoded-extra-result", [value.request, key.workflowRunId, true], [{ kind: "complete", text: delivered }, { kind: "complete", text: delivered }], "unknown"],
-      ] satisfies [string, unknown[], unknown[], "observed" | "unknown"][]) {
-        fixture = cloneHistory(); assert.ok(fixture.events);
-        setArguments(fixture.events, executeId, [{ fixturePayloadArray: [value.request, { children: true }] }]);
-        setArguments(fixture.events, reconcileId, [{ fixturePayloadArray: args }]);
-        setResult(fixture.events, [{ fixturePayloadArray: results }, "encoded-padding"]);
-        const observation = await codecObserver.observeParentResult(key);
-        codecChecks.push({ name, expected, observation });
-        assert.deepEqual(observation, { kind: expected }, name);
-      }
-    } finally {
-      codecHandleMock.mock.restore(); codecHistoryMock.mock.restore();
-      await evidence("reconciled-parent-codec-array-adapter-checks", {
-        source: "modified-cloned-history-with-isolated-client-custom-array-codec",
-        actualTemporalExecutionClaim: false, checks: codecChecks,
-      });
-    }
-    assert.deepEqual(protocol.api.history.v1.History.encode(history.raw).finish(), actualHistoryBytes,
-      "Adapter fixtures preserve the captured actual Temporal history byte for byte");
+    await adapterHistoryCases({ context, connection, temporal, evidence, history, key, request: value.request, delivered,
+      workflowId: value.workflowId });
     await until(async () => {
       await control.flush();
-      const { rows: [row] } = await pool.query("SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId]);
-      return z.strictObject({ observed: z.boolean() }).parse(row).observed ? true : undefined;
+      return (await parentObserved(key)).observed ? true : undefined;
     }, "fair historical discovery persists this exact recovered parent observation");
-    const positiveSchema = parentResultKeySchema.omit({ memberId: true }).extend({
-      workflowRunId: parentResultKeySchema.shape.workflowRunId.unwrap(),
-      resumeActivityId: parentResultKeySchema.shape.resumeActivityId.unwrap(),
-      reply: parentResultKeySchema.shape.reply.unwrap(), installationId: z.uuid(), instanceId: z.uuid(),
-    });
-    const positives = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
-      o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
-      o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply
-      FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
-        ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
-      WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+    const positives = (await positiveRows(key)).map(({ observedAt, ...row }) => row);
     assert.deepEqual(positives, [{ installationId: command.installationId, instanceId: command.instanceId,
       conversationId: key.conversationId, requestId: key.requestId, workflowRunId: key.workflowRunId,
       resumeActivityId: key.resumeActivityId, reply: key.reply }], "Actual controller flush persists the exact reconciled parent result");
-    const applicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
-      "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
+    const applicable = await parentObserved(key);
     assert.equal(applicable.observed, true);
     const fresh = { pool, workflows: new TemporalDelegationWorkflows(temporal) };
     const persistedReport = await drainDelegation(fresh, command.commandId);
@@ -1420,14 +1036,8 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
       }
       const flushParentCalls = [...missingParentCalls];
       const missingReport = await drainDelegation({ pool, workflows: missingWorkflows }, command.commandId);
-      const missingApplicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
-        "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
-      const retainedPositives = z.array(positiveSchema).parse((await pool.query(`SELECT o.installation_id AS "installationId",
-        o.instance_id AS "instanceId",o.conversation_id AS "conversationId",o.request_id AS "requestId",
-        o.workflow_run_id AS "workflowRunId",o.resume_activity_id AS "resumeActivityId",o.reply
-        FROM birbcrew_ts.delegation_parent_observations o JOIN birbcrew_ts.recovery_control r
-          ON r.singleton AND (r.installation_id,r.instance_id)=(o.installation_id,o.instance_id)
-        WHERE o.conversation_id=$1 AND o.request_id=$2`, [key.conversationId, key.requestId])).rows);
+      const missingApplicable = await parentObserved(key);
+      const retainedPositives = (await positiveRows(key)).map(({ observedAt, ...row }) => row);
       const missingRunPositives = z.strictObject({ count: z.number().int().nonnegative() }).parse((await pool.query(
         `SELECT count(*)::integer AS count FROM birbcrew_ts.delegation_parent_observations
           WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$3`,
@@ -1460,8 +1070,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
       const restored = await pool.query(`UPDATE birbcrew_ts.turns SET workflow_run_id=$3
         WHERE conversation_id=$1 AND request_id=$2 AND workflow_run_id=$4 RETURNING workflow_run_id`,
       [key.conversationId, key.requestId, key.workflowRunId, missingKey.workflowRunId]);
-      const restoredApplicable = z.strictObject({ observed: z.boolean() }).parse((await pool.query(
-        "SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed", [key.conversationId, key.requestId])).rows[0]);
+      const restoredApplicable = await parentObserved(key);
       await evidence("missing-parent-history-restoration", { originalKey: key, missingKey,
         restoredRows: restored.rowCount, restoredApplicable });
       assert.equal(restored.rowCount, 1, "Restore this test's original stored parent run even when the regression fails");
@@ -1525,22 +1134,17 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
       assert.equal(running.child.exitCode, null, "Missing-history CLI worker has not exited");
       assert.equal(running.child.signalCode, null, "Missing-history CLI worker has not been signalled");
     };
-    const stamp = async () => {
-      try { return (await stat(heartbeat)).mtimeMs; }
-      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
-    };
     const pollers = await until(async () => {
       alive();
       const { pollers } = await connection.workflowService.describeTaskQueue({ namespace, taskQueue: { name: memberTaskQueue }, taskQueueType: 1 });
       return pollers?.some(poller => poller.identity?.startsWith(running.child.pid + "@")) ? pollers : undefined;
     }, "the missing-history CLI worker polls its fixture namespace");
-    const firstHeartbeat = await until(async () => { alive(); return stamp(); }, "first healthy heartbeat with missing parent history");
+    const firstHeartbeat = await until(async () => { alive(); return heartbeatStamp(heartbeat); }, "first healthy heartbeat with missing parent history");
     const workerPid = z.int().positive().parse(running.child.pid);
-    const directChildren = z.array(z.coerce.number().int().positive()).parse((await readFile(
-      `/proc/${workerPid}/task/${workerPid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean));
+    const directChildren = await childPids(workerPid);
     assert.ok(directChildren.length > 0, "The CLI worker owns its native supervisor process");
     const advancedHeartbeat = await until(async () => {
-      alive(); const next = await stamp(); return next !== undefined && next > firstHeartbeat ? next : undefined;
+      alive(); const next = await heartbeatStamp(heartbeat); return next !== undefined && next > firstHeartbeat ? next : undefined;
     }, "advancing healthy heartbeat with missing parent history", 30_000);
     const failures = (await readFile(running.logPath, "utf8")).split("\n").filter(line => line.includes('"delegation_control_failed"'));
     const sql = z.strictObject({ observed: z.boolean(), positives: z.number().int(), delegations: z.number().int() }).parse((await seedPool.query(
@@ -1560,10 +1164,7 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
       const rows = (await pool.query("SELECT pid FROM pg_stat_activity WHERE application_name=$1", [scope])).rows;
       return rows.length === 0 ? rows : undefined;
     }, "missing-history CLI database sessions close", 5000);
-    const knownProcesses = await until(async () => {
-      const rows = [workerPid, ...directChildren].map(pid => ({ pid, absent: absent(pid) }));
-      return rows.every(row => row.absent) ? rows : undefined;
-    }, "the missing-history CLI worker and its direct children exit", 5000);
+    const knownProcesses = await untilAbsent([workerPid, ...directChildren], "the missing-history CLI worker and its direct children exit", 5000);
     await evidence("missing-history-worker-shutdown", { scope, exitCode: running.child.exitCode, signalCode: running.child.signalCode,
       sessions: closed, knownProcesses, ancestry: "unproven" });
   } finally {
