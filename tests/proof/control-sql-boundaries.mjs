@@ -49,7 +49,7 @@ const suites={
     "file": "tests/service/delegation-control.test.ts",
     "sourceCases": [
       "strict operator input rejects malformed commands without changing durable permission",
-      "change and status persist refusal with a workflow adapter that throws on every operation",
+      "change and status persist refusal without a workflow adapter",
       "same command retries preserve the original receipt while changed payloads and stale CAS refuse",
       "ready retirement settles through ChildStore without creating a native launch and never resurrects",
       "unanswered recorder retirement atomically closes its visible card without inventing an owner choice",
