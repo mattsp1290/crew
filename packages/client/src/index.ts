@@ -450,7 +450,7 @@ export class CrewClient {
       body,
       command,
       expect: (value) => value.approvalId === body.approvalId && value.decision === body.choice
-        && value.decisionId?.toLowerCase() === body.decisionId,
+        && value.decisionId === body.decisionId,
     });
   }
 }

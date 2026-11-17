@@ -359,7 +359,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       if (resource === "handoff" && request.method === "GET") return json(response, 200, await handoffs.read(ownerId, z.uuid().parse(conversationId)));
       throw new HttpError(405, "method_not_allowed");
     }
-    const detailRoute = versioned && /^\/conversations\/([^/]+)\/requests\/([^/]+)\/approvals\/([^/]+)(\/decision)?$/.exec(path);
+    const detailRoute = versioned && /^\/conversations\/([^/]+)\/requests\/([^/]+)\/approvals\/([^/]+)(?<decision>\/decision)?$/.exec(path);
     if (detailRoute) {
       if (request.method !== "GET") throw new HttpError(405, "method_not_allowed");
       const query = searchParams(url);
@@ -367,7 +367,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
         ...routes.approvalDetail.query.extend({ version: z.string().regex(/^-?\d+$/).pipe(z.coerce.number<string>().int()) }).parse(query),
         conversationId: detailRoute[1], requestId: detailRoute[2], approvalId: detailRoute[3],
       });
-      if (detailRoute[4]) return json(response, 200, await readDecisionRecord(store.pool, ownerId, key));
+      if (detailRoute.groups?.decision) return json(response, 200, await readDecisionRecord(store.pool, ownerId, key));
       return json(response, 200, await readOwnerApprovalDetail(store.pool, ownerId, key));
     }
     const requestRoute = versioned && /^\/conversations\/([^/]+)\/requests(?:\/([^/]+)(\/cancel)?)?$/.exec(path);

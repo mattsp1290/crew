@@ -13,7 +13,7 @@ import { Pool } from "pg";
 import { expiryActivity, memberActivities } from "../../src/service/activities.ts";
 import { ChildStore } from "../../src/service/children.ts";
 import { MemberClient } from "../../src/service/client.ts";
-import { answerLive, cancelLive } from "../../src/service/codex-calls.ts";
+import { cancelLive, decideLiveActivity } from "../../src/service/codex-calls.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
 import { createGateway } from "../../src/service/gateway.ts";
 import { progressActivity } from "../../src/service/progress-activity.ts";
@@ -71,7 +71,7 @@ async function workflowWorker(path = workflowsPath) {
   const worker = await Worker.create({ connection: native, taskQueue: memberTaskQueue, workflowsPath: path, activities: {
     rejectUnstartedAdmission: store.rejectUnstartedAdmission.bind(store), recordAcceptance: ownerAdmissionActivity(store),
     rejectAccepted: store.rejectAccepted.bind(store), conversationProgress: progressActivity(store),
-    cancelGenerating: store.cancelGenerating.bind(store), decideLive: answerLive.bind(null, pool), cancelLive: cancelLive.bind(null, pool),
+    cancelGenerating: store.cancelGenerating.bind(store), decideLive: decideLiveActivity.bind(null, pool), cancelLive: cancelLive.bind(null, pool),
     reconcileTurn: store.reconcileTurn.bind(store), reconcileChild: children.reconcile.bind(children),
     closeExitedChild: children.closeExitedChild.bind(children), quarantineDelegation: children.quarantineDelegation.bind(children),
     expireApproval: expiryActivity(store),

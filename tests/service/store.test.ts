@@ -247,7 +247,7 @@ test("unconfirmed admission rejection is digest-bound and cannot overwrite begun
   assert.equal(await store.committedReply(active),"committed");
 });
 
-test("migration 39 upgrades a schema 37 database in place without scanning or rewriting deferred calls", async (t) => {
+test("migration 39 upgrades a schema 38 database in place without scanning or rewriting deferred calls", async (t) => {
   const name = testDatabaseName("store_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
@@ -258,14 +258,14 @@ test("migration 39 upgrades a schema 37 database in place without scanning or re
   await db.query("CREATE TABLE birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
   for (const file of (await readdir(sql)).sort()) {
     const version = Number(file.slice(0, 3));
-    if (version > 37) continue;
+    if (version > 38) continue;
     await db.query(await readFile(new URL(file, sql), "utf8"));
     await db.query("INSERT INTO birbcrew_ts.schema_versions VALUES ($1)", [version]);
   }
   const upgraded = new MemberStore(db);
   await Promise.all([upgraded.migrate(), upgraded.migrate()]);
   const versions = (await db.query<{ version: number }>("SELECT version FROM birbcrew_ts.schema_versions ORDER BY version")).rows.map(r => r.version);
-  assert.deepEqual(versions.slice(-2), [37, 39]);
+  assert.deepEqual(versions.slice(-2), [38, 39]);
   const { rows: [column] } = await db.query(`SELECT data_type, is_nullable, column_default FROM information_schema.columns
     WHERE table_schema='birbcrew_ts' AND table_name='deferred_calls' AND column_name='decision_id'`);
   assert.deepEqual(column, { data_type: "uuid", is_nullable: "YES", column_default: null });

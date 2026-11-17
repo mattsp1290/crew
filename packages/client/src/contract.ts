@@ -228,6 +228,7 @@ export const decisionReceiptsCapabilityV1Schema = z.looseObject({
   tools: z.array(z.string().min(1)),
   replay: z.literal("same-decision-id-and-choice"),
   conflictCode: z.literal("decision_conflict"),
+  unverifiableCode: z.literal("decision_unverifiable"),
 });
 export const decisionReceiptsCapabilitySchema = z.union([
   decisionReceiptsCapabilityV1Schema,
@@ -330,7 +331,7 @@ export const revokeGrantResponseSchema = z.object({
 export const decisionReceiptSchema = z.object({
   approvalId: z.uuid(),
   decision: decisionChoice,
-  decisionId: z.uuid().optional(),
+  decisionId: uuid.optional(),
 });
 const result = z.object({ text: z.string() });
 const receiptBase = z.object({

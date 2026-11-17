@@ -67,15 +67,22 @@ const columns = `p.approval_id AS "approvalId", p.invocation_id AS "invocationId
   p.policy_version AS "policyVersion", p.decision, ${recordedChoice} AS choice, p.decision_id AS "decisionId",
   p.grant_id AS "grantId", p.budget_exhausted,
   p.expires_at AS "expiresAt", p.expired_at AS "expiredAt"`;
-/** The recorded choice when this request repeats the decision already on the card. Without a
- * decisionId only the choice is compared, as before decision receipts; a mismatch is left to the
- * caller's ordinary conflict. With one, any other recorded decision is a decision_conflict. */
-export function replayedDecision(call: { choice: Choice | null; decisionId: string | null },
-  key: { choice: Choice; decisionId?: string }): Choice | undefined {
-  if (!call.choice) return undefined;
-  if (key.decisionId === undefined) return call.choice === key.choice ? call.choice : undefined;
-  if (call.decisionId === key.decisionId && call.choice === key.choice) return call.choice;
-  throw new MemberStoreError("decision_conflict");
+/** The refusals for a request on a card that already carries another decision. */
+export type Refusal = "conflict" | "decision_conflict" | "decision_unverifiable";
+/** How a request meets the card's recorded decision (docs/decision-receipts.md). Without a
+ * decisionId only the choice is compared, as before decision receipts. With one, the same id and
+ * choice replay; the same choice recorded with no id (and no grant) cannot be told apart from
+ * this caller's own earlier unnamed send, so it is unverifiable rather than a decision_conflict. */
+export type Settlement = { kind: "undecided" } | { kind: "replay"; choice: Choice } | { kind: "refused"; code: Refusal };
+export function settlement(call: { choice: Choice | null; decisionId: string | null; grantId: string | null },
+  key: { choice: Choice; decisionId?: string }): Settlement {
+  if (!call.choice) return { kind: "undecided" };
+  if (key.decisionId === undefined) {
+    return call.choice === key.choice ? { kind: "replay", choice: call.choice } : { kind: "refused", code: "conflict" };
+  }
+  if (call.choice !== key.choice) return { kind: "refused", code: "decision_conflict" };
+  if (call.decisionId === key.decisionId) return { kind: "replay", choice: call.choice };
+  return { kind: "refused", code: call.decisionId === null && call.grantId === null ? "decision_unverifiable" : "decision_conflict" };
 }
 
 /** What expireTurn did: settled the card at its deadline, found it already settled by a decision
@@ -114,8 +121,14 @@ type RecordRow = {
   expiredAt: Date | null; cancelled: boolean; receiptId: string | null; decidedAt: Date | null; autoApprovedAt: Date | null;
 };
 
+/** A grant and its approval.auto_approved row commit in one transaction, and grants (024) postdate
+ * the audit trail (021), so a granted card without that row is damage: fail the read (503) rather
+ * than describe it. */
 function decisionState(row: RecordRow) {
-  if (row.grantId) return { state: "auto_approved", grantId: row.grantId, recordedAt: row.autoApprovedAt?.toISOString() };
+  if (row.grantId) {
+    if (!row.autoApprovedAt) throw new Error("Auto-approved card has no approval.auto_approved audit row");
+    return { state: "auto_approved", grantId: row.grantId, recordedAt: row.autoApprovedAt.toISOString() };
+  }
   if (row.choice) {
     return { state: "decided", decisionId: row.decisionId, choice: row.choice, recordedAt: row.decidedAt?.toISOString() ?? null,
       effect: row.receiptId ? { kind: "work_item", receiptId: row.receiptId } : { kind: "none" } };
@@ -370,20 +383,21 @@ export class ApprovalStore {
       const call = await findCall(db, key);
       if (!acceptsChoice(call.toolName, key.choice)) throw new MemberStoreError("conflict");
       if (call.version !== key.version || call.argumentDigest !== key.argumentDigest) throw new MemberStoreError("conflict");
-      const replay = replayedDecision(call, key);
-      if (call.choice && !replay) throw new MemberStoreError("conflict");
-      if (!call.choice && (turn.phase !== "started" || call.childStopped || call.pastDeadline || call.expiredAt || await cancelled(db,key) ||
-          (standingScope(key.choice) && !await grantable(db, { ...key, toolName: call.toolName })))) {
+      const settled = settlement(call, key);
+      if (settled.kind === "refused") throw new MemberStoreError(settled.code);
+      if (settled.kind === "replay") return settled.choice;
+      if (turn.phase !== "started" || call.childStopped || call.pastDeadline || call.expiredAt || await cancelled(db,key) ||
+          (standingScope(key.choice) && !await grantable(db, { ...key, toolName: call.toolName }))) {
         throw new MemberStoreError("conflict");
       }
-      if (!call.decision && call.live) {
+      if (call.live) {
         const closed = await db.query(`SELECT 1 FROM birbcrew_ts.codex_live_calls l JOIN birbcrew_ts.turns t USING (conversation_id,request_id)
           WHERE l.approval_id=$1 AND (l.phase <> 'waiting' OR t.phase <> 'started' OR l.expires_at <= clock_timestamp()
           OR EXISTS (SELECT 1 FROM birbcrew_ts.native_stop_requests s WHERE
             (s.conversation_id,s.request_id,s.token)=(l.conversation_id,l.request_id,l.token)))`,[key.approvalId]);
         if (closed.rowCount) throw new MemberStoreError("conflict");
       }
-      return replay ?? null;
+      return null;
     });
   }
 
@@ -400,9 +414,10 @@ export class ApprovalStore {
     if (call.live !== live) throw new MemberStoreError("stale");
     if (!acceptsChoice(call.toolName, key.choice)) throw new MemberStoreError("conflict");
     if (call.version !== key.version || call.argumentDigest !== key.argumentDigest) throw new MemberStoreError("conflict");
-    const replay = replayedDecision(call, key);
-    if (replay) return replay;
-    if (call.choice || turn.phase !== "started" || call.childStopped || call.pastDeadline || call.expiredAt || await cancelled(db, key)) {
+    const settled = settlement(call, key);
+    if (settled.kind === "refused") throw new MemberStoreError(settled.code);
+    if (settled.kind === "replay") return settled.choice;
+    if (turn.phase !== "started" || call.childStopped || call.pastDeadline || call.expiredAt || await cancelled(db, key)) {
       throw new MemberStoreError("conflict");
     }
     const scope = standingScope(key.choice);

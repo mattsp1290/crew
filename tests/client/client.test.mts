@@ -359,6 +359,9 @@ test("decide sends an optional decision id, keeps it on an unknown outcome and r
       { approvalId, decision: "approve", decisionId });
     assert.equal(s.seen[0].path, `/v1/conversations/${conversationId}/human`);
     assert.deepEqual(JSON.parse(s.seen[0].body), { requestId, memberId, invocationId, approvalId, version: 1, choice: "approve", decisionId });
+    reply = { approvalId, decision: "approve", decisionId: decisionId.toUpperCase() };
+    assert.deepEqual(await s.client.decide({ ...body, choice: "approve", decisionId }), { approvalId, decision: "approve", decisionId },
+      "the echoed id is normalized like every other UUID");
     for (reply of [null, { approvalId, decision: "deny", decisionId }, { approvalId, decision: "approve", decisionId: randomUUID() },
       { approvalId, decision: "approve" }, { approvalId: randomUUID(), decision: "approve", decisionId }]) {
       await assert.rejects(s.client.decide({ ...body, choice: "approve", decisionId }), error => {
@@ -373,11 +376,13 @@ test("decide sends an optional decision id, keeps it on an unknown outcome and r
     reply = { approvalId, decision: "deny" };
     await assert.rejects(s.client.decide({ ...body, choice: "approve" }), error =>
       error instanceof CrewUnknownOutcomeError && !("decisionId" in error.command));
-    reply = { error: "decision_conflict" };
     const refused = await serve((_, response) => json(response, reply, 409));
     try {
-      await assert.rejects(refused.client.decide({ ...body, choice: "deny", decisionId }), error =>
-        error instanceof CrewHttpError && error.status === 409 && error.code === "decision_conflict");
+      for (const code of ["decision_conflict", "decision_unverifiable"]) {
+        reply = { error: code };
+        await assert.rejects(refused.client.decide({ ...body, choice: "deny", decisionId }), error =>
+          error instanceof CrewHttpError && error.status === 409 && error.code === code);
+      }
     } finally { await refused.close(); }
     const sent = s.seen.length;
     await assert.rejects(s.client.decide({ ...body, choice: "approve", decisionId: "not-a-uuid" }));
@@ -427,7 +432,8 @@ test("decision receipt capability is optional and future versions stay opaque", 
     observation: { protocol: "AG-UI", mode: "snapshot-and-bounded-tail" }, initiatorKinds: ["owner"] };
   const decisionReceipts = { version: 1, field: "decisionId",
     route: "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}/decision",
-    tools: ["record_work_item", "choose_next_step"], replay: "same-decision-id-and-choice", conflictCode: "decision_conflict" };
+    tools: ["record_work_item", "choose_next_step"], replay: "same-decision-id-and-choice", conflictCode: "decision_conflict",
+    unverifiableCode: "decision_unverifiable" };
   assert.equal(capabilitiesSchema.parse(base).decisionReceipts, undefined);
   assert.deepEqual(capabilitiesSchema.parse({ ...base, decisionReceipts }).decisionReceipts, decisionReceipts);
   assert.ok(decisionReceiptsCapabilityV1Schema.safeParse(decisionReceipts).success);
@@ -436,4 +442,6 @@ test("decision receipt capability is optional and future versions stay opaque", 
   assert.deepEqual(observed, future);
   assert.equal(decisionReceiptsCapabilityV1Schema.safeParse(observed).success, false);
   assert.equal(capabilitiesSchema.safeParse({ ...base, decisionReceipts: { ...decisionReceipts, conflictCode: "conflict" } }).success, false);
+  const { unverifiableCode: _, ...withoutUnverifiable } = decisionReceipts;
+  assert.equal(decisionReceiptsCapabilityV1Schema.safeParse(withoutUnverifiable).success, false);
 });

@@ -2438,6 +2438,10 @@
           "conflictCode": {
             "type": "string",
             "const": "decision_conflict"
+          },
+          "unverifiableCode": {
+            "type": "string",
+            "const": "decision_unverifiable"
           }
         },
         "required": [
@@ -2446,7 +2450,8 @@
           "route",
           "tools",
           "replay",
-          "conflictCode"
+          "conflictCode",
+          "unverifiableCode"
         ],
         "additionalProperties": {}
       },
@@ -3727,7 +3732,7 @@
             }
           }
         },
-        "description": "Decide one card. An optional decisionId names this decision on this card and is echoed. Repeating the same decisionId and choice returns the recorded decision without a second effect. Any other decision already recorded against a supplied decisionId returns 409 decision_conflict: this decision never applied and never will. Without decisionId the behavior is unchanged."
+        "description": "Decide one card. An optional decisionId names this decision on this card and is echoed. Repeating the same decisionId and choice returns the recorded decision without a second effect. With a decisionId, a card that records another decisionId, another choice or a standing grant approval returns 409 decision_conflict: this decision never applied and never will. A card that records the same choice with no decisionId returns 409 decision_unverifiable: Crew cannot tell whether that was this caller's own earlier unnamed send, nothing new applied, and the outcome stays unknown to a caller that cannot rule it out. Without decisionId the behavior is unchanged."
       }
     },
     "/v1/conversations/{conversationId}/events": {

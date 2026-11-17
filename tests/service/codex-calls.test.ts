@@ -4,7 +4,8 @@ import {after,before,test} from "node:test";
 import {setTimeout as delay} from "node:timers/promises";
 import {Pool} from "pg";
 import {ApprovalStore, type Approval, type Decision} from "../../src/service/approvals.ts";
-import {answerLive,cancelLive,confirmDelivery,interruptLive,proposeLive,settleLive} from "../../src/service/codex-calls.ts";
+import {ApplicationFailure} from "@temporalio/client";
+import {answerLive,cancelLive,confirmDelivery,decideLiveActivity,interruptLive,proposeLive,settleLive} from "../../src/service/codex-calls.ts";
 import {requestNativeStop,withNativeAdmission} from "../../src/service/native-admission.ts";
 import {readSnapshot} from "../../src/service/observation.ts";
 import {MemberStore} from "../../src/service/store.ts";
@@ -324,6 +325,11 @@ test("a live call decided without an id is never claimed by a named decision", a
   const {launch,proposal}=await conversation(await member("choose_next_step"));
   const a=await proposeLive(pool,launch,proposal("choose_next_step"));
   assert.equal(await answerLive(pool,decision(a,"test")),"test");
-  await assert.rejects(answerLive(pool,{...decision(a,"test"),decisionId:randomUUID()}),{code:"decision_conflict"});
+  await assert.rejects(answerLive(pool,{...decision(a,"test"),decisionId:randomUUID()}),{code:"decision_unverifiable"});
+  await assert.rejects(answerLive(pool,{...decision(a,"inspect"),decisionId:randomUUID()}),{code:"decision_conflict"});
+  for (const [choice,code] of [["test","decision_unverifiable"],["inspect","decision_conflict"]] as const) {
+    await assert.rejects(decideLiveActivity(pool,{...decision(a,choice),decisionId:randomUUID()}),
+      (error:unknown)=>error instanceof ApplicationFailure && error.nonRetryable && error.message===code);
+  }
   assert.equal(await answerLive(pool,decision(a,"test")),"test");
 });

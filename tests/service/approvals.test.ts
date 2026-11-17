@@ -274,8 +274,13 @@ test("a decision recorded without an id is never claimed by a named one, and unn
   const { proposal } = await input("claude");
   const question = await approvals.propose({ ...proposal, toolName: "choose_next_step", arguments: {} });
   assert.equal(await approvals.decide(named(question, "inspect")), "inspect");
-  await assert.rejects(approvals.decide(named(question, "inspect", randomUUID())), { code: "decision_conflict" });
-  await assert.rejects(approvals.previousDecision(named(question, "inspect", randomUUID())), { code: "decision_conflict" });
+  const before = await facts(question.approvalId);
+  await assert.rejects(approvals.decide(named(question, "inspect", randomUUID())), { code: "decision_unverifiable" });
+  await assert.rejects(approvals.previousDecision(named(question, "inspect", randomUUID())), { code: "decision_unverifiable" });
+  await assert.rejects(approvals.decide(named(question, "test", randomUUID())), { code: "decision_conflict" },
+    "another choice is definitive even when the recorded decision has no id");
+  await assert.rejects(approvals.previousDecision(named(question, "test", randomUUID())), { code: "decision_conflict" });
+  assert.deepEqual(await facts(question.approvalId), before, "a refused named decision records nothing");
   assert.equal(await approvals.previousDecision(named(question, "inspect")), "inspect");
   await assert.rejects(approvals.decide(named(question, "test")), { code: "conflict" });
   await assert.rejects(approvals.decide(named(question, "approve", randomUUID())), { code: "conflict" },
@@ -328,6 +333,21 @@ test("the decision record reports closed and auto-approved cards and hides every
     [first.ownerId, { ...identity(first), requestId: sameMember.requestId }], [first.ownerId, { ...identity(first), approvalId: randomUUID() }]] as const) {
     await assert.rejects(readDecisionRecord(pool, owner, key), { code: "not_found" });
   }
+});
+
+test("a decision followed by a cancellation still reads as decided and still replays", async () => {
+  const { proposal, scope } = await input("pi");
+  const card = await approvals.propose(proposal);
+  const mine = randomUUID();
+  assert.equal(await approvals.decide(named(card, "approve", mine)), "approve");
+  await approvals.cancelTurn(scope);
+  assert.equal(await approvals.isCancelled(scope), true);
+  assert.deepEqual(await readDecisionRecord(pool, card.ownerId, identity(card)), { apiVersion: "1", ...identity(card),
+    toolName: "record_work_item", state: "decided", decisionId: mine, choice: "approve",
+    recordedAt: (await facts(card.approvalId)).at, effect: { kind: "none" } });
+  assert.equal(await approvals.decide(named(card, "approve", mine)), "approve");
+  assert.equal(await approvals.previousDecision(named(card, "approve", mine)), "approve");
+  await assert.rejects(approvals.decide(named(card, "approve", randomUUID())), { code: "decision_conflict" });
 });
 
 test("only a decided card that no grant approved can carry a decision id", async () => {
