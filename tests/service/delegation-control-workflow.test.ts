@@ -1473,7 +1473,7 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
   const cli = process.env.TEMPORAL_CLI;
   assert.ok(cli);
   const scope = "missing-history-worker-" + randomUUID();
-  const heartbeat = join(directory, scope + "-heartbeat");
+  const heartbeat = join(directory, scope + "-heartbeat"), workerState = join(directory, scope + "-native");
   const namespace = "control-missing-history-" + randomUUID();
   const databaseName = testDatabaseName("ctl_missing_history_");
   const databaseUrl = new URL(database); databaseUrl.pathname = "/" + databaseName;
@@ -1483,6 +1483,7 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
   try {
     await boundedCommand(cli, ["operator", "namespace", "create", "--namespace", namespace, "--address", address], now() + 15_000);
     const seedStore = new MemberStore(seedPool); await seedStore.migrate();
+    await registerProfiles(seedPool, profiles, workerState);
     const member = await spawnHistoricalMember(seedStore, { ownerId, requestId: randomUUID(), engine: "pi", profile: parentProfile });
     const key = { memberId: member.memberId, conversationId: randomUUID(), requestId: randomUUID(), workflowRunId: randomUUID(),
       resumeActivityId: "missing-history-resume", reply: "SQL-seeded committed parent reply" };
@@ -1504,7 +1505,7 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
     assert.deepEqual(directObservation, { kind: "missing" }, "The real adapter classifies the seeded nonexistent run as missing history");
     worker = owned(scope, process.execPath, ["src/service/cli.ts", "worker", config], {
       ...process.env, BIRBCREW_DATABASE_URL: databaseUrl.toString(), BIRBCREW_TEMPORAL_NAMESPACE: namespace, PGAPPNAME: scope,
-      BIRBCREW_STATE_DIR: join(directory, scope + "-native"), BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat,
+      BIRBCREW_STATE_DIR: workerState, BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat,
     }, "process");
     const running = worker;
     const alive = () => {
