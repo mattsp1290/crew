@@ -242,11 +242,26 @@ spans to a private JSONL file. Model invocations, workflow segments, native
 restores and tool settlement carry the conversation, request, engine and
 Temporal run IDs. A Pi child also carries its child ID. Completed spans from
 the same conversation and request share a trace ID across processes and worker
-replacements. The exporter only records correlation IDs, span relationships,
-timing and status.
+replacements. Each actual native driver call also emits one Switchboard
+`invoke_agent <engine>` span beneath `model.invoke`. Its provider is `openai`
+for Codex, `anthropic` for Claude, or the configured Pi model provider.
+Provider identifiers must match `[a-z][a-z0-9._-]{0,63}`. Unsafe identifiers
+suppress that observation. The agent records UUID run, request, and conversation
+correlation, the engine, provider, and terminal outcome. Returned complete,
+pending, and delegated results mean a successful invocation. A thrown native
+error records `error` with `unknown-error`, without its message.
+
+Agent observations contain no prompts, replies, model names, tool arguments,
+native handles, or usage. Crew cannot observe individual provider requests or
+tool executions inside a native SDK. Aggregate segment usage stays on the
+existing operational `model.invoke` span. JSONL includes both span types.
 
 Set `BIRBCREW_OTLP_TRACES_ENDPOINT` to also send the same spans over OTLP/HTTP
-JSON to a collector. Give the full traces URL, such as
+JSON to a collector. Without that variable, Crew selects
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, then `OTEL_EXPORTER_OTLP_ENDPOINT`.
+Signal-specific endpoints are complete URLs. For the generic endpoint, Crew
+appends `/v1/traces` after its base path. Only the highest-priority nonempty
+variable is validated and used. Give a full traces URL, such as
 `https://collector.example/v1/traces`. It must use `https`, except that plain
 `http` is allowed to `127.0.0.1`, such as `http://127.0.0.1:4318/v1/traces`,
 and to any other host when `BIRBCREW_OTLP_TRACES_ALLOW_HTTP=true` is also set
@@ -259,9 +274,9 @@ runners, but every process that loads the store also reads the setting: the
 gateway, every `members` command, the worker, the supervisor host and the turn
 runners. Each of them fails at startup when the value breaks these rules, so
 a malformed value stops the whole service, not only tracing. The error names
-the variable and does not repeat the value. Each span carries only its name,
-trace and span IDs, parent, timing, status and the same correlation IDs as the
-file. Prompts, replies, tool arguments and credentials are never span data.
+the selected variable and does not repeat the value. Network export preserves
+the file's trace IDs, span IDs, parent relationships, and attributes.
+Prompts, replies, tool arguments and credentials are never span data.
 Spans are batched in a bounded queue and
 dropped when the queue is full or the collector fails; export never fails a
 turn. It can slow one, though: the host confirms a native turn only after its
@@ -281,12 +296,13 @@ exporter, so a header or certificate set for another service on the same host
 is sent to this collector too. Prefer the `OTEL_EXPORTER_OTLP_TRACES_*` forms
 and keep the generic ones unset for Crew. The exporter sends JSON only:
 `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` is ignored, gRPC is not used, and the
-standard `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
-do nothing on their own. The Python worker writes only the JSONL file.
+endpoint variables select the destination without changing this protocol.
+The Python worker writes only the JSONL file. Configure one destination in
+Crew. A collector can forward spans to multiple backends.
 
 The resource carries `service.name` and any attributes from
 `OTEL_RESOURCE_ATTRIBUTES`. Both variables are read only when
-`BIRBCREW_OTLP_TRACES_ENDPOINT` is set; no host, process or container
+any OTLP endpoint is selected; no host, process or container
 attributes are detected. The service name is `OTEL_SERVICE_NAME` when set and
 not empty, otherwise `service.name` from `OTEL_RESOURCE_ATTRIBUTES`, otherwise
 `birbcrew`. `OTEL_RESOURCE_ATTRIBUTES` follows the OpenTelemetry format:
@@ -348,7 +364,7 @@ OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production,service.version=
 The Agent must run APM with its OTLP HTTP receiver listening beyond
 loopback, for example `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT=0.0.0.0:4318`.
 The receiver speaks plain HTTP, so an `https` endpoint fails every export with
-`EPROTO`. Whenever `BIRBCREW_OTLP_TRACES_ENDPOINT` is set,
+`EPROTO`. Whenever an OTLP endpoint is selected,
 `BIRBCREW_OTLP_TRACES_ALLOW_HTTP` must be `true` or `false`, in any case, or
 empty, which means `false`; any other value stops startup. The opt-in changes
 only whether the connection is encrypted, not where spans may go: an `https`
@@ -368,10 +384,71 @@ or impersonate the Agent's Service inside the cluster.
 
 The Agent maps `service.name` to the Datadog service,
 `deployment.environment.name` to `env` and `service.version` to `version`.
-The span name (`workflow.segment`, `model.invoke`, `tool.settle` or
-`native.restore`) becomes the Datadog resource name. Every span's operation
-name is `Internal`, because Crew sets no `operation.name` attribute: spans
-carry only correlation IDs and the engine. An Agent started with
+The operational span name (`workflow.segment`, `model.invoke`, `tool.settle`,
+or `native.restore`) becomes the Datadog resource name. Operational spans have
+the operation name `Internal` because Crew sets no `operation.name` attribute.
+An Agent started with
 `DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME=true` uses the span name as
 the operation name too, but that setting applies to every service sending OTLP
 to that Agent.
+
+To enable Datadog LLM Observability conversion on that destination, set
+`BIRBCREW_DATADOG_LLMOBS=true`. The flag accepts exactly `true` or `false`,
+defaults to `false`, and requires an endpoint when enabled. Keep both
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TRACES_HEADERS` unset.
+Crew rejects inherited collector headers in this mode. Configure forwarding
+credentials and LLM Observability in the Datadog Agent.
+
+The resource receives boolean `dd_llmobs_enabled=true`. The network exporter
+adds `_dd.ml_obs.metadata` with only the validated Switchboard outcome, run
+ID, and request ID. This conversion leaves JSONL spans unchanged. HTTP
+acceptance alone does not prove that Datadog converted a span into an LLM
+Observability agent. Qualify the configured Agent and query its converted
+spans before relying on backend visibility. With both local backends running,
+run this synthetic host qualification from Crew.
+
+```sh
+LOTEL_BIN=/path/to/lotel \
+LOTEL_ENDPOINT=http://127.0.0.1:4318/v1/traces \
+DATADOG_OTLP_ENDPOINT=http://127.0.0.1:14318/v1/traces \
+npm run verify:observability
+```
+
+The probe forwards Crew's exported JSON through a local bridge, queries both
+backends by original span IDs, and saves
+`.proof/genai-observability/backends.json`. It verifies host observations and
+backend conversion. It does not exercise native provider requests.
+Set `DD_SITE` for a Datadog site other than the default `us3.datadoghq.com`.
+See [the qualification snapshot](observability-validation.json) for recorded results.
+
+Datadog treats these agent spans as LLM roots because the operational parents
+are not GenAI operations. Its LLM trace ID differs from the original OTel
+trace ID. Datadog preserves that OTel ID as `apm_trace_id` and the
+`otel.trace_id` tag, and preserves the span ID in decimal form. The APM trace
+retains the workflow parent relationship. Its indexed view can contain only a
+subset of the emitted spans. The probe reports how many agent parents it can
+independently query in APM. Use those identifiers and the
+Switchboard metadata to correlate the two Datadog views.
+
+#### Refresh the Switchboard observability package
+
+Crew pins an immutable observability-only archive under `vendor/switchboard`.
+It retains upstream JavaScript and declarations byte for byte, its original
+instrumentation scope, the MIT license, and source and extracted SHA-256 hashes.
+Crew uses Node 24.22.3. Its existing Switchboard core package and native SDK
+pins remain separate because the latest full package requires different native
+SDK peers. The extracted entry depends only on the shared OpenTelemetry API.
+The immutable archive's README records its earlier Node 22 compatibility check.
+Current Crew validation uses Node 24.22.3.
+
+From a clean Switchboard checkout with its dependencies installed, use Node
+24.22.3 to run `node scripts/vendor-switchboard-observability.mjs ../switchboard`
+from Crew. The script builds upstream, checks runtime imports, and packs the
+observability entry plus its type-only core contract. It refuses to replace an
+archive with different bytes at the same revision. Install the new archive
+with `npm install --save-exact ./vendor/switchboard/<archive>.tgz`, then run
+`npm run build` and `npm run test:telemetry` on Node 24.22.3. Commit the archive
+and lockfile together. `npm run test:telemetry` runs the installed entry in
+fresh Node processes against a real HTTP JSON collector and the JSONL exporter.
+It checks correlation, parent relationships, preserved native results and
+errors, bounded observation failures, metadata privacy, and endpoint selection.
