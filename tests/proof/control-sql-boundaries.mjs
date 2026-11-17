@@ -91,8 +91,7 @@ const suites={
       "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails",
       "an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing"
     ],
-    "count": 1,
-    "pattern": "an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing"
+    "count": 10
   },
   "restore": {
     "file": "tests/service/recovery.test.ts",
