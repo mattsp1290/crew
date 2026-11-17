@@ -182,7 +182,9 @@ accepts that evidence only for the current active installation and recovery
 instance. A completed child, a committed reply, and stopped native processes do
 not establish parent observation. Disable commands include matching children
 whose parents lack this evidence, including children that already finished.
-Missing or unreadable historical workflows remain conservative blockers.
+Missing or unrecognized historical workflow evidence remains a conservative
+drain blocker without suppressing worker heartbeats. A history read that fails
+for another reason fails the control pass.
 
 A drain can use recorded parent evidence when the exact reply, workflow run,
 resume activity, and recovery instance still match. The drain remains read-only.
@@ -192,8 +194,8 @@ observation never removes children from an existing receipt's cohort.
 Inspect stderr for `delegation_control_pending`, which includes child settlement
 and wake results, or `delegation_control_failed`, whose `source` is
 `reconciliation` for a failed pass or `pool` for a failed idle controller
-connection. An unavailable Temporal wake or either failure suppresses heartbeat touches until
-a later healthy pass. A pending native stop can log `delegation_control_pending`
+connection. An unavailable Temporal wake or either failure suppresses heartbeat
+touches until a later healthy pass. A pending native stop can log `delegation_control_pending`
 while the heartbeat continues. A missing workflow wake also does not suppress
 the heartbeat. Use `drain` to check completion.
 
