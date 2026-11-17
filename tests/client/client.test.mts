@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import test from "node:test";
 import { CrewClient, CrewHttpError, CrewProtocolError, CrewTransportError, CrewUnknownOutcomeError } from "@birbcrew/client";
-import { standingGrantsCapabilityV1Schema, grantListResponseSchema, recordWorkItemArgumentsSchema, capabilitiesSchema, requestInitiator, serverRequestReceiptSchema, requestReceiptResponseSchema } from "@birbcrew/client/contract";
+import { decisionReceiptsCapabilityV1Schema, decisionRecordSchema, standingGrantsCapabilityV1Schema, grantListResponseSchema, recordWorkItemArgumentsSchema, capabilitiesSchema, requestInitiator, serverRequestReceiptSchema, requestReceiptResponseSchema } from "@birbcrew/client/contract";
 
 const conversationId = randomUUID(), requestId = randomUUID(), memberId = randomUUID();
 const key = { conversationId, requestId };
@@ -347,4 +347,93 @@ test("standing grant capability is optional and future versions stay opaque with
   assert.deepEqual(observed, future);
   assert.equal(standingGrantsCapabilityV1Schema.safeParse(observed).success, false);
   assert.equal(capabilitiesSchema.safeParse({ ...base, standingGrants: { ...standingGrants, revocation: "retroactive" } }).success, false);
+});
+
+test("decide sends an optional decision id, keeps it on an unknown outcome and requires the exact echoed decision", async () => {
+  const approvalId = randomUUID(), decisionId = randomUUID(), invocationId = randomUUID();
+  const body = { ...key, memberId, invocationId, approvalId, version: 1 };
+  let reply: unknown = { approvalId, decision: "approve", decisionId };
+  const s = await serve((request, response) => reply === null ? request.socket.destroy() : json(response, reply));
+  try {
+    assert.deepEqual(await s.client.decide({ ...body, choice: "approve", decisionId: decisionId.toUpperCase() }),
+      { approvalId, decision: "approve", decisionId });
+    assert.equal(s.seen[0].path, `/v1/conversations/${conversationId}/human`);
+    assert.deepEqual(JSON.parse(s.seen[0].body), { requestId, memberId, invocationId, approvalId, version: 1, choice: "approve", decisionId });
+    for (reply of [null, { approvalId, decision: "deny", decisionId }, { approvalId, decision: "approve", decisionId: randomUUID() },
+      { approvalId, decision: "approve" }, { approvalId: randomUUID(), decision: "approve", decisionId }]) {
+      await assert.rejects(s.client.decide({ ...body, choice: "approve", decisionId }), error => {
+        assert.ok(error instanceof CrewUnknownOutcomeError);
+        assert.deepEqual(error.command, { kind: "decision", conversationId, requestId, approvalId, decisionId });
+        return true;
+      });
+    }
+    reply = { approvalId, decision: "approve", decisionId };
+    await assert.rejects(s.client.decide({ ...body, choice: "approve" }), CrewUnknownOutcomeError,
+      "a decision id the caller never sent is not this command's acknowledgement");
+    reply = { approvalId, decision: "deny" };
+    await assert.rejects(s.client.decide({ ...body, choice: "approve" }), error =>
+      error instanceof CrewUnknownOutcomeError && !("decisionId" in error.command));
+    reply = { error: "decision_conflict" };
+    const refused = await serve((_, response) => json(response, reply, 409));
+    try {
+      await assert.rejects(refused.client.decide({ ...body, choice: "deny", decisionId }), error =>
+        error instanceof CrewHttpError && error.status === 409 && error.code === "decision_conflict");
+    } finally { await refused.close(); }
+    const sent = s.seen.length;
+    await assert.rejects(s.client.decide({ ...body, choice: "approve", decisionId: "not-a-uuid" }));
+    assert.equal(s.seen.length, sent);
+  } finally { await s.close(); }
+});
+
+test("decision record validates every echoed identity and each recorded state before returning", async () => {
+  const identity = { ...key, memberId, invocationId: randomUUID(), approvalId: randomUUID(), version: 1 };
+  const base = { ...identity, apiVersion: "1", toolName: "record_work_item" };
+  const decided = { ...base, state: "decided", decisionId: randomUUID(), choice: "allow_always",
+    recordedAt: "2026-11-16T12:00:00.123Z", effect: { kind: "work_item", receiptId: randomUUID() } };
+  const states = [decided, { ...decided, decisionId: null, recordedAt: null, choice: "inspect", toolName: "choose_next_step", effect: { kind: "none" } },
+    { ...base, state: "auto_approved", grantId: randomUUID(), recordedAt: "2026-11-16T12:00:00Z" },
+    { ...base, state: "closed", reason: "expired", closedAt: "2026-11-16T12:00:00Z" },
+    { ...base, state: "closed", reason: "cancelled", closedAt: null }, { ...base, state: "undecided" }];
+  let reply: unknown = decided;
+  const s = await serve((_, response) => json(response, reply));
+  try {
+    for (reply of states) assert.deepEqual(await s.client.decisionRecord(identity), reply);
+    assert.equal(s.seen[0].path, `/v1/conversations/${conversationId}/requests/${requestId}/approvals/${identity.approvalId}/decision`
+      + `?memberId=${memberId}&invocationId=${identity.invocationId}&version=1`);
+    assert.equal(s.seen[0].method, "GET"); assert.equal(s.seen[0].body, "");
+    for (const field of ["conversationId", "memberId", "requestId", "invocationId", "approvalId"] as const) {
+      reply = { ...decided, [field]: randomUUID() };
+      await assert.rejects(s.client.decisionRecord(identity), CrewProtocolError);
+    }
+    for (reply of [{ ...decided, version: 2 }, { ...decided, apiVersion: "2" }, { ...decided, state: "pending" },
+      { ...decided, choice: "maybe" }, { ...decided, decisionId: "x" }, { ...decided, effect: { kind: "work_item" } },
+      { ...decided, effect: undefined }, { ...base, state: "closed", reason: "denied", closedAt: null },
+      { ...base, state: "auto_approved", recordedAt: "2026-11-16T12:00:00Z" }, { ...base, toolName: "future_tool", state: "undecided" }]) {
+      await assert.rejects(s.client.decisionRecord(identity), CrewProtocolError);
+    }
+    const sent = s.seen.length;
+    await assert.rejects(s.client.decisionRecord({ ...identity, approvalId: "invalid" }));
+    await assert.rejects(s.client.decisionRecord(identity, { signal: AbortSignal.abort("stop") }), error => error === "stop");
+    assert.equal(s.seen.length, sent);
+    assert.equal(decisionRecordSchema.safeParse({ ...decided, decisionId: undefined }).success, false);
+  } finally { await s.close(); }
+  const missing = await serve((_, response) => json(response, { error: "not_found" }, 404));
+  try { await assert.rejects(missing.client.decisionRecord(identity), { status: 404, code: "not_found" }); }
+  finally { await missing.close(); }
+});
+
+test("decision receipt capability is optional and future versions stay opaque", () => {
+  const base = { apiVersion: "1", requestContract: "sql-admission-temporal-queue-v1",
+    observation: { protocol: "AG-UI", mode: "snapshot-and-bounded-tail" }, initiatorKinds: ["owner"] };
+  const decisionReceipts = { version: 1, field: "decisionId",
+    route: "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}/decision",
+    tools: ["record_work_item", "choose_next_step"], replay: "same-decision-id-and-choice", conflictCode: "decision_conflict" };
+  assert.equal(capabilitiesSchema.parse(base).decisionReceipts, undefined);
+  assert.deepEqual(capabilitiesSchema.parse({ ...base, decisionReceipts }).decisionReceipts, decisionReceipts);
+  assert.ok(decisionReceiptsCapabilityV1Schema.safeParse(decisionReceipts).success);
+  const future = { version: 2, route: "/elsewhere" };
+  const observed = capabilitiesSchema.parse({ ...base, decisionReceipts: future }).decisionReceipts;
+  assert.deepEqual(observed, future);
+  assert.equal(decisionReceiptsCapabilityV1Schema.safeParse(observed).success, false);
+  assert.equal(capabilitiesSchema.safeParse({ ...base, decisionReceipts: { ...decisionReceipts, conflictCode: "conflict" } }).success, false);
 });

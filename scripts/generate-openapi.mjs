@@ -13,6 +13,8 @@ import {
   handoffRecordSchema,
   handoffsCapabilitySchema,
   handoffsCapabilityV1Schema,
+  decisionReceiptsCapabilitySchema,
+  decisionReceiptsCapabilityV1Schema,
 } from "../packages/client/src/contract.ts";
 
 const registry = z.registry();
@@ -45,6 +47,9 @@ for (const [id, value] of Object.entries({
   RequestReceipt: routes.requestStatus.response,
   OwnerApprovalDetail: routes.approvalDetail.response,
   DecisionReceipt: routes.decide.response,
+  DecisionRecord: routes.decisionRecord.response,
+  DecisionReceiptsCapability: decisionReceiptsCapabilitySchema,
+  DecisionReceiptsCapabilityV1: decisionReceiptsCapabilityV1Schema,
   CreateMember: routes.createMember.body,
   OpenConversation: routes.openConversation.body,
   SubmitRequest: routes.submit.body,
@@ -138,6 +143,12 @@ for (const [operationId, route] of Object.entries(routes)) {
   if (operationId === "approvalDetail")
     operation.description =
       "Owner-only immutable complete record_work_item proposal, retained after settlement. Exact conversation, member, request, invocation, approval and decision version required. Unknown or repeated query parameters are rejected. Unsupported tools and scope mismatches return not_found. This read does not claim actionability or change approvals, grants, deadlines or effects. Responses use Cache-Control: no-store.";
+  if (operationId === "decisionRecord")
+    operation.description =
+      "Owner-only durable decision state of one card, for record_work_item and choose_next_step. Same identity, query and not_found rules as approvalDetail. decided reports the exact recorded choice and its decisionId, null when the decision carried none. closed means no decision can ever commit. undecided does not claim the card is still actionable, and a decide command may still commit after it. Responses use Cache-Control: no-store.";
+  if (operationId === "decide")
+    operation.description =
+      "Decide one card. An optional decisionId names this decision on this card and is echoed. Repeating the same decisionId and choice returns the recorded decision without a second effect. Any other decision already recorded against a supplied decisionId returns 409 decision_conflict: this decision never applied and never will. Without decisionId the behavior is unchanged.";
   if (operationId === "listGrants")
     operation.description =
       "Every active grant for the authenticated owner's member, plus at most twenty inactive rows. No pagination or active-result truncation. A read does not acknowledge an earlier revoke command.";

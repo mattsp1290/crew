@@ -154,6 +154,7 @@ export const decideSchema = requestIdentitySchema.extend({
   approvalId: uuid,
   version: z.int(),
   choice: decisionChoice,
+  decisionId: uuid.optional(),
 });
 /** Complete proposal arguments. An absent note and an empty note remain distinct. */
 export const recordWorkItemArgumentsSchema = z.strictObject({
@@ -163,7 +164,7 @@ export const recordWorkItemArgumentsSchema = z.strictObject({
     { message: "Expected valid UTF-8 text of at most 4096 bytes" },
   ).meta({ "x-maxUtf8Bytes": 4096, "x-forbidden": "NUL; unpaired surrogates" }).optional(),
 });
-export const approvalDetailIdentitySchema = decideSchema.omit({ choice: true });
+export const approvalDetailIdentitySchema = decideSchema.omit({ choice: true, decisionId: true });
 export const approvalDetailQuerySchema = approvalDetailIdentitySchema.pick({
   memberId: true, invocationId: true, version: true,
 });
@@ -220,6 +221,62 @@ export const handoffsCapabilitySchema = z.union([
       .meta({ not: { const: 1 } }),
   }),
 ]);
+export const decisionReceiptsCapabilityV1Schema = z.looseObject({
+  version: z.literal(1),
+  field: z.literal("decisionId"),
+  route: z.literal("/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}/decision"),
+  tools: z.array(z.string().min(1)),
+  replay: z.literal("same-decision-id-and-choice"),
+  conflictCode: z.literal("decision_conflict"),
+});
+export const decisionReceiptsCapabilitySchema = z.union([
+  decisionReceiptsCapabilityV1Schema,
+  z.looseObject({
+    version: z.int().positive().refine((version) => version !== 1)
+      .meta({ not: { const: 1 } }),
+  }),
+]);
+const decisionRecordBase = {
+  apiVersion: z.literal("1"),
+  conversationId: uuid,
+  memberId: uuid,
+  requestId: uuid,
+  invocationId: uuid,
+  approvalId: uuid,
+  version: z.literal(1),
+  toolName: z.enum(["record_work_item", "choose_next_step"]),
+};
+const decisionEffectSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({ kind: z.literal("work_item"), receiptId: uuid }),
+]);
+export const decisionRecordSchema = z.discriminatedUnion("state", [
+  z.object({
+    ...decisionRecordBase,
+    state: z.literal("decided"),
+    decisionId: uuid.nullable(),
+    choice: decisionChoice,
+    recordedAt: z.iso.datetime().nullable(),
+    effect: decisionEffectSchema,
+  }),
+  z.object({
+    ...decisionRecordBase,
+    state: z.literal("auto_approved"),
+    grantId: uuid,
+    recordedAt: z.iso.datetime(),
+  }),
+  z.object({
+    ...decisionRecordBase,
+    state: z.literal("closed"),
+    reason: z.enum(["expired", "cancelled"]),
+    closedAt: z.iso.datetime().nullable(),
+  }),
+  z.object({ ...decisionRecordBase, state: z.literal("undecided") }),
+]).meta({
+  description: "decided carries the exact choice and the caller's decisionId, null when the decision was made without one; "
+    + "its recordedAt is null only for a decision older than the audit trail. closed means no decision can ever commit. "
+    + "undecided only says that no decision is recorded yet, not that the card still accepts one.",
+});
 export const listGrantsSchema = z.strictObject({ memberId: uuid });
 export const revokeGrantSchema = listGrantsSchema.extend({ grantId: uuid });
 const grantBase = {
@@ -273,6 +330,7 @@ export const revokeGrantResponseSchema = z.object({
 export const decisionReceiptSchema = z.object({
   approvalId: z.uuid(),
   decision: decisionChoice,
+  decisionId: z.uuid().optional(),
 });
 const result = z.object({ text: z.string() });
 const receiptBase = z.object({
@@ -410,6 +468,7 @@ export const capabilitiesSchema = z.looseObject({
   approvalDetails: approvalDetailsCapabilitySchema.optional(),
   standingGrants: standingGrantsCapabilitySchema.optional(),
   handoffs: handoffsCapabilitySchema.optional(),
+  decisionReceipts: decisionReceiptsCapabilitySchema.optional(),
 });
 const dependencyStatus = z.enum(["ready", "unavailable"]);
 export const healthSchema = z.object({
@@ -464,6 +523,9 @@ export type ListGrants = z.input<typeof listGrantsSchema>;
 export type RevokeGrant = z.input<typeof revokeGrantSchema>;
 export type RevokeGrantResponse = z.infer<typeof revokeGrantResponseSchema>;
 export type Decide = z.input<typeof decideSchema>;
+export type DecisionRecord = z.infer<typeof decisionRecordSchema>;
+export type DecisionReceiptsCapability = z.infer<typeof decisionReceiptsCapabilitySchema>;
+export type DecisionReceiptsCapabilityV1 = z.infer<typeof decisionReceiptsCapabilityV1Schema>;
 export type ConversationSnapshot = z.infer<typeof conversationSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 export type Health = z.infer<typeof healthSchema>;
@@ -573,6 +635,14 @@ export const routes = {
     path: "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}",
     query: approvalDetailQuerySchema,
     response: ownerApprovalDetailSchema,
+    statuses: [200],
+    command: false,
+  },
+  decisionRecord: {
+    method: "GET",
+    path: decisionReceiptsCapabilityV1Schema.shape.route.value,
+    query: approvalDetailQuerySchema,
+    response: decisionRecordSchema,
     statuses: [200],
     command: false,
   },
