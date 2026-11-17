@@ -30,6 +30,7 @@ import { startSupervisor } from "../../src/service/supervisor.ts";
 import { memberQueueActivities } from "../../src/service/worker.ts";
 import { before, boundedCommand, durableLog, now, signalOwnedChild } from "../proof/member-service-diagnostics.mts";
 import { workingState } from "../proof/member-services.mts";
+import { spawnHistoricalMember, testDatabaseName } from "./database-fixtures.ts";
 
 const { temporal: protocol } = proto;
 const configuredDatabase = process.env.BIRBCREW_TEST_DATABASE_URL;
@@ -1465,5 +1466,93 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
   } finally {
     held.get(holdKey)?.release();
     try { await activities.stop(); } finally { await workflow.stop(); }
+  }
+});
+
+test("an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing", { timeout: 180_000 }, async () => {
+  const cli = process.env.TEMPORAL_CLI;
+  assert.ok(cli);
+  const scope = "missing-history-worker-" + randomUUID();
+  const heartbeat = join(directory, scope + "-heartbeat");
+  const namespace = "control-missing-history-" + randomUUID();
+  const databaseName = testDatabaseName("ctl_missing_history_");
+  const databaseUrl = new URL(database); databaseUrl.pathname = "/" + databaseName;
+  await pool.query(`CREATE DATABASE "${databaseName}"`);
+  const seedPool = new Pool({ connectionString: databaseUrl.toString(), application_name: scope + "-seed" });
+  let worker: ReturnType<typeof owned> | undefined;
+  try {
+    await boundedCommand(cli, ["operator", "namespace", "create", "--namespace", namespace, "--address", address], now() + 15_000);
+    const seedStore = new MemberStore(seedPool); await seedStore.migrate();
+    const member = await spawnHistoricalMember(seedStore, { ownerId, requestId: randomUUID(), engine: "pi", profile: parentProfile });
+    const key = { memberId: member.memberId, conversationId: randomUUID(), requestId: randomUUID(), workflowRunId: randomUUID(),
+      resumeActivityId: "missing-history-resume", reply: "SQL-seeded committed parent reply" };
+    await seedStore.transaction(async db => {
+      await db.query("INSERT INTO birbcrew_ts.conversations(conversation_id,owner_id,member_id) VALUES($1,$2,$3)",
+        [key.conversationId, ownerId, key.memberId]);
+      await db.query(`INSERT INTO birbcrew_ts.turns(conversation_id,request_id,position,prompt_digest,workflow_run_id,activity_id,attempt,phase,reply,checkpoint)
+        VALUES($1,$2,1,$3,$4,'missing-history-turn',1,'committed',$5,'{}')`,
+      [key.conversationId, key.requestId, createHash("sha256").update(scope).digest(), key.workflowRunId, key.reply]);
+      await db.query("INSERT INTO birbcrew_ts.delegations(conversation_id,request_id,parent_checkpoint,resume_activity_id) VALUES($1,$2,'{}',$3)",
+        [key.conversationId, key.requestId, key.resumeActivityId]);
+    });
+    const namespaceClient = new Client({ connection, namespace });
+    await until(() => namespaceClient.workflow.getHandle("missing-history-namespace-probe").describe()
+      .then(() => assert.fail("The fixture namespace starts empty"),
+        (error: unknown) => error instanceof WorkflowNotFoundError ? true : undefined),
+    "the registered fixture namespace serves workflow lookups", 30_000);
+    const directObservation = await new TemporalDelegationWorkflows(namespaceClient).observeParentResult(key);
+    assert.deepEqual(directObservation, { kind: "missing" }, "The real adapter classifies the seeded nonexistent run as missing history");
+    worker = owned(scope, process.execPath, ["src/service/cli.ts", "worker", config], {
+      ...process.env, BIRBCREW_DATABASE_URL: databaseUrl.toString(), BIRBCREW_TEMPORAL_NAMESPACE: namespace, PGAPPNAME: scope,
+      BIRBCREW_STATE_DIR: join(directory, scope + "-native"), BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat,
+    }, "process");
+    const running = worker;
+    const alive = () => {
+      assert.equal(running.child.exitCode, null, "Missing-history CLI worker has not exited");
+      assert.equal(running.child.signalCode, null, "Missing-history CLI worker has not been signalled");
+    };
+    const stamp = async () => {
+      try { return (await stat(heartbeat)).mtimeMs; }
+      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
+    };
+    const pollers = await until(async () => {
+      alive();
+      const { pollers } = await connection.workflowService.describeTaskQueue({ namespace, taskQueue: { name: memberTaskQueue }, taskQueueType: 1 });
+      return pollers?.some(poller => poller.identity?.startsWith(running.child.pid + "@")) ? pollers : undefined;
+    }, "the missing-history CLI worker polls its fixture namespace");
+    const firstHeartbeat = await until(async () => { alive(); return stamp(); }, "first healthy heartbeat with missing parent history", 30_000);
+    const advancedHeartbeat = await until(async () => {
+      alive(); const next = await stamp(); return next !== undefined && next > firstHeartbeat ? next : undefined;
+    }, "advancing healthy heartbeat with missing parent history", 30_000);
+    const failures = (await readFile(running.logPath, "utf8")).split("\n").filter(line => line.includes('"delegation_control_failed"'));
+    const sql = z.strictObject({ observed: z.boolean(), positives: z.number().int(), delegations: z.number().int() }).parse((await seedPool.query(
+      `SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed,
+        (SELECT count(*)::integer FROM birbcrew_ts.delegation_parent_observations) AS positives,
+        (SELECT count(*)::integer FROM birbcrew_ts.delegations) AS delegations`, [key.conversationId, key.requestId])).rows[0]);
+    const sessions = (await pool.query("SELECT pid,datname,state FROM pg_stat_activity WHERE application_name=$1 ORDER BY pid", [scope])).rows;
+    await evidence("missing-history-worker-health", { source: "SQL-seeded-committed-delegation-with-nonexistent-run-and-actual-Temporal-namespace",
+      actualRetentionExpiryClaim: false, scope, namespace, databaseName, key, directObservation, workerPid: running.child.pid, pollers,
+      firstHeartbeat, advancedHeartbeat, failedPassLogs: failures.length, sql, sessions });
+    assert.equal(failures.length, 0, "Missing parent history never fails the CLI worker's control pass");
+    assert.deepEqual(sql, { observed: false, positives: 0, delegations: 1 }, "Missing history records no positive for the sole seeded delegation");
+    assert.ok(sessions.length > 0 && sessions.every(row => row.datname === databaseName), "The CLI worker uses only its isolated database");
+    await running.stop();
+    assert.equal(running.child.exitCode, 0, "The missing-history CLI worker shuts down gracefully");
+    const closed = await until(async () => {
+      const rows = (await pool.query("SELECT pid FROM pg_stat_activity WHERE application_name=$1", [scope])).rows;
+      return rows.length === 0 ? rows : undefined;
+    }, "missing-history CLI database sessions close", 5000);
+    await evidence("missing-history-worker-shutdown", { scope, exitCode: running.child.exitCode, signalCode: running.child.signalCode, sessions: closed });
+  } finally {
+    try { await worker?.stop(); }
+    finally {
+      try { await seedPool.end(); }
+      finally {
+        await pool.query(`DROP DATABASE "${databaseName}"`);
+        const remaining = (await pool.query("SELECT datname FROM pg_database WHERE datname=$1", [databaseName])).rows;
+        await evidence("missing-history-worker-database-cleanup", { databaseName, remaining });
+        assert.deepEqual(remaining, [], "The isolated missing-history database is dropped");
+      }
+    }
   }
 });
