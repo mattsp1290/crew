@@ -1,4 +1,5 @@
-import { approvalDetailIdentitySchema, ownerApprovalDetailSchema, decideSchema, nextStep, standingChoice } from "@birbcrew/client/contract";
+import { approvalDetailIdentitySchema, decideSchema, decisionRecordSchema, nextStep, ownerApprovalDetailSchema, standingChoice,
+  type DecisionRecord } from "@birbcrew/client/contract";
 import { acceptsChoice, emptyToolArguments, publicToolArguments, recordWorkItemArguments, toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
 import { createGrant, grantable, proposalGrant, standingScope } from "./grants.ts";
 import { publishObservation } from "./observation.ts";
@@ -57,13 +58,26 @@ type CallRow = {
   decision: "approve" | "deny" | z.infer<typeof nextStep> | null;
   /** As reported, including a standing choice. */
   choice: Choice | null;
+  decisionId: string | null;
   expiresAt: Date | null;
   expiredAt: Date | null;
 };
 const columns = `p.approval_id AS "approvalId", p.invocation_id AS "invocationId", p.native_call_id AS "nativeCallId",
   p.argument_digest AS "argumentDigest", p.tool_name AS "toolName", p.decision_version AS version,
-  p.policy_version AS "policyVersion", p.decision, ${recordedChoice} AS choice, p.grant_id AS "grantId", p.budget_exhausted,
+  p.policy_version AS "policyVersion", p.decision, ${recordedChoice} AS choice, p.decision_id AS "decisionId",
+  p.grant_id AS "grantId", p.budget_exhausted,
   p.expires_at AS "expiresAt", p.expired_at AS "expiredAt"`;
+/** The recorded choice when this request repeats the decision already on the card. Without a
+ * decisionId only the choice is compared, as before decision receipts; a mismatch is left to the
+ * caller's ordinary conflict. With one, any other recorded decision is a decision_conflict. */
+export function replayedDecision(call: { choice: Choice | null; decisionId: string | null },
+  key: { choice: Choice; decisionId?: string }): Choice | undefined {
+  if (!call.choice) return undefined;
+  if (key.decisionId === undefined) return call.choice === key.choice ? call.choice : undefined;
+  if (call.decisionId === key.decisionId && call.choice === key.choice) return call.choice;
+  throw new MemberStoreError("decision_conflict");
+}
+
 /** What expireTurn did: settled the card at its deadline, found it already settled by a decision
  * or a cancellation, or found the deadline not yet reached by the database clock. */
 export type Expiry = { kind: "expired" } | { kind: "settled" } | { kind: "early"; remainingMs: number };
@@ -93,6 +107,51 @@ export async function readOwnerApprovalDetail(pool: Pool, ownerId: string, input
   const detail = ownerApprovalDetailSchema.safeParse(row);
   if (!detail.success) throw new MemberStoreError("not_found");
   return detail.data;
+}
+
+type RecordRow = {
+  toolName: DeferredTool; choice: Choice | null; decisionId: string | null; grantId: string | null;
+  expiredAt: Date | null; cancelled: boolean; receiptId: string | null; decidedAt: Date | null; autoApprovedAt: Date | null;
+};
+
+function decisionState(row: RecordRow) {
+  if (row.grantId) return { state: "auto_approved", grantId: row.grantId, recordedAt: row.autoApprovedAt?.toISOString() };
+  if (row.choice) {
+    return { state: "decided", decisionId: row.decisionId, choice: row.choice, recordedAt: row.decidedAt?.toISOString() ?? null,
+      effect: row.receiptId ? { kind: "work_item", receiptId: row.receiptId } : { kind: "none" } };
+  }
+  if (row.expiredAt) return { state: "closed", reason: "expired", closedAt: row.expiredAt.toISOString() };
+  if (row.cancelled) return { state: "closed", reason: "cancelled", closedAt: null };
+  return { state: "undecided" };
+}
+
+/** One statement, so the card, its effect and its audit rows come from one snapshot. */
+export async function readDecisionRecord(pool: Pool, ownerId: string, input: unknown): Promise<DecisionRecord> {
+  const key = approvalDetailIdentitySchema.parse(input);
+  const { rows: [row] } = await pool.query<RecordRow>(
+    `SELECT p.tool_name AS "toolName", ${recordedChoice} AS choice, p.decision_id AS "decisionId", p.grant_id AS "grantId",
+       p.expired_at AS "expiredAt", x.request_id IS NOT NULL AS cancelled, w.receipt_id AS "receiptId",
+       CASE WHEN p.grant_id IS NULL AND p.decision IS NOT NULL THEN (SELECT a.occurred_at FROM birbcrew_ts.audit_events a
+         WHERE a.event_type='approval.decided' AND a.payload->>'approvalId'=p.approval_id::text) END AS "decidedAt",
+       CASE WHEN p.grant_id IS NOT NULL THEN (SELECT a.occurred_at FROM birbcrew_ts.audit_events a
+         WHERE a.owner_id=c.owner_id AND a.conversation_id=c.conversation_id AND a.event_type='approval.auto_approved'
+           AND a.payload->>'approvalId'=p.approval_id::text) END AS "autoApprovedAt"
+     FROM birbcrew_ts.deferred_calls p JOIN birbcrew_ts.conversations c USING (conversation_id)
+       LEFT JOIN birbcrew_ts.tool_cancellations x USING (conversation_id, request_id)
+       LEFT JOIN birbcrew_ts.work_items w USING (conversation_id, request_id, approval_id)
+     WHERE c.owner_id=$1 AND c.member_id=$2 AND c.conversation_id=$3 AND p.request_id=$4
+       AND p.invocation_id=$5 AND p.approval_id=$6 AND p.decision_version=$7::bigint`,
+    [ownerId, key.memberId, key.conversationId, key.requestId, key.invocationId, key.approvalId, key.version],
+  );
+  if (!row) throw new MemberStoreError("not_found");
+  const record = decisionRecordSchema.safeParse({
+    apiVersion: "1", conversationId: key.conversationId, memberId: key.memberId, requestId: key.requestId,
+    invocationId: key.invocationId, approvalId: key.approvalId, version: key.version, toolName: row.toolName,
+    ...decisionState(row),
+  });
+  // Not a ZodError: a record Crew cannot describe is its own fault, never the caller's invalid input.
+  if (!record.success) throw new Error("Invalid decision record");
+  return record.data;
 }
 
 async function lockTurn(db: PoolClient, scope: Scope) {
@@ -310,8 +369,9 @@ export class ApprovalStore {
       const turn = await lockTurn(db, key);
       const call = await findCall(db, key);
       if (!acceptsChoice(call.toolName, key.choice)) throw new MemberStoreError("conflict");
-      if (call.version !== key.version || call.argumentDigest !== key.argumentDigest ||
-          (call.choice && call.choice !== key.choice)) throw new MemberStoreError("conflict");
+      if (call.version !== key.version || call.argumentDigest !== key.argumentDigest) throw new MemberStoreError("conflict");
+      const replay = replayedDecision(call, key);
+      if (call.choice && !replay) throw new MemberStoreError("conflict");
       if (!call.choice && (turn.phase !== "started" || call.childStopped || call.pastDeadline || call.expiredAt || await cancelled(db,key) ||
           (standingScope(key.choice) && !await grantable(db, { ...key, toolName: call.toolName })))) {
         throw new MemberStoreError("conflict");
@@ -323,7 +383,7 @@ export class ApprovalStore {
             (s.conversation_id,s.request_id,s.token)=(l.conversation_id,l.request_id,l.token)))`,[key.approvalId]);
         if (closed.rowCount) throw new MemberStoreError("conflict");
       }
-      return call.choice;
+      return replay ?? null;
     });
   }
 
@@ -340,7 +400,8 @@ export class ApprovalStore {
     if (call.live !== live) throw new MemberStoreError("stale");
     if (!acceptsChoice(call.toolName, key.choice)) throw new MemberStoreError("conflict");
     if (call.version !== key.version || call.argumentDigest !== key.argumentDigest) throw new MemberStoreError("conflict");
-    if (call.choice === key.choice) return call.choice;
+    const replay = replayedDecision(call, key);
+    if (replay) return replay;
     if (call.choice || turn.phase !== "started" || call.childStopped || call.pastDeadline || call.expiredAt || await cancelled(db, key)) {
       throw new MemberStoreError("conflict");
     }
@@ -349,10 +410,11 @@ export class ApprovalStore {
     if (scope && !await grantable(db, target)) throw new MemberStoreError("conflict");
     // The statement checks the deadline again by its own clock. Under the conversation lock a
     // decision commits before the deadline or not at all, and expireTurn only after it.
-    const accepted = await db.query(`UPDATE birbcrew_ts.deferred_calls SET decision=$2, grant_scope=$4 WHERE approval_id=$1
+    const accepted = await db.query(`UPDATE birbcrew_ts.deferred_calls SET decision=$2, grant_scope=$4, decision_id=$5 WHERE approval_id=$1
       AND (expires_at IS NULL OR expires_at > clock_timestamp()) AND expired_at IS NULL
       AND (NOT $3::boolean OR EXISTS (SELECT 1 FROM birbcrew_ts.codex_live_calls l WHERE l.approval_id=$1
-        AND l.phase='waiting' AND l.expires_at>clock_timestamp()))`, [key.approvalId, scope ? "approve" : key.choice, live, scope]);
+        AND l.phase='waiting' AND l.expires_at>clock_timestamp()))`,
+      [key.approvalId, scope ? "approve" : key.choice, live, scope, key.decisionId ?? null]);
     if (!accepted.rowCount) throw new MemberStoreError(live ? "stale" : "conflict");
     await publishObservation(db, key.conversationId, { kind: "answered", approvalId: key.approvalId });
     await appendAudit(db, { type: "approval.decided", ownerId: key.ownerId, memberId: key.memberId,

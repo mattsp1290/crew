@@ -60,6 +60,7 @@ const span = z.strictObject({
 });
 
 const ids = { codex: randomUUID(), pi: randomUUID(), claude: randomUUID() };
+const decisionIds = { codex: randomUUID(), pi: randomUUID(), claude: randomUUID() };
 const ownerId = "private-owner-" + randomUUID();
 let stop: (() => Promise<void>) | undefined;
 try {
@@ -95,14 +96,18 @@ try {
   const codex = cases.find(c => c.member.engine === "codex")!;
   const a = codex.approval;
   await members.decide({ownerId, memberId:a.memberId,conversationId:a.conversationId,requestId:a.requestId,
-    nativeCallId:a.nativeCallId,invocationId:a.invocationId,approvalId:a.approvalId,version:a.version,argumentDigest:a.argumentDigest,choice:"approve"});
+    nativeCallId:a.nativeCallId,invocationId:a.invocationId,approvalId:a.approvalId,version:a.version,argumentDigest:a.argumentDigest,choice:"approve",
+    decisionId:decisionIds.codex});
   await codex.pending;
   await stop();
   stop = startWorker();
   const workflowIds: string[] = [];
   for (const { key, member, requestId, approval, pending } of cases) {
     const { ownerId, memberId, conversationId, nativeCallId, invocationId, approvalId, version, argumentDigest }: Approval = approval;
-    await members.decide({ ownerId, memberId, conversationId, requestId, nativeCallId, invocationId, approvalId, version, argumentDigest, choice: "approve" });
+    const decision = { ownerId, memberId, conversationId, requestId, nativeCallId, invocationId, approvalId, version, argumentDigest,
+      choice: "approve" as const, decisionId: decisionIds[member.engine] };
+    assert.equal(await members.decide(decision), "approve");
+    assert.equal(await members.decide(decision), "approve");
     const result = await pending;
     const receipt = (await pool.query("SELECT receipt_id FROM birbcrew_ts.work_items WHERE conversation_id=$1 AND request_id=$2", [conversationId, requestId])).rows[0]?.receipt_id;
     assert.ok(receipt && result.includes(receipt));
@@ -158,6 +163,10 @@ try {
     [Object.values(ids)])).rows;
   const receiptsBefore = await ledger();
   assert.equal(receiptsBefore.length, 3);
+  // Named decisions travel through the decide update as opaque arguments; the replay below must not see them.
+  const named = await pool.query("SELECT decision_id FROM birbcrew_ts.deferred_calls WHERE approval_id=ANY($1::uuid[]) ORDER BY decision_id",
+    [cases.map(c => c.approval.approvalId)]);
+  assert.deepEqual(named.rows.map(r => r.decision_id), Object.values(decisionIds).sort());
   const replay = await run("unshare", ["--user", "--net", process.execPath, "tests/proof/offline-replay.mts", directory], {
     env: { PATH: process.env.PATH, HOME: directory }, timeout: 120_000,
   });

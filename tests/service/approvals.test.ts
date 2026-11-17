@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { Pool } from "pg";
 import { fixedRoles } from "@birbcrew/pi-subagents";
-import { ApprovalStore, type Approval } from "../../src/service/approvals.ts";
+import { ApprovalStore, readDecisionRecord, type Approval } from "../../src/service/approvals.ts";
 import { ChildStore } from "../../src/service/children.ts";
+import { ownerInitiator } from "../../src/service/domain.ts";
 import { publishObservation, readSnapshot } from "../../src/service/observation.ts";
 import { MemberStore } from "../../src/service/store.ts";
 
@@ -16,14 +17,16 @@ const approvals = new ApprovalStore(pool);
 before(async () => { await members.migrate(); await Promise.all([approvals.migrate(), approvals.migrate()]); });
 after(() => pool.end());
 
-async function input(engine: "claude" | "pi") {
+async function input(engine: "claude" | "pi", admission?: { approvalDeadlineSeconds?: number }) {
   const ownerId = randomUUID();
   const { memberId } = await members.spawn({ ownerId, requestId: randomUUID(), engine, profile: "approvals.v1" });
   const conversation = { ownerId, memberId, conversationId: randomUUID() };
   await members.openConversation(conversation);
   const { conversationId } = conversation;
   const requestId = randomUUID();
-  const turn = await members.beginTurn({ ownerId, conversationId, requestId, text: "Record one fixture work item" });
+  const request = { ownerId, conversationId, requestId, text: "Record one fixture work item", ...admission };
+  if (admission) await members.recordAcceptance(request, ownerInitiator);
+  const turn = await members.beginTurn(request);
   assert.equal(turn.kind, "start");
   const scope = { ...conversation, requestId };
   const proposal = {
@@ -216,4 +219,136 @@ test("legacy call changes and persisted cards remain unproven", async () => {
   const reopened = new Pool({ connectionString: url });
   try { assert.deepEqual(await readSnapshot(reopened, scope.ownerId, scope.conversationId), snapshot); }
   finally { await reopened.end(); }
+});
+
+type Choice = Parameters<ApprovalStore["decide"]>[0]["choice"];
+function named(approval: Approval, choice: Choice, decisionId?: string) {
+  return { ...address(approval), argumentDigest: approval.argumentDigest, version: approval.version, choice,
+    ...(decisionId && { decisionId }) };
+}
+
+function identity(approval: Approval) {
+  const { memberId, conversationId, requestId, invocationId, approvalId, version } = approval;
+  return { memberId, conversationId, requestId, invocationId, approvalId, version };
+}
+
+async function facts(approvalId: string) {
+  const { rows: [row] } = await pool.query<{ decided: string; grants: string; at: Date | null }>(
+    `SELECT (SELECT count(*) FROM birbcrew_ts.audit_events WHERE event_type='approval.decided' AND payload->>'approvalId'=$1) AS decided,
+       (SELECT count(*) FROM birbcrew_ts.tool_grants WHERE approval_id=$1::uuid) AS grants,
+       (SELECT occurred_at FROM birbcrew_ts.audit_events WHERE event_type='approval.decided' AND payload->>'approvalId'=$1) AS at`,
+    [approvalId]);
+  return { decided: Number(row.decided), grants: Number(row.grants), at: row.at?.toISOString() ?? null };
+}
+
+test("a named decision replays exactly once and any other decision on its card is a decision_conflict", async () => {
+  const { proposal, token } = await input("pi", {});
+  const card = await approvals.propose(proposal);
+  const ownerId = card.ownerId, mine = randomUUID();
+  assert.deepEqual(await readDecisionRecord(pool, ownerId, identity(card)), {
+    apiVersion: "1", ...identity(card), toolName: "record_work_item", state: "undecided" });
+  assert.equal(await approvals.previousDecision(named(card, "allow_conversation", mine)), null);
+  assert.equal(await approvals.decide(named(card, "allow_conversation", mine)), "allow_conversation");
+  const once = await facts(card.approvalId);
+  assert.deepEqual([once.decided, once.grants], [1, 1]);
+  const replays = await Promise.all([approvals.decide(named(card, "allow_conversation", mine)),
+    approvals.previousDecision(named(card, "allow_conversation", mine.toUpperCase()))]);
+  assert.deepEqual(replays, ["allow_conversation", "allow_conversation"]);
+  assert.deepEqual(await facts(card.approvalId), once, "a replay appends no audit row and creates no grant");
+  for (const other of [named(card, "approve", mine), named(card, "deny", mine), named(card, "allow_conversation", randomUUID())]) {
+    await assert.rejects(approvals.decide(other), { code: "decision_conflict" });
+    await assert.rejects(approvals.previousDecision(other), { code: "decision_conflict" });
+  }
+  assert.equal(await approvals.decide(named(card, "allow_conversation")), "allow_conversation", "without an id the choice alone replays");
+  await assert.rejects(approvals.decide(named(card, "deny")), { code: "conflict" });
+  const decided = { apiVersion: "1", ...identity(card), toolName: "record_work_item", state: "decided", decisionId: mine,
+    choice: "allow_conversation", recordedAt: once.at };
+  assert.deepEqual(await readDecisionRecord(pool, ownerId, identity(card)), { ...decided, effect: { kind: "none" } });
+  const outcome = await approvals.settle({ ...address(card), token });
+  assert.equal(outcome.kind, "recorded");
+  assert.deepEqual(await readDecisionRecord(pool, ownerId, identity(card)),
+    { ...decided, effect: { kind: "work_item", receiptId: outcome.kind === "recorded" && outcome.receipt.receiptId } });
+});
+
+test("a decision recorded without an id is never claimed by a named one, and unnamed decisions behave as before", async () => {
+  const { proposal } = await input("claude");
+  const question = await approvals.propose({ ...proposal, toolName: "choose_next_step", arguments: {} });
+  assert.equal(await approvals.decide(named(question, "inspect")), "inspect");
+  await assert.rejects(approvals.decide(named(question, "inspect", randomUUID())), { code: "decision_conflict" });
+  await assert.rejects(approvals.previousDecision(named(question, "inspect", randomUUID())), { code: "decision_conflict" });
+  assert.equal(await approvals.previousDecision(named(question, "inspect")), "inspect");
+  await assert.rejects(approvals.decide(named(question, "test")), { code: "conflict" });
+  await assert.rejects(approvals.decide(named(question, "approve", randomUUID())), { code: "conflict" },
+    "a choice the tool never accepts stays an ordinary conflict");
+  const record = await readDecisionRecord(pool, question.ownerId, identity(question));
+  assert.ok(record.state === "decided");
+  assert.deepEqual([record.toolName, record.decisionId, record.choice, record.effect], ["choose_next_step", null, "inspect", { kind: "none" }]);
+  assert.equal(record.recordedAt, (await facts(question.approvalId)).at);
+});
+
+test("the decision record reports closed and auto-approved cards and hides every other owner's card", async () => {
+  const expiring = await input("pi", { approvalDeadlineSeconds: 60 });
+  const lapsed = await approvals.propose(expiring.proposal);
+  await pool.query("UPDATE birbcrew_ts.deferred_calls SET expires_at=clock_timestamp() WHERE approval_id=$1", [lapsed.approvalId]);
+  await assert.rejects(approvals.decide(named(lapsed, "approve", randomUUID())), { code: "conflict" });
+  assert.deepEqual(await approvals.expireTurn(lapsed), { kind: "expired" });
+  const { rows: [{ expired_at }] } = await pool.query("SELECT expired_at FROM birbcrew_ts.deferred_calls WHERE approval_id=$1", [lapsed.approvalId]);
+  assert.deepEqual(await readDecisionRecord(pool, lapsed.ownerId, identity(lapsed)), { apiVersion: "1", ...identity(lapsed),
+    toolName: "record_work_item", state: "closed", reason: "expired", closedAt: expired_at.toISOString() });
+
+  const cancelling = await input("pi");
+  const withdrawn = await approvals.propose(cancelling.proposal);
+  await approvals.cancelTurn(cancelling.scope);
+  await assert.rejects(approvals.decide(named(withdrawn, "deny", randomUUID())), { code: "conflict" });
+  assert.deepEqual(await readDecisionRecord(pool, withdrawn.ownerId, identity(withdrawn)), { apiVersion: "1", ...identity(withdrawn),
+    toolName: "record_work_item", state: "closed", reason: "cancelled", closedAt: null });
+
+  const granted = await input("pi", {});
+  const first = await approvals.propose(granted.proposal);
+  await approvals.decide(named(first, "allow_always", randomUUID()));
+  const sameMember = { ...granted.scope, conversationId: randomUUID(), requestId: randomUUID() };
+  await members.openConversation({ ownerId: sameMember.ownerId, memberId: sameMember.memberId, conversationId: sameMember.conversationId });
+  const request = { ownerId: sameMember.ownerId, conversationId: sameMember.conversationId, requestId: sameMember.requestId,
+    text: "Record one more fixture work item" };
+  await members.recordAcceptance(request, ownerInitiator);
+  const turn = await members.beginTurn(request);
+  assert.equal(turn.kind, "start");
+  if (turn.kind !== "start") throw new Error("unreachable");
+  const auto = await approvals.propose({ ...granted.proposal, ...sameMember, token: turn.token, invocationId: sameMember.requestId,
+    arguments: { operation_id: sameMember.requestId } });
+  assert.ok(auto.grantId);
+  await assert.rejects(approvals.decide(named(auto, "approve", randomUUID())), { code: "decision_conflict" });
+  const { rows: [audit] } = await pool.query<{ at: Date }>(`SELECT occurred_at AS at FROM birbcrew_ts.audit_events
+    WHERE event_type='approval.auto_approved' AND payload->>'approvalId'=$1`, [auto.approvalId]);
+  assert.deepEqual(await readDecisionRecord(pool, auto.ownerId, identity(auto)), { apiVersion: "1", ...identity(auto),
+    toolName: "record_work_item", state: "auto_approved", grantId: auto.grantId, recordedAt: audit.at.toISOString() });
+
+  for (const [owner, key] of [[randomUUID(), identity(first)], [first.ownerId, { ...identity(first), version: 2 }],
+    [first.ownerId, { ...identity(first), memberId: randomUUID() }], [first.ownerId, { ...identity(first), invocationId: randomUUID() }],
+    [first.ownerId, { ...identity(first), requestId: sameMember.requestId }], [first.ownerId, { ...identity(first), approvalId: randomUUID() }]] as const) {
+    await assert.rejects(readDecisionRecord(pool, owner, key), { code: "not_found" });
+  }
+});
+
+test("only a decided card that no grant approved can carry a decision id", async () => {
+  const { proposal } = await input("pi");
+  const card = await approvals.propose(proposal);
+  await assert.rejects(pool.query("UPDATE birbcrew_ts.deferred_calls SET decision_id=$2 WHERE approval_id=$1",
+    [card.approvalId, randomUUID()]), { code: "23514" });
+});
+
+test("concurrent first decisions with different ids commit one and refuse the other as a decision_conflict", async () => {
+  const { proposal } = await input("pi", {});
+  const card = await approvals.propose(proposal);
+  const ids = [randomUUID(), randomUUID()];
+  const results = await Promise.allSettled(ids.map(id => approvals.decide(named(card, "allow_conversation", id))));
+  assert.deepEqual(results.map(r => r.status).sort(), ["fulfilled", "rejected"]);
+  const lost = results.find(r => r.status === "rejected");
+  assert.equal(lost?.status === "rejected" && lost.reason.code, "decision_conflict");
+  const winner = ids[results.findIndex(r => r.status === "fulfilled")];
+  const record = await readDecisionRecord(pool, card.ownerId, identity(card));
+  assert.ok(record.state === "decided");
+  assert.equal(record.decisionId, winner);
+  const once = await facts(card.approvalId);
+  assert.deepEqual([once.decided, once.grants], [1, 1]);
 });

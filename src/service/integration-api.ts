@@ -39,6 +39,10 @@ export const integrationCapabilities = {
   },
   routines: routineCapabilities,
   approvalDetails: { version: 1, tools: ["record_work_item"] },
+  decisionReceipts: {
+    version: 1, field: "decisionId", route: "/v1/conversations/{conversationId}/requests/{requestId}/approvals/{approvalId}/decision",
+    tools: ["record_work_item", "choose_next_step"], replay: "same-decision-id-and-choice", conflictCode: "decision_conflict",
+  },
   standingGrants: {
     version: 1, choices: standingChoice.options, cardField: "standingChoices", stateField: "grantedCalls", tools: ["record_work_item"], policyVersion: 1,
     initiatorKinds: ["owner"], route: "/v1/members/{memberId}/grants", inactiveListLimit: grantListLimit,
