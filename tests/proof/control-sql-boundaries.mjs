@@ -88,10 +88,11 @@ const suites={
       "a real restarted worker reconciles a pre-target waiting history after missed wake and re-enable",
       "disable retains a SQL-settled delegation until its actual parent workflow observes the completed follow-up",
       "an actual worker stops healthy heartbeats on blocked control discovery, recovers, and shuts down with discovery still blocked",
-      "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails"
+      "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails",
+      "an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing"
     ],
     "count": 1,
-    "pattern": "disable drains an actual committed parent reply recovered by reconcileTurn after its executeTurn acknowledgement fails"
+    "pattern": "an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing"
   },
   "restore": {
     "file": "tests/service/recovery.test.ts",
