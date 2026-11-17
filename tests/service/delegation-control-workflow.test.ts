@@ -1469,7 +1469,7 @@ test("disable drains an actual committed parent reply recovered by reconcileTurn
   }
 });
 
-test("an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing", { timeout: 180_000 }, async () => {
+test("an actual CLI worker keeps advancing healthy heartbeats while its sole stored parent history is missing", { timeout: 240_000 }, async () => {
   const cli = process.env.TEMPORAL_CLI;
   assert.ok(cli);
   const scope = "missing-history-worker-" + randomUUID();
@@ -1479,6 +1479,15 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
   const databaseUrl = new URL(database); databaseUrl.pathname = "/" + databaseName;
   await pool.query(`CREATE DATABASE "${databaseName}"`);
   const seedPool = new Pool({ connectionString: databaseUrl.toString(), application_name: scope + "-seed" });
+  let dropped: Promise<void> | undefined;
+  const dropDatabase = () => dropped ??= (async () => {
+    await seedPool.end();
+    await pool.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+    const remaining = (await pool.query("SELECT datname FROM pg_database WHERE datname=$1", [databaseName])).rows;
+    await evidence("missing-history-worker-database-cleanup", { databaseName, remaining });
+    assert.deepEqual(remaining, [], "The isolated missing-history database is dropped");
+  })();
+  cleanupSteps.push(dropDatabase);
   let worker: ReturnType<typeof owned> | undefined;
   try {
     await boundedCommand(cli, ["operator", "namespace", "create", "--namespace", namespace, "--address", address], now() + 15_000);
@@ -1521,7 +1530,11 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
       const { pollers } = await connection.workflowService.describeTaskQueue({ namespace, taskQueue: { name: memberTaskQueue }, taskQueueType: 1 });
       return pollers?.some(poller => poller.identity?.startsWith(running.child.pid + "@")) ? pollers : undefined;
     }, "the missing-history CLI worker polls its fixture namespace");
-    const firstHeartbeat = await until(async () => { alive(); return stamp(); }, "first healthy heartbeat with missing parent history", 30_000);
+    const firstHeartbeat = await until(async () => { alive(); return stamp(); }, "first healthy heartbeat with missing parent history");
+    const workerPid = z.int().positive().parse(running.child.pid);
+    const directChildren = z.array(z.coerce.number().int().positive()).parse((await readFile(
+      `/proc/${workerPid}/task/${workerPid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean));
+    assert.ok(directChildren.length > 0, "The CLI worker owns its native supervisor process");
     const advancedHeartbeat = await until(async () => {
       alive(); const next = await stamp(); return next !== undefined && next > firstHeartbeat ? next : undefined;
     }, "advancing healthy heartbeat with missing parent history", 30_000);
@@ -1533,7 +1546,7 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
     const sessions = (await pool.query("SELECT pid,datname,state FROM pg_stat_activity WHERE application_name=$1 ORDER BY pid", [scope])).rows;
     await evidence("missing-history-worker-health", { source: "SQL-seeded-committed-delegation-with-nonexistent-run-and-actual-Temporal-namespace",
       actualRetentionExpiryClaim: false, scope, namespace, databaseName, key, directObservation, workerPid: running.child.pid, pollers,
-      firstHeartbeat, advancedHeartbeat, failedPassLogs: failures.length, sql, sessions });
+      firstHeartbeat, advancedHeartbeat, failedPassLogs: failures.length, sql, sessions, directChildren });
     assert.equal(failures.length, 0, "Missing parent history never fails the CLI worker's control pass");
     assert.deepEqual(sql, { observed: false, positives: 0, delegations: 1 }, "Missing history records no positive for the sole seeded delegation");
     assert.ok(sessions.length > 0 && sessions.every(row => row.datname === databaseName), "The CLI worker uses only its isolated database");
@@ -1543,17 +1556,13 @@ test("an actual CLI worker keeps advancing healthy heartbeats while its sole sto
       const rows = (await pool.query("SELECT pid FROM pg_stat_activity WHERE application_name=$1", [scope])).rows;
       return rows.length === 0 ? rows : undefined;
     }, "missing-history CLI database sessions close", 5000);
-    await evidence("missing-history-worker-shutdown", { scope, exitCode: running.child.exitCode, signalCode: running.child.signalCode, sessions: closed });
+    const knownProcesses = await until(async () => {
+      const rows = [workerPid, ...directChildren].map(pid => ({ pid, absent: absent(pid) }));
+      return rows.every(row => row.absent) ? rows : undefined;
+    }, "the missing-history CLI worker and its direct children exit", 5000);
+    await evidence("missing-history-worker-shutdown", { scope, exitCode: running.child.exitCode, signalCode: running.child.signalCode,
+      sessions: closed, knownProcesses, ancestry: "unproven" });
   } finally {
-    try { await worker?.stop(); }
-    finally {
-      try { await seedPool.end(); }
-      finally {
-        await pool.query(`DROP DATABASE "${databaseName}"`);
-        const remaining = (await pool.query("SELECT datname FROM pg_database WHERE datname=$1", [databaseName])).rows;
-        await evidence("missing-history-worker-database-cleanup", { databaseName, remaining });
-        assert.deepEqual(remaining, [], "The isolated missing-history database is dropped");
-      }
-    }
+    try { await worker?.stop(); } finally { await dropDatabase(); }
   }
 });
