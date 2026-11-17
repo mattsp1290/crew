@@ -130,6 +130,10 @@ An owner can give a request or a routine an [approval deadline](docs/approval-ex
 of one minute to seven days. A Claude or Pi card still undecided at its deadline is
 settled without a person: Crew cancels the request and records `approval.expired`.
 
+A client can name its decision on a card with a `decisionId` and read back exactly
+what Crew recorded for that card, so a lost reply or a restarted client can learn
+whether its own decision applied ([decision receipts](docs/decision-receipts.md)).
+
 [Usage metering](docs/usage-metering.md) records the token counts each engine reports
 for every native segment that returns, one row per segment in the member lane and one
 per request in the trusted-context lane, with a provider-billed cost or, from a price
