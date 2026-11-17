@@ -428,7 +428,8 @@ worker.
 
 The worker logs `delegation_control_pending` when retirement settlement remains
 pending or a workflow wake is unavailable. It logs `delegation_control_failed`
-when the reconciliation pass fails. A failed pass or unavailable wake suppresses
+with `source` set to `reconciliation` when the pass fails, or to `pool` when an
+idle controller pool connection fails. Either failure, or an unavailable wake, suppresses
 heartbeat touches until a healthy pass. Pending native teardown alone does not
 suppress them. Historical parent discovery also runs independently of child
 retirement. Missing or unknown parent histories keep drain completion blocked

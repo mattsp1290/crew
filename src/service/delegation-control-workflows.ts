@@ -1,4 +1,4 @@
-import { Client, WorkflowNotFoundError } from "@temporalio/client";
+import { Client, WorkflowNotFoundError, isGrpcServiceError } from "@temporalio/client";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { ChildExecutionKey, ChildExecutionObservation, ChildWorkflowControl, ParentResultKey,
@@ -10,6 +10,7 @@ const resumeArgumentsSchema = z.tuple([turnRequestSchema, z.strictObject({ child
 const reconciliationArgumentsSchema = z.tuple([turnRequestSchema, z.string(), z.literal(true)]);
 const eventIdSchema = z.string().regex(/^[1-9][0-9]*$/).brand<"HistoryEventId">();
 const closedStatuses = new Set(["COMPLETED", "FAILED", "CANCELLED", "TERMINATED", "TIMED_OUT"]);
+const grpcNotFound = 5;
 
 type History = Awaited<ReturnType<ReturnType<Client["workflow"]["getHandle"]>["fetchHistory"]>>;
 type Events = Readonly<NonNullable<History["events"]>>;
@@ -149,8 +150,13 @@ export class TemporalDelegationWorkflows implements ChildWorkflowControl {
     const ready = { ...key, workflowRunId: key.workflowRunId, resumeActivityId: key.resumeActivityId, reply: key.reply };
     try {
       return await this.client.connection.withDeadline(Date.now() + 5000, async () => {
-        const history = await this.client.workflow.getHandle(
-          `birbcrew-ts/member/${ready.memberId}/conversation/${ready.conversationId}`, ready.workflowRunId).fetchHistory();
+        const handle = this.client.workflow.getHandle(
+          `birbcrew-ts/member/${ready.memberId}/conversation/${ready.conversationId}`, ready.workflowRunId);
+        // fetchHistory surfaces raw NOT_FOUND for both a missing run and a missing namespace; describe tells them apart.
+        const history = await handle.fetchHistory().catch(async (error: unknown) => {
+          if (isGrpcServiceError(error) && error.code === grpcNotFound) await handle.describe();
+          throw error;
+        });
         return observeDelivery({ events: history.events ?? [], key: ready,
           converter: this.client.options.loadedDataConverter });
       });
