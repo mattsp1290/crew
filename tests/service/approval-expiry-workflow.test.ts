@@ -13,7 +13,7 @@ import { Pool } from "pg";
 import { expiryActivity, memberActivities } from "../../src/service/activities.ts";
 import { ChildStore } from "../../src/service/children.ts";
 import { MemberClient } from "../../src/service/client.ts";
-import { answerLive, cancelLive } from "../../src/service/codex-calls.ts";
+import { cancelLive, decideLiveActivity } from "../../src/service/codex-calls.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
 import { createGateway } from "../../src/service/gateway.ts";
 import { progressActivity } from "../../src/service/progress-activity.ts";
@@ -71,7 +71,7 @@ async function workflowWorker(path = workflowsPath) {
   const worker = await Worker.create({ connection: native, taskQueue: memberTaskQueue, workflowsPath: path, activities: {
     rejectUnstartedAdmission: store.rejectUnstartedAdmission.bind(store), recordAcceptance: ownerAdmissionActivity(store),
     rejectAccepted: store.rejectAccepted.bind(store), conversationProgress: progressActivity(store),
-    cancelGenerating: store.cancelGenerating.bind(store), decideLive: answerLive.bind(null, pool), cancelLive: cancelLive.bind(null, pool),
+    cancelGenerating: store.cancelGenerating.bind(store), decideLive: decideLiveActivity.bind(null, pool), cancelLive: cancelLive.bind(null, pool),
     reconcileTurn: store.reconcileTurn.bind(store), reconcileChild: children.reconcile.bind(children),
     closeExitedChild: children.closeExitedChild.bind(children), quarantineDelegation: children.quarantineDelegation.bind(children),
     expireApproval: expiryActivity(store),
@@ -111,8 +111,8 @@ async function carded(deadline?: number) {
   const snapshot = async () => (await api(base)).body;
   return {
     card, workflowId, requestId, snapshot,
-    decide: (choice: string) => api(`${base}/human`, { memberId, requestId, invocationId: card.invocationId,
-      approvalId: card.approvalId, version: card.version, choice }),
+    decide: (choice: string, decisionId?: string) => api(`${base}/human`, { memberId, requestId, invocationId: card.invocationId,
+      approvalId: card.approvalId, version: card.version, choice, ...(decisionId && { decisionId }) }),
     receipt: async () => (await api(`${base}/requests/${requestId}`)).body,
     settled: (phase: string, timeout?: number) => until(async () => {
       const current = await snapshot();
@@ -203,4 +203,24 @@ test("histories of the previous release replay, and a card it left waiting is an
       }
     } finally { await worker.stop(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a named decision crosses the decide update unchanged, replays exactly, and its history replays", { timeout: 120_000 }, async () => {
+  const worker = await workflowWorker();
+  try {
+    const r = await carded(600);
+    const decisionId = randomUUID();
+    assert.deepEqual(await r.decide("approve", decisionId),
+      { status: 200, body: { approvalId: r.card.approvalId, decision: "approve", decisionId } });
+    await r.settled("idle");
+    assert.deepEqual(await r.decide("approve", decisionId),
+      { status: 200, body: { approvalId: r.card.approvalId, decision: "approve", decisionId } });
+    assert.deepEqual(await r.decide("approve", randomUUID()), { status: 409, body: { error: "decision_conflict" } });
+    const { rows } = await pool.query("SELECT event_type AS type FROM birbcrew_ts.audit_events WHERE request_id=$1 ORDER BY event_id", [r.requestId]);
+    assert.equal(rows.filter(row => row.type === "approval.decided").length, 1);
+    const updates = (await temporal.workflow.getHandle(r.workflowId).fetchHistory()).events?.filter(event =>
+      event.workflowExecutionUpdateAcceptedEventAttributes?.acceptedRequest?.input?.name === "decide") ?? [];
+    assert.equal(updates.length, 1, "a replayed decision is answered from SQL, not by a second update");
+    assert.deepEqual(await history(r.workflowId), { markers: 1, timers: 1, cancelledTimers: 1, expiries: 0 });
+  } finally { await worker.stop(); }
 });

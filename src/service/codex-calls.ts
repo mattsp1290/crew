@@ -1,8 +1,9 @@
 import { traced } from "./telemetry.ts";
 import { createHash } from "node:crypto";
+import { ApplicationFailure } from "@temporalio/client";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { ApprovalStore, confirmedApproval, decisionSchema, recordedChoice, type Approval, type Decision } from "./approvals.ts";
+import { ApprovalStore, confirmedApproval, decisionSchema, recordedChoice, settlement, type Approval, type Decision, type Refusal } from "./approvals.ts";
 import { appendAudit } from "./audit.ts";
 import { toolNameSchema, type DeferredTool, type ToolOutcome } from "./deferral.ts";
 import { MemberStoreError, openSchema, turnKey } from "./domain.ts";
@@ -92,7 +93,8 @@ export async function proposeLive(pool: Pool, launch: Launch, input: LiveProposa
 async function callRecord(db: PoolClient, key: Scope, approvalId: string) {
   const {rows: [call]} = await db.query<{
     token:string; phase:"waiting"|"dispatching"|"delivered"|"interrupted"; active:boolean; decision:string|null; choice:Decision["choice"]|null;
-  }>(`SELECT l.token,l.phase,p.decision,${recordedChoice} AS choice,
+    decisionId:string|null; grantId:string|null;
+  }>(`SELECT l.token,l.phase,p.decision,${recordedChoice} AS choice,p.decision_id AS "decisionId",p.grant_id AS "grantId",
     (l.expires_at>clock_timestamp() AND t.phase='started' AND t.token=l.token AND NOT n.stopped AND NOT n.recovery_closed
       AND (t.workflow_run_id,t.activity_id,t.attempt)=(n.workflow_run_id,n.activity_id,n.attempt)
       AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_stop_requests s WHERE
@@ -132,28 +134,42 @@ export async function interruptLive(pool: Pool, launch: Launch, approvalId?: str
 export async function answerLive(pool: Pool, input: Decision): Promise<Decision["choice"]> {
   const key = decisionSchema.parse(input);
   const ledger = new ApprovalStore(pool);
-  const answer = await ledger.transaction(async db => {
+  const answer = await ledger.transaction(async (db): Promise<{ choice: Decision["choice"] } | { refused: Refusal }> => {
     const member = await lockMember(db, key);
     if (member.memberId !== key.memberId) throw new MemberStoreError("not_found");
     const proposal = await confirmedApproval(db, key);
     if (proposal.nativeCallId !== key.nativeCallId || proposal.version !== key.version ||
         proposal.argumentDigest !== key.argumentDigest) throw new MemberStoreError("conflict");
     const call = await callRecord(db, key, key.approvalId);
-    if (call.choice === key.choice) return call.choice;
-    if (call.phase !== "waiting" || !call.active) {
+    const settled = settlement(call, key);
+    if (settled.kind === "replay") return { choice: settled.choice };
+    // A refusal is returned, not thrown, so the interruption of a call that is no longer active commits.
+    if (settled.kind === "refused" || call.phase !== "waiting" || !call.active) {
       if (!call.active) await interruptLiveLocked(db,key,call.token,key.approvalId);
-      return null;
+      return { refused: settled.kind === "refused" ? settled.code : "conflict" };
     }
     try {
-      return await ledger.decideLocked(db,key,true);
+      return { choice: await ledger.decideLocked(db,key,true) };
     } catch (error) {
       if (!(error instanceof MemberStoreError) || error.code !== "stale") throw error;
       await interruptLiveLocked(db,key,call.token,key.approvalId);
-      return null;
+      return { refused: "conflict" };
     }
   });
-  if (!answer) throw new MemberStoreError("conflict");
-  return answer;
+  if ("refused" in answer) throw new MemberStoreError(answer.refused);
+  return answer.choice;
+}
+
+/** The decideLive activity. A decision refusal is deterministic, so Temporal must not retry it. */
+export async function decideLiveActivity(pool: Pool, input: Decision): Promise<Decision["choice"]> {
+  try {
+    return await answerLive(pool, input);
+  } catch (error) {
+    if (error instanceof MemberStoreError && (error.code === "decision_conflict" || error.code === "decision_unverifiable")) {
+      throw ApplicationFailure.nonRetryable(error.code);
+    }
+    throw error;
+  }
 }
 
 export async function settleLive(pool: Pool, launch: Launch, approvalId: string):

@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { progressActivity } from "./progress-activity.ts";
-import { answerLive, cancelLive } from "./codex-calls.ts";
+import { cancelLive, decideLiveActivity } from "./codex-calls.ts";
 import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Client, Connection } from "@temporalio/client";
@@ -25,7 +25,7 @@ async function touch(path: string) {
 /** The activities the member task queue serves beside the conversation workflows. */
 export function memberQueueActivities(store: MemberStore) {
   const children = new ChildStore(store.pool);
-  return { rejectUnstartedAdmission:store.rejectUnstartedAdmission.bind(store), recordAcceptance:ownerAdmissionActivity(store), rejectAccepted:store.rejectAccepted.bind(store), conversationProgress:progressActivity(store), cancelGenerating:store.cancelGenerating.bind(store), decideLive:answerLive.bind(null,store.pool), cancelLive:cancelLive.bind(null,store.pool),
+  return { rejectUnstartedAdmission:store.rejectUnstartedAdmission.bind(store), recordAcceptance:ownerAdmissionActivity(store), rejectAccepted:store.rejectAccepted.bind(store), conversationProgress:progressActivity(store), cancelGenerating:store.cancelGenerating.bind(store), decideLive:decideLiveActivity.bind(null,store.pool), cancelLive:cancelLive.bind(null,store.pool),
     reconcileTurn: store.reconcileTurn.bind(store), reconcileChild:children.reconcile.bind(children),
     closeExitedChild: children.closeExitedChild.bind(children), quarantineDelegation: children.quarantineDelegation.bind(children),
     expireApproval: expiryActivity(store) };

@@ -1,6 +1,7 @@
 import { memberSubagents } from "./child-target.ts";
 import { z } from "zod";
-import { serverRequestReceiptSchema, type ServerRequestReceipt } from "@birbcrew/client/contract";
+import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type DecisionReceiptsCapabilityV1,
+  type ServerRequestReceipt } from "@birbcrew/client/contract";
 import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
 import { approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
@@ -18,6 +19,7 @@ import { webhookCapabilities } from "./webhooks.ts";
 import { usageCapabilities } from "./usage.ts";
 
 const listDefaultLimit = 50, listMaximumLimit = 100;
+const receipts = decisionReceiptsCapabilityV1Schema.shape;
 
 export const integrationCapabilities = {
   apiVersion: "1",
@@ -39,6 +41,11 @@ export const integrationCapabilities = {
   },
   routines: routineCapabilities,
   approvalDetails: { version: 1, tools: ["record_work_item"] },
+  decisionReceipts: {
+    version: receipts.version.value, field: receipts.field.value, route: receipts.route.value,
+    tools: ["record_work_item", "choose_next_step"], replay: receipts.replay.value,
+    conflictCode: receipts.conflictCode.value, unverifiableCode: receipts.unverifiableCode.value,
+  } satisfies DecisionReceiptsCapabilityV1,
   standingGrants: {
     version: 1, choices: standingChoice.options, cardField: "standingChoices", stateField: "grantedCalls", tools: ["record_work_item"], policyVersion: 1,
     initiatorKinds: ["owner"], route: "/v1/members/{memberId}/grants", inactiveListLimit: grantListLimit,

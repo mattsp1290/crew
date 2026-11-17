@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import { Pool } from "pg";
 import { MemberStore } from "../../src/service/store.ts";
 import { ownerInitiator, type Engine } from "../../src/service/domain.ts";
+import { testDatabaseName } from "./database-fixtures.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -243,4 +245,31 @@ test("unconfirmed admission rejection is digest-bound and cannot overwrite begun
   await store.commitTurn({...key,requestId:active.requestId,token:started.token,reply:"committed",checkpoint:{version:1,engine:"pi",state:{}}});
   await store.rejectUnstartedAdmission(active);
   assert.equal(await store.committedReply(active),"committed");
+});
+
+test("migration 39 upgrades a schema 38 database in place without scanning or rewriting deferred calls", async (t) => {
+  const name = testDatabaseName("store_");
+  await pool.query("CREATE DATABASE " + name);
+  const target = new URL(url!); target.pathname = "/" + name;
+  const db = new Pool({ connectionString: target.href });
+  t.after(async () => { await db.end(); await pool.query("DROP DATABASE " + name); });
+  const sql = new URL("../../src/service/sql/", import.meta.url);
+  await db.query("CREATE SCHEMA birbcrew_ts");
+  await db.query("CREATE TABLE birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
+  for (const file of (await readdir(sql)).sort()) {
+    const version = Number(file.slice(0, 3));
+    if (version > 38) continue;
+    await db.query(await readFile(new URL(file, sql), "utf8"));
+    await db.query("INSERT INTO birbcrew_ts.schema_versions VALUES ($1)", [version]);
+  }
+  const upgraded = new MemberStore(db);
+  await Promise.all([upgraded.migrate(), upgraded.migrate()]);
+  const versions = (await db.query<{ version: number }>("SELECT version FROM birbcrew_ts.schema_versions ORDER BY version")).rows.map(r => r.version);
+  assert.deepEqual(versions.slice(-2), [38, 39]);
+  const { rows: [column] } = await db.query(`SELECT data_type, is_nullable, column_default FROM information_schema.columns
+    WHERE table_schema='birbcrew_ts' AND table_name='deferred_calls' AND column_name='decision_id'`);
+  assert.deepEqual(column, { data_type: "uuid", is_nullable: "YES", column_default: null });
+  const { rows: [constraint] } = await db.query(`SELECT convalidated FROM pg_constraint
+    WHERE conname='deferred_calls_decision_id_check' AND conrelid='birbcrew_ts.deferred_calls'::regclass`);
+  assert.equal(constraint.convalidated, false);
 });

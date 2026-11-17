@@ -67,7 +67,7 @@ export class MemberStoreError extends Error {
   readonly code: "not_found" | "conflict" | "busy" | "stale" | "input_limit" | "history_unavailable" | "request_rejected"
     | "routine_limit" | "routine_deleted" | "memory_limit" | "memory_deleted" | "instructions_limit"
     | "handed_off" | "handoff_pending" | "handoff_empty" | "handoff_too_large" | "trusted_conversation"
-    | "usage_limit" | "usage_limit_closed" | "webhook_limit" | "webhook_deleted" | "pack_limit" | "pack_deleted" | "pack_in_use";
+    | "usage_limit" | "usage_limit_closed" | "webhook_limit" | "webhook_deleted" | "pack_limit" | "pack_deleted" | "pack_in_use" | "decision_conflict" | "decision_unverifiable";
 
   constructor(code: MemberStoreError["code"]) {
     super(code);

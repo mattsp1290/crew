@@ -130,6 +130,13 @@ An owner can give a request or a routine an [approval deadline](docs/approval-ex
 of one minute to seven days. A Claude or Pi card still undecided at its deadline is
 settled without a person: Crew cancels the request and records `approval.expired`.
 
+A client can name its decision on a card with a `decisionId` and read back exactly
+what Crew recorded for that card, so a lost reply or a restarted client can learn
+whether its own decision applied ([decision receipts](docs/decision-receipts.md)).
+`409 decision_conflict` means a different decision is recorded and the named one never
+applied; `409 decision_unverifiable` means the card holds the same choice made without
+an id, which Crew cannot attribute to the caller.
+
 [Usage metering](docs/usage-metering.md) records the token counts each engine reports
 for every native segment that returns, one row per segment in the member lane and one
 per request in the trusted-context lane, with a provider-billed cost or, from a price

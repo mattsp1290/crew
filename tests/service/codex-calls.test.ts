@@ -4,7 +4,8 @@ import {after,before,test} from "node:test";
 import {setTimeout as delay} from "node:timers/promises";
 import {Pool} from "pg";
 import {ApprovalStore, type Approval, type Decision} from "../../src/service/approvals.ts";
-import {answerLive,cancelLive,confirmDelivery,interruptLive,proposeLive,settleLive} from "../../src/service/codex-calls.ts";
+import {ApplicationFailure} from "@temporalio/client";
+import {answerLive,cancelLive,confirmDelivery,decideLiveActivity,interruptLive,proposeLive,settleLive} from "../../src/service/codex-calls.ts";
 import {requestNativeStop,withNativeAdmission} from "../../src/service/native-admission.ts";
 import {readSnapshot} from "../../src/service/observation.ts";
 import {MemberStore} from "../../src/service/store.ts";
@@ -299,3 +300,36 @@ for (const note of [undefined, "", "private note"]) {
     assert.ok(!JSON.stringify(snapshot).includes("private note"));
   });
 }
+
+test("a live call replays its named decision and refuses any other one as a decision_conflict", async () => {
+  const {launch,proposal,writes}=await conversation(await member("record_work_item"));
+  const a=await proposeLive(pool,launch,proposal());
+  const mine=randomUUID(), named=(choice:Decision["choice"],decisionId?:string)=>({...decision(a,choice),...(decisionId&&{decisionId})});
+  assert.equal(await answerLive(pool,named("approve",mine)),"approve");
+  assert.deepEqual(await Promise.all([answerLive(pool,named("approve",mine)),answerLive(pool,named("approve"))]),["approve","approve"]);
+  for (const other of [named("deny",mine),named("approve",randomUUID())]) {
+    await assert.rejects(answerLive(pool,other),{code:"decision_conflict"});
+  }
+  await assert.rejects(answerLive(pool,named("deny")),{code:"conflict"});
+  const {rows:[row]}=await pool.query("SELECT decision_id FROM birbcrew_ts.deferred_calls WHERE approval_id=$1",[a.approvalId]);
+  assert.equal(row.decision_id,mine);
+  const decided=await pool.query(`SELECT 1 FROM birbcrew_ts.audit_events WHERE event_type='approval.decided' AND payload->>'approvalId'=$1`,[a.approvalId]);
+  assert.equal(decided.rowCount,1);
+  assert.equal((await settleLive(pool,launch,a.approvalId)).kind,"recorded");
+  assert.equal((await writes()).length,1);
+  assert.equal(await answerLive(pool,named("approve",mine)),"approve","a replay after the effect still returns the decision");
+  assert.equal((await writes()).length,1);
+});
+
+test("a live call decided without an id is never claimed by a named decision", async () => {
+  const {launch,proposal}=await conversation(await member("choose_next_step"));
+  const a=await proposeLive(pool,launch,proposal("choose_next_step"));
+  assert.equal(await answerLive(pool,decision(a,"test")),"test");
+  await assert.rejects(answerLive(pool,{...decision(a,"test"),decisionId:randomUUID()}),{code:"decision_unverifiable"});
+  await assert.rejects(answerLive(pool,{...decision(a,"inspect"),decisionId:randomUUID()}),{code:"decision_conflict"});
+  for (const [choice,code] of [["test","decision_unverifiable"],["inspect","decision_conflict"]] as const) {
+    await assert.rejects(decideLiveActivity(pool,{...decision(a,choice),decisionId:randomUUID()}),
+      (error:unknown)=>error instanceof ApplicationFailure && error.nonRetryable && error.message===code);
+  }
+  assert.equal(await answerLive(pool,decision(a,"test")),"test");
+});

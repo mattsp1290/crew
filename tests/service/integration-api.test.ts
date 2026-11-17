@@ -1,10 +1,8 @@
 import { testDatabaseName } from "./database-fixtures.ts";
+import { ajv, gatewayFixture, openApi, responseValidator, validateResponse } from "./gateway-fixtures.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import { fullFormats } from "ajv-formats/dist/formats.js";
 import { routes } from "@birbcrew/client/contract";
 import { once } from "node:events";
 import { connect as connectTcp, createServer as createTcpServer, type Socket } from "node:net";
@@ -19,22 +17,7 @@ import { ApprovalStore } from "../../src/service/approvals.ts";
 import { MemberStore } from "../../src/service/store.ts";
 import { createGateway, probeTimeout } from "../../src/service/gateway.ts";
 import { IntegrationApi } from "../../src/service/integration-api.ts";
-import { ownerInitiator, type TurnRequest } from "../../src/service/domain.ts";
-
-const openApi = JSON.parse(readFileSync(new URL("../../packages/client/openapi.json", import.meta.url), "utf8"));
-const ajv = new Ajv2020({ strict: false, allErrors: true, formats: fullFormats });
-function responseValidator(operation: keyof typeof routes, status: number) {
-  const route = routes[operation];
-  const response = openApi.paths[route.path][route.method.toLowerCase()].responses[status];
-  assert.ok(response?.content, `${operation} documents HTTP ${status}`);
-  return ajv.compile({ ...response.content["application/json"].schema, components: openApi.components });
-}
-async function validateResponse(operation: keyof typeof routes, response: Response) {
-  const validate = responseValidator(operation, response.status);
-  const body = await response.json();
-  assert.equal(validate(body), true, `${operation} HTTP ${response.status}: ${ajv.errorsText(validate.errors)}`);
-  return body;
-}
+import { ownerInitiator } from "../../src/service/domain.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -63,61 +46,7 @@ after(async () => {
   finally { await pool.end(); }
 });
 
-async function fixture(automaticallyComplete = false) {
-  const ownerId = randomUUID(), token = randomUUID(), stranger = randomUUID();
-  const member = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: "fixture-v1" });
-  const key = { ownerId, conversationId: randomUUID() };
-  await store.openConversation({ ...key, memberId: member.memberId });
-  let accepts = 0, cancels = 0, effects = 0;
-  async function finish(input: TurnRequest) {
-    if (await store.committedReply(input) !== undefined) return;
-    const turn = await store.beginTurn(input, { workflowRunId: randomUUID(), activityId: "fixture", attempt: 1 });
-    if (turn.kind === "start") {
-      effects++;
-      await store.commitTurn({ ...key, requestId: input.requestId, token: turn.token,
-        reply: "original result: " + input.text, checkpoint: { version: 1, engine: "pi", state: {} } });
-    }
-  }
-  const members = {
-    async open(input: Parameters<MemberStore["openConversation"]>[0]) { return store.openConversation(input); },
-    async decide(input: Parameters<ApprovalStore["decide"]>[0]) { return new ApprovalStore(pool).decide(input); },
-    async accept(input: TurnRequest) {
-      accepts++;
-      await store.recordAcceptance(input, ownerInitiator);
-      if (automaticallyComplete) await finish(input);
-      return { requestId: input.requestId };
-    },
-    async requestStatus(input: Parameters<MemberStore["requestStatus"]>[0]) { return store.requestStatus(input); },
-    async cancelPending() { cancels++; },
-  } as unknown as MemberClient;
-  const auth = { [createHash("sha256").update(token).digest("hex")]: ownerId,
-    [createHash("sha256").update(stranger).digest("hex")]: randomUUID() };
-  let server = createGateway(store, members, auth);
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  let endpoint = `http://127.0.0.1:${address.port}`;
-  async function api(path: string, body?: unknown, credential: string = token) {
-    return fetch(endpoint + path, { method: body === undefined ? "GET" : "POST",
-      headers: { Authorization: "Bearer " + credential, "Content-Type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  }
-  const stop = async () => {
-    const closed = once(server, "close");
-    server.close(); server.closeAllConnections(); await closed;
-  };
-  return { ...key, token, stranger, api, members, finish, get endpoint() { return endpoint; },
-    counts: () => ({ accepts, cancels, effects }), stop,
-    async restart() {
-      await stop();
-      server = createGateway(new MemberStore(pool), members, auth);
-      server.listen(0, "127.0.0.1"); await once(server, "listening");
-      const address = server.address(); assert.ok(address && typeof address !== "string");
-      endpoint = `http://127.0.0.1:${address.port}`;
-    },
-  };
-}
+const fixture = (automaticallyComplete = false) => gatewayFixture(store, automaticallyComplete);
 
 const child = `
   import { Pool } from 'pg';
@@ -797,8 +726,13 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     invocationId: requestId, token: turn.token, nativeCallId: "openapi-call", toolName: "record_work_item",
     arguments: { operation_id: requestId, note: "OpenAPI decision" } });
   await check("approvalDetail", conversationPath + `/requests/${requestId}/approvals/${approval.approvalId}?memberId=${conversation.memberId}&invocationId=${requestId}&version=1`);
-  await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
-    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "allow_conversation" });
+  const decisionId = randomUUID();
+  const decided = await check("decide", conversationPath + "/human", { requestId, memberId: conversation.memberId,
+    invocationId: requestId, approvalId: approval.approvalId, version: approval.version, choice: "allow_conversation", decisionId });
+  assert.equal(decided.decisionId, decisionId);
+  const record = await check("decisionRecord", conversationPath + `/requests/${requestId}/approvals/${approval.approvalId}/decision`
+    + `?memberId=${conversation.memberId}&invocationId=${requestId}&version=1`);
+  assert.deepEqual([record.state, record.decisionId, record.choice], ["decided", decisionId, "allow_conversation"]);
   const grantsPath = `/v1/members/${conversation.memberId}/grants`;
   const listed = await check("listGrants", grantsPath);
   assert.equal(listed.active.length, 1);
@@ -839,7 +773,7 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
     cancel: {},
     revokeGrant: {},
     decide: { requestId, memberId: conversation.memberId, invocationId: requestId,
-      approvalId: approval.approvalId, version: approval.version, choice: "deny" },
+      approvalId: approval.approvalId, version: approval.version, choice: "deny", decisionId: randomUUID() },
   };
   for (const [operation, body] of Object.entries(requestBodies)) {
     const route = routes[operation as keyof typeof requestBodies];

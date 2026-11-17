@@ -21,6 +21,7 @@ import {
   type CreateHandoffResponse,
   type ConversationHandoff,
   type Decide,
+  type DecisionRecord,
   type ListGrants,
   type RevokeGrant,
   type OpenConversation,
@@ -51,6 +52,9 @@ export type {
   Member,
   MemberPage,
   Decide,
+  DecisionRecord,
+  DecisionReceiptsCapability,
+  DecisionReceiptsCapabilityV1,
   ConversationSnapshot,
   Capabilities,
   Health,
@@ -90,6 +94,7 @@ export type CommandIdentity =
       readonly conversationId: string;
       readonly requestId: string;
       readonly approvalId: string;
+      readonly decisionId?: string;
     };
 export class CrewHttpError extends Error {
   readonly status: number;
@@ -272,6 +277,20 @@ export class CrewClient {
         && detail.approvalId === key.approvalId && detail.version === key.version,
     });
   }
+  async decisionRecord(input: ApprovalDetailIdentity, options: CallOptions = {}): Promise<DecisionRecord> {
+    const key = approvalDetailIdentitySchema.parse(input);
+    const query = new URLSearchParams({
+      memberId: key.memberId, invocationId: key.invocationId, version: String(key.version),
+    });
+    return this.#call(routes.decisionRecord, {
+      ...options,
+      params: { conversationId: key.conversationId, requestId: key.requestId, approvalId: key.approvalId },
+      query: query.toString(),
+      expect: (record) => record.conversationId === key.conversationId && record.memberId === key.memberId
+        && record.requestId === key.requestId && record.invocationId === key.invocationId
+        && record.approvalId === key.approvalId && record.version === key.version,
+    });
+  }
   async health(options: CallOptions = {}) {
     return this.#call(routes.health, options);
   }
@@ -423,13 +442,15 @@ export class CrewClient {
       conversationId,
       requestId: body.requestId,
       approvalId: body.approvalId,
+      ...(body.decisionId !== undefined && { decisionId: body.decisionId }),
     } as const;
     return this.#call(routes.decide, {
       ...options,
       params: { conversationId },
       body,
       command,
-      expect: (value) => value.approvalId === body.approvalId,
+      expect: (value) => value.approvalId === body.approvalId && value.decision === body.choice
+        && value.decisionId === body.decisionId,
     });
   }
 }
