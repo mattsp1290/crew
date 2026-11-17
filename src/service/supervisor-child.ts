@@ -104,6 +104,24 @@ export async function lockChildAdmission(db: PoolClient, launch: Launch) {
   launch.execution.workflowRunId, launch.execution.activityId, launch.execution.attempt, launch.text]);
 }
 
+// Separate statement after the child lease. It must see a disable committed during the lease wait.
+export async function freshChildAdmission(db: PoolClient, launch: Launch) {
+  return db.query(`SELECT 1 FROM birbcrew_ts.pi_children j CROSS JOIN birbcrew_ts.delegation_control d
+    WHERE current_setting('transaction_isolation')='read committed'
+      AND d.singleton AND d.global_enabled AND j.child_id=$1 AND j.generation=$2
+      AND j.outcome IS NULL AND NOT j.launch_revoked
+      AND birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile) IS NOT NULL
+      AND NOT d.disabled_targets @> jsonb_build_array(birbcrew_ts.delegation_child_scope(j.conversation_id,j.role_profile))
+      AND NOT birbcrew_ts.delegation_child_retired(j.child_id)
+      AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_stop_requests s
+        WHERE (s.conversation_id,s.request_id,s.token)=(j.conversation_id,j.request_id,j.generation))`,
+    [launch.childId, launch.token]);
+}
+
+export async function admitChild(db: PoolClient, launch: Launch): Promise<boolean> {
+  return Boolean((await lockChildAdmission(db, launch)).rowCount) && Boolean((await freshChildAdmission(db, launch)).rowCount);
+}
+
 export async function revokeChild(db: PoolClient, launch: Launch) {
   // The SDK can hold this row throughout a model call. Bound the wait without locking its conversation.
   await db.query("SET LOCAL lock_timeout='8s'");

@@ -1,5 +1,5 @@
 import {acquireRecoveryNativeLease,requireRecoveryActive} from "./recovery-admission.ts";
-import { lockChildAdmission } from "./supervisor-child.ts";
+import { admitChild } from "./supervisor-child.ts";
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { TurnRequest } from "./domain.ts";
@@ -65,15 +65,15 @@ export async function withNativeAdmission<T>(
       JOIN birbcrew_ts.members m USING(owner_id,member_id) WHERE c.owner_id=$1 AND c.conversation_id=$2`,
       [launch.ownerId,conversationId])).rows[0]?.engine;
     const lease = engine === "codex" ? "n" : "t";
-    const admitted = launch.childId ? await lockChildAdmission(db,launch) : await db.query(`SELECT 1 FROM birbcrew_ts.turns t
+    const admitted = launch.childId ? await admitChild(db, launch) : Boolean((await db.query(`SELECT 1 FROM birbcrew_ts.turns t
       JOIN birbcrew_ts.conversations c USING (conversation_id)
       JOIN birbcrew_ts.native_launches n USING (conversation_id,request_id,token)
       WHERE t.conversation_id=$1 AND t.request_id=$2 AND t.token=$3 AND t.phase='started'
         AND c.owner_id=$4 AND t.workflow_run_id=$5 AND t.activity_id=$6 AND t.attempt=$7 AND t.prompt_digest=$8
         AND NOT n.stopped AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_stop_requests s
           WHERE (s.conversation_id,s.request_id,s.token)=(n.conversation_id,n.request_id,n.token))
-      FOR SHARE OF ${lease}`, [...ids, launch.ownerId, execution.workflowRunId, execution.activityId, execution.attempt, createHash("sha256").update(launch.text).digest()]);
-    if (!admitted.rowCount) throw new Error("Native admission revoked");
+      FOR SHARE OF ${lease}`, [...ids, launch.ownerId, execution.workflowRunId, execution.activityId, execution.attempt, createHash("sha256").update(launch.text).digest()])).rowCount);
+    if (!admitted) throw new Error("Native admission revoked");
     // A backend disconnect also releases its locks. Stop this SDK if that happens.
     const disconnected = () => controller.abort();
     db.once("error", disconnected);
