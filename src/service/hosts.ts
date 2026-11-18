@@ -26,7 +26,7 @@ const isAddress = (host: string) => host.startsWith("[") || ipv4.test(host);
 export function canonicalHost(input: string): Host | null {
   if (typeof input !== "string" || input.length === 0 || input.length > 1024) return null;
   const bracketed = /^\[[0-9A-Fa-f:.]+\]$/.test(input);
-  if (!bracketed && /[\u0000- \u007f- :\/\\?#@\[\]%]/.test(input)) return null;
+  if (!bracketed && /[\u0000-\u0020\u007f-\u00a0:\/\\?#@\[\]%]/.test(input)) return null;
   let url: URL;
   try { url = new URL("https://" + input + "/"); } catch { return null; }
   if (url.username || url.password || url.port || url.pathname !== "/" || url.search || url.hash) return null;
@@ -83,7 +83,7 @@ export const fetchUrlBytes = 4096;
  * strips or rewrites them), port 0, and any host canonicalHost refuses. */
 export function fetchTarget(input: string): FetchTarget | null {
   if (typeof input !== "string" || !input.isWellFormed() || Buffer.byteLength(input) > fetchUrlBytes) return null;
-  if (/[\u0000- \u007f- \\]/.test(input)) return null;
+  if (/[\u0000-\u0020\u007f-\u00a0\\]/.test(input)) return null;
   const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^\/?#]*)/.exec(input);
   if (!authority || authority[1] === "" || /[@%]/.test(authority[1])) return null;
   let url: URL;

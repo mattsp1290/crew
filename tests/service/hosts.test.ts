@@ -10,7 +10,7 @@ test("a host folds to one canonical form: case, trailing dot, IDNA and numeric I
     ["Example.COM", "example.com"], ["example.com.", "example.com"], ["localhost", "localhost"],
     ["bücher.example", "xn--bcher-kva.example"], ["BÜCHER.example", "xn--bcher-kva.example"], ["xn--bcher-kva.example", "xn--bcher-kva.example"],
     // IDNA maps these to ASCII before any request is made, so they name example.com.
-    ["ｅｘａｍｐｌｅ.com", "example.com"], ["example。com", "example.com"], ["exa​mple.com", "example.com"], ["exa­mple.com", "example.com"],
+    ["ｅｘａｍｐｌｅ.com", "example.com"], ["example。com", "example.com"], ["exa\u200bmple.com", "example.com"], ["exa\u00admple.com", "example.com"],
     ["127.0.0.1", "127.0.0.1"], ["127.1", "127.0.0.1"], ["0x7f.0.0.1", "127.0.0.1"], ["2130706433", "127.0.0.1"], ["0177.0.0.1", "127.0.0.1"],
     ["1.2.3.4.", "1.2.3.4"],
     ["[::1]", "[::1]"], ["[0:0:0:0:0:0:0:1]", "[::1]"], ["[::FFFF:127.0.0.1]", "[::ffff:7f00:1]"],
@@ -25,7 +25,7 @@ test("a host that carries anything but a host is refused, never trimmed to one",
     "example.com:443", "example.com:", "user@example.com", "user:pass@example.com", "@example.com", "example.com/x", "example.com/",
     "example.com?x", "example.com#x", "ex%61mple.com", "example.com\\x", "\\\\example.com",
     // Whitespace and control characters, which the URL parser would strip.
-    " example.com", "example.com ", "exa mple.com", "example.com\n", "exa\tmple.com", "example.com\0", "example.com\u007f", "example .com",
+    " example.com", "example.com ", "exa mple.com", "example.com\n", "exa\tmple.com", "example.com\0", "example.com\u007f", "example\u00a0.com",
     // Not a strict DNS name.
     "a_b.example.com", "-a.example.com", "a-.example.com", "a".repeat(64) + ".com",
     // A label that would decode to plain ASCII ends in the hyphen Punycode puts there, whichever parser reads it.
@@ -73,7 +73,7 @@ test("an exact pattern matches its own host and nothing else", () => {
   for (const other of ["www.example.com", "example.com.evil.test", "evilexample.com", "example.co", "example.comm",
     "com", "127.0.0.1", "[::1]"]) assert.equal(hostMatches(exact, host(other)), false, other);
   // A Cyrillic lookalike is another name, whether or not the parser accepts it.
-  const lookalike = canonicalHost("exаmple.com");
+  const lookalike = canonicalHost("ex\u0430mple.com");
   assert.notEqual(lookalike, "example.com");
   if (lookalike) assert.equal(hostMatches(exact, lookalike), false);
   // Every spelling of one IPv4 address is one host; an IPv4-mapped IPv6 address is another.
@@ -150,6 +150,14 @@ test("a fetch URL with userinfo, a rewritten authority, another scheme or parser
     "https://[fe80::1%25eth0]/", "https://1.2.3.4.5/",
     "https://example.com/" + "a".repeat(fetchUrlBytes),
   ]) assert.equal(fetchTarget(url), null, JSON.stringify(url));
+  // The refused characters are exactly space and below, and DEL to the no-break space.
+  for (const edge of [" ", "\u007f", "\u0080", "\u009f", " "]) {
+    assert.equal(fetchTarget(`https://example.com/a${edge}b`), null, JSON.stringify(edge));
+    assert.equal(canonicalHost(`exa${edge}mple.com`), null, JSON.stringify(edge));
+  }
+  for (const [edge, href] of [["!", "https://example.com/a!b"], ["~", "https://example.com/a~b"], ["¡", "https://example.com/a%C2%A1b"]]) {
+    assert.equal(fetchTarget(`https://example.com/a${edge}b`)?.href, href, JSON.stringify(edge));
+  }
   for (const url of [null, undefined, 7, new URL("https://example.com/")]) assert.equal(fetchTarget(url as never), null);
 });
 
