@@ -14,7 +14,7 @@ import { InstallationRecovery, readRecoveryManifest, type RecoveryHooks, type Re
 import { FileRecoveryFence } from "../../src/service/recovery-fence.ts";
 import { MemberStore } from "../../src/service/store.ts";
 import { argumentDigest, catalogLimits, classify, type Classified } from "../../src/service/tool-catalog.ts";
-import { toolCallKey, toolCallLimits, ToolCallStore, verifyStored, type ToolCallKey, type Verdict } from "../../src/service/tool-calls.ts";
+import { settleRestoredToolCalls, toolCallKey, toolCallLimits, ToolCallStore, verifyStored, type ToolCallKey, type Verdict } from "../../src/service/tool-calls.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -539,6 +539,26 @@ test("migration 41 adds the ledger to a v40 database without touching a table or
 
 const pins: RecoveryPins = { applicationCommit: "a".repeat(40), lockfileSha256: "b".repeat(64),
   temporal: { mode: "development-fixture", serverVersion: "1.10.0", persistenceFormat: "dev-sqlite-fixture" }, logicalNativeRoot: "/var/lib/birbcrew/native" };
+
+test("a restore that fails while it settles the ledger reports the database's own error, without the row it quotes", async () => {
+  const secret = "PRIVATE-" + randomUUID();
+  // Each constraint a ledger call turns into a refusal its caller can act on. Activating a
+  // restored installation has no such caller: whatever fails there is a server fault.
+  for (const constraint of ["tool_calls_request_limit", "tool_calls_arguments_check", "tool_calls_scope_check", "tool_calls_result_check",
+    "tool_calls_grant_binding", "tool_calls_conversation_binding", "tool_calls_outcome_check", ""]) {
+    // The fields node-postgres puts on a database error. The detail of a violated CHECK quotes the failing row.
+    const failure = Object.assign(new Error(`new row for relation "tool_calls" violates check constraint "${constraint}"`), {
+      code: "23514", constraint, schema: "birbcrew_ts", table: "tool_calls", detail: `Failing row contains (${secret}).`,
+      where: `PL/pgSQL function with ${secret}`, hint: secret, internalQuery: `SELECT '${secret}'` });
+    const thrown: unknown = await settleRestoredToolCalls({ query: async () => { throw failure; } } as never).then(() => undefined, error => error);
+    assert.equal(thrown, failure, `${constraint}: the database's error, never a refusal`);
+    assert.deepEqual([(thrown as { code: string }).code, (thrown as { constraint: string }).constraint], ["23514", constraint]);
+    assert.equal(JSON.stringify(thrown, Object.getOwnPropertyNames(thrown as object)).includes(secret), false, constraint);
+  }
+  // An error that is not the database's passes through as it is.
+  const other = new Error("connection lost");
+  assert.equal(await settleRestoredToolCalls({ query: async () => { throw other; } } as never).then(() => undefined, error => error), other);
+});
 
 test("a held installation refuses every ledger write; a restored one makes unfinished effects uncertain, and a held source that resumes keeps them", async (t) => {
   const separate = await databaseAt(t, Infinity);

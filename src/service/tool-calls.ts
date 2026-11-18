@@ -186,16 +186,20 @@ const refusals: Record<string, MemberStoreError["code"]> = {
   tool_calls_request_limit: "input_limit", tool_calls_arguments_check: "input_limit", tool_calls_scope_check: "input_limit",
   tool_calls_result_check: "input_limit", tool_calls_grant_binding: "conflict", tool_calls_conversation_binding: "not_found",
 };
-/** What a failed ledger statement may say to its caller. A refusal the caller can act on
- * becomes a MemberStoreError. Any other database error is a server fault, and the fields that
- * quote the failing row or parameter are removed from it: they hold private arguments and
- * results. */
-function refusal(error: unknown): unknown {
+/** A database error without the fields that quote the failing row or parameter: they hold
+ * private arguments and results. Anything else is returned as it is. */
+function withoutPrivateFields(error: unknown): unknown {
   if (!(error instanceof Error) || error instanceof MemberStoreError || !("code" in error)) return error;
-  const constraint = "constraint" in error && typeof error.constraint === "string" ? error.constraint : "";
-  if (Object.hasOwn(refusals, constraint)) return new MemberStoreError(refusals[constraint]);
   for (const field of ["detail", "where", "hint", "internalQuery"]) delete (error as unknown as Record<string, unknown>)[field];
   return error;
+}
+/** What a failed ledger statement may say to its caller. A refusal the caller can act on
+ * becomes a MemberStoreError. Any other database error is a server fault, and leaves without
+ * its private fields. */
+function refusal(error: unknown): unknown {
+  const constraint = error instanceof Error && "code" in error && "constraint" in error && typeof error.constraint === "string" ? error.constraint : "";
+  if (Object.hasOwn(refusals, constraint)) return new MemberStoreError(refusals[constraint]);
+  return withoutPrivateFields(error);
 }
 
 export class ToolCallStore {
@@ -366,9 +370,12 @@ export class ToolCallStore {
  * installation resumes, every such effect, admitted or not, becomes uncertain and is never
  * run. Reads are left to run again, outcomes are left to be delivered, and an ask stays
  * waiting. Runs in the activation's transaction (recovery.ts), where any other writer still
- * meets the write barrier, so it needs no conversation lock. */
+ * meets the write barrier, so it needs no conversation lock.
+ *
+ * Nobody here can act on a ledger refusal: a failure is a server fault that stops the
+ * activation, so the database's error is passed on as it is, less its private fields. */
 export async function settleRestoredToolCalls(db: Pick<PoolClient, "query">): Promise<number> {
   const settled = await db.query(`UPDATE birbcrew_ts.tool_calls SET phase='uncertain', uncertain_reason='recovery_restore', finished_at=clock_timestamp()
-    WHERE kind='effect' AND phase IN ('ready','admitted')`).catch((error: unknown) => { throw refusal(error); });
+    WHERE kind='effect' AND phase IN ('ready','admitted')`).catch((error: unknown) => { throw withoutPrivateFields(error); });
   return settled.rowCount ?? 0;
 }

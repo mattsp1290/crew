@@ -443,7 +443,10 @@ into it.
 A database error that leaves the ledger module, from a read, a write or the
 settling of a restore, has had the fields that quote the failing row or parameter
 removed, because they hold arguments and results. Apart from the refusals named
-above it is a server fault, never a message about the caller's input.
+above it is a server fault, never a message about the caller's input. The
+settling of a restore names no refusal at all: nobody there can act on one, so
+whatever fails reaches the operator as the database's own error, less those
+fields, and stops the activation.
 
 ### After a worker is lost
 
