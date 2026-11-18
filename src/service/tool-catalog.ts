@@ -208,16 +208,27 @@ const schemas = {
  * since any of them can pass for shell syntax or for another name. A backslash that would
  * itself read as the start of such an escape is spelled out too, so two different texts are
  * never spelled the same. So is every space after the first `plainSpaces` in a run. The result
- * never ends inside an escape. */
-function visiblePrefix(value: string, room: number, plainSpaces = Infinity): { shown: string; bytes: number; whole: boolean } {
+ * never ends inside an escape.
+ *
+ * With `endVisibly`, for a content line, the result never ends in a plain space either: nothing
+ * after it would show that it is there, and `\` before a line break means something else than
+ * `\`, a space and a line break. The spaces that end the value are spelled out, and where the
+ * cut falls inside a run of plain spaces they are left with the part that is not shown. */
+function visiblePrefix(value: string, room: number, plainSpaces = Infinity, endVisibly = false): { shown: string; bytes: number; whole: boolean } {
   const characters = [...value];
+  let ending = characters.length;
+  if (endVisibly) while (ending > 0 && characters[ending - 1] === " ") ending--;
   let shown = "", bytes = 0, run = 0;
   for (let index = 0; index < characters.length; index++) {
     const character = characters[index];
     run = character === " " ? run + 1 : 0;
     const startsEscape = character === "\\" && characters[index + 1] === "u" && characters[index + 2] === "{";
-    const piece = !startsEscape && run <= plainSpaces && /^[\x20-\x7e]$/.test(character) ? character : "\\u{" + character.codePointAt(0)!.toString(16) + "}";
-    if (shown.length + piece.length > room) return { shown, bytes, whole: false };
+    const piece = !startsEscape && run <= plainSpaces && index < ending && /^[\x20-\x7e]$/.test(character) ? character
+      : "\\u{" + character.codePointAt(0)!.toString(16) + "}";
+    if (shown.length + piece.length > room) {
+      if (endVisibly) while (shown.endsWith(" ")) { shown = shown.slice(0, -1); bytes--; }
+      return { shown, bytes, whole: false };
+    }
     shown += piece;
     bytes += Buffer.byteLength(character);
   }
@@ -232,7 +243,8 @@ const shownPath = (value: WorkspacePath) => value === "" ? "." : field(value);
 /** `header` lines in full, then each block's lines with its mark. Every content line carries
  * its mark, so content cannot pass for a header line, and keeps its indentation: only the
  * spaces after the sixteenth in a run are spelled out, so padding cannot hide the rest of a
- * line. The blocks share what is left of the budget evenly; a block that does not fit is cut,
+ * line, and the spaces that end a line, so no line ends in a character that cannot be seen.
+ * The blocks share what is left of the budget evenly; a block that does not fit is cut,
  * inside a line if need be, and a line that starts with `...`, which no header or content line
  * can, says how much of it is not shown. A line break counts as shown once the line after it
  * is, so the shown lines of a block that reports no cut join back to the whole of it. */
@@ -246,7 +258,7 @@ function render(header: string[], blocks: { mark: string; content: string }[] = 
     for (let row = 0; row < rows.length; row++) {
       const room = share - used - mark.length - 1;
       if (room < 0) break;
-      const piece = visiblePrefix(rows[row], room, 16);
+      const piece = visiblePrefix(rows[row], room, 16, true);
       if (piece.whole || piece.shown !== "") {
         lines.push(mark + piece.shown);
         used += mark.length + piece.shown.length + 1;

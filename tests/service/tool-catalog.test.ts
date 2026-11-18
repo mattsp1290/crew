@@ -607,6 +607,35 @@ test("a preview is printable ASCII: every other character is spelled out, and no
     assert.equal(call.preview.text.split("\n").slice(2).map(line => decode(line.slice(2))).join("\n"), whole, "the spelling of spaces is one-to-one too");
   }
 
+  // A content line never ends in a space the reader cannot see. `rm -rf build \` followed by a
+  // space is an escaped space and the end of a command, where the same line without it joins the next.
+  const trailing = "rm -rf build \\ \ndist  \n   \n\tx \nlast ";
+  const continued = classify({ tool: "fs_write", arguments: { path: "a.sh", content: trailing } });
+  assert.deepEqual(continued.preview.text.split("\n").slice(2),
+    ["+ rm -rf build \\\\u{20}", "+ dist\\u{20}\\u{20}", "+ \\u{20}\\u{20}\\u{20}", "+ \\u{9}x\\u{20}", "+ last\\u{20}"]);
+  assert.equal(continued.preview.text.split("\n").slice(2).map(line => decode(line.slice(2))).join("\n"), trailing, "and it still reads back as what was written");
+  const joined = classify({ tool: "fs_write", arguments: { path: "a.sh", content: "rm -rf build \\\ndist" } });
+  assert.deepEqual(joined.preview.text.split("\n").slice(2), ["+ rm -rf build \\", "+ dist"], "a real continuation ends in the backslash itself");
+  const trailingEdit = classify({ tool: "fs_edit", arguments: { path: "a", oldText: "a ", newText: "a" }, priorSha256: prior });
+  assert.deepEqual(trailingEdit.preview.text.split("\n").slice(4), ["- a\\u{20}", "+ a"], "an edit that only removes a trailing space shows it");
+  const trailingBody = fetching("https://example.com/", { method: "POST", body: "token=abc " });
+  assert.equal(trailingBody.preview.text.split("\n")[2], "> token=abc\\u{20}");
+  // Where a line is cut inside a run of spaces, the shown part does not end in one either, and
+  // the count of what is not shown stays exact.
+  let cutInSpaces = 0;
+  for (let length = 16_270; length <= 16_310; length++) {
+    const whole = "x".repeat(length) + " ".repeat(8) + "tail";
+    const { text, truncated } = classify({ tool: "fs_write", arguments: { path: "a", content: whole } }).preview;
+    const [, , ...rest] = text.split("\n");
+    for (const line of rest) assert.equal(line.endsWith(" "), false, String(length));
+    const kept = rest.filter(line => line.startsWith("+ ")).map(line => decode(line.slice(2))).join("\n");
+    assert.ok(whole.startsWith(kept), String(length));
+    assert.equal(truncated, kept !== whole, String(length));
+    if (truncated) assert.equal(rest.at(-1), `... ${whole.length - kept.length} more bytes of "+" lines not shown`, String(length));
+    if (truncated && kept === "x".repeat(length)) cutInSpaces++;
+  }
+  assert.ok(cutInSpaces > 0, "some length puts the cut inside the spaces");
+
   // An edit shows both what it removes and what it writes, however large either is.
   const edit = classify({ tool: "fs_edit", arguments: { path: "a", oldText: "o\n".repeat(20_000), newText: "n\n".repeat(20_000) }, priorSha256: prior });
   assert.equal(edit.preview.truncated, true);
@@ -618,8 +647,10 @@ test("a preview is printable ASCII: every other character is spelled out, and no
   assert.ok(smallOld.preview.text.split("\n").filter(line => line === "+ y").length > 3900, "a short block leaves its share to the next");
 
   for (const call of [sneaky, quoted, named, twoCommands, oneEcho, forged, body, worstCommand, ...widest, big, oneLine, lateLine, escapes, indented, padded, blankStart, spaced,
-    edit, hiddenWrite, smallOld]) {
+    continued, joined, trailingEdit, trailingBody, edit, hiddenWrite, smallOld]) {
     assert.doesNotMatch(call.preview.text, /[^\n\x20-\x7e]/, "nothing but printable ASCII reaches the reader");
+    // The one line that ends in a space is a mark alone: an empty content line.
+    for (const line of call.preview.text.split("\n")) assert.ok(!line.endsWith(" ") || ["+ ", "- ", "> "].includes(line), JSON.stringify(line));
     assert.ok(Buffer.byteLength(call.preview.text) <= catalogLimits.previewBytes);
     assert.equal(call.preview.truncated, call.preview.text.split("\n").some(line => line.startsWith("... ")), "truncated says exactly whether a cut is reported");
   }

@@ -241,6 +241,12 @@ The model never writes the preview. Crew renders it from the arguments.
   `> `), so content cannot pass for one of the lines above. Content keeps its
   indentation: only the spaces after the sixteenth in a run are spelled
   `\u{20}`, so a line cannot be padded until what follows is out of sight. The
+  spaces that end a content line are spelled `\u{20}` too, so no line ends in a
+  character the reader cannot see: `rm -rf build \` followed by a space ends a
+  command, where the same line without the space joins the next one, and the
+  preview shows which it is. Where a line is cut inside a run of spaces, those
+  spaces are counted with what is not shown. The only line that ends in a space
+  is a mark alone, which is an empty content line. The
   whole preview is at most 16 KiB. The blocks of an edit share the room evenly,
   so a long removal cannot hide what is written. A block that does not fit is
   cut, inside a line if need be; then `truncated` is true and a line starting
