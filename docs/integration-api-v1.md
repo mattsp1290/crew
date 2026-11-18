@@ -172,7 +172,10 @@ IDs in order.
 
 A member that was spawned with [capabilities](member-capabilities.md) also has a
 `capabilities` object in the member listing and in the spawn response. A member
-without any has no such key.
+without any has no such key. The portable client and `packages/client/openapi.json`
+do not carry `capabilities` yet: the client refuses the field on `createMember` and
+drops it from a member it reads. No engine runs a capability tool, so the field
+changes nothing a member does.
 
 | Parameter | Routes | Meaning |
 | --- | --- | --- |

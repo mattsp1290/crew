@@ -18,6 +18,45 @@ things that gate needs before it can exist:
 - a **tool-call ledger**: a durable row for each decided call, from its verdict to
   the delivery of its outcome, so that Crew knows what happened when a worker dies.
 
+## Beside what else is on main
+
+This foundation was designed on 2026-11-12 and merged with `main` on 2026-11-18.
+What landed in between changes what stands around it, not what it stores.
+
+- **[Frontend tools](frontend-tools.md) are another lane.** A frontend tool's
+  handler runs in the owner's client and Crew never runs it. The owner consents
+  once, by selecting definitions when they submit a request, and no card, grant
+  or capability set covers a frontend call. That contract is specified and not
+  built. The catalog here is for the tools Crew itself would run, each call
+  decided by the gate. The two lanes share no names, no ledger and no digest
+  rule. A frontend name always holds `__` and no catalog name does, which a test
+  pins. The frontend ledger will keep a call's arguments as the text it hashed,
+  by Switchboard's rule and in the provider's key order; this one keeps
+  normalized arguments as `jsonb` and hashes their canonical JSON.
+- **Engines are to be driven through Switchboard adapters.** Crew drives Claude,
+  Codex and Pi itself today, and uses the vendored Switchboard only for the
+  gateway's observer fan-out and for tracing. Bean `crew-0n8g` plans to move
+  Crew's native SDK integration to Switchboard adapters once they are qualified,
+  with admission, authorization and durable state staying in Crew, and bean
+  `crew-1rcl` tells the frontend tools work not to add a second native driver.
+  Nothing in this foundation offers a tool to an engine, so none of it depends
+  on which side does. The slice that offers one must go through whatever then
+  drives the engine. [SDK assumptions](#sdk-assumptions) records what the
+  installed SDKs can do. It is evidence for that work and not its design.
+- **Cards have a public shape.** A card on `main` shows public arguments and
+  says `argumentsComplete` when those are all of them. The owner reads the whole
+  proposal through the approval detail route, can name a decision with a
+  `decisionId` and read it back ([decision receipts](decision-receipts.md)), and
+  can give a request an [approval deadline](approval-expiry.md). All of this
+  covers `record_work_item` and `choose_next_step` in `deferred_calls`, and the
+  portable client depends on it. The preview and the selector below are what a
+  card for a catalog tool would have to show. Whether they travel on the card
+  or through the detail route is for the gate's slice to settle within that
+  contract.
+- **"Budget" has two meanings.** A member's [usage budget](usage-metering.md) is
+  a daily token count that admission enforces. The ledger's `budget` verdict is
+  for a per-request limit on tool calls, which nothing computes yet.
+
 ## Capability sets
 
 A capability set is a small versioned JSON object.
@@ -100,6 +139,24 @@ PostgreSQL.
 
 The absence of a field never means more. A request that names no capabilities gets
 none, even when the profile has a ceiling.
+
+`capabilities` stands beside `instructions` and `instructionPacks`
+([member instructions](member-instructions.md),
+[instruction packs](instruction-packs.md)). Spawn writes all three in the
+transaction that inserts the member, and a retry must repeat each of them. The
+ceiling is checked first, so a request that is above its ceiling and also names a
+pack that does not exist answers `400 capabilities_exceed_profile`, and nothing
+is written either way. Instructions and packs change what the model is told and
+never what a member may do. A capability set is the opposite, and no text in
+either can widen it.
+
+The portable client (`@birbcrew/client`) does not carry the field. Its
+`createMember` body is strict and refuses `capabilities` before anything is
+sent, its member type drops the key from a spawn response and from the listing,
+and `packages/client/openapi.json` does not describe it. A caller that wants a
+set posts the JSON itself. The capability report's `memberCapabilities` entry
+does pass through the client, which keeps entries it does not know. See the
+[open questions](#open-questions-for-the-repository-owner).
 
 A requested set is within a ceiling when the ceiling allows everything it allows:
 
@@ -353,6 +410,20 @@ put in one form.
   IPv6 address is another host than the IPv4 address.
 - A host must be a strict DNS name (letters, digits and inner hyphens, labels of 1
   to 63, at most 253 in all) or an address. An underscore is refused.
+- A label that starts with `xn--` is not checked to be Punycode. The parser in
+  Node 24.22.3 (ada 4) keeps one that does not decode, such as `xn--a.example`, as
+  the ASCII label it is, where the parser in Node 22 refused the whole URL. The
+  name is a strict DNS name, a request for it asks DNS for exactly those letters,
+  and it is its own canonical form and no other name's, so a pattern for it
+  matches it alone. A label that would decode to plain ASCII always ends in the
+  hyphen Punycode puts there, and the strict name rule refuses that under either
+  parser.
+- What a host canonicalizes to follows the runtime's URL parser. A set is read
+  back through the same check it was stored through, so a set stored under one
+  Node release may not read back under another that accepts fewer names, and a
+  row the reader cannot read fails its owner's member listing. `xn--a.example`
+  stored on Node 24 and read on Node 22 is such a row. Crew pins one Node
+  version, so this matters for a rollback across a Node change.
 - A URL is refused when it has userinfo (`https://example.com@evil.test/` would
   read as `example.com`), an escape or an `@` in the authority, no `//` or an empty
   authority, a scheme other than http or https, port 0, whitespace, a control
@@ -536,7 +607,8 @@ members replay their spawn requests unchanged.
   The ledger checks that a grant a verdict names belongs to the member, and
   nothing more.
 - Cards for these tools, the owner's answer to an `ask`, and expiry. A `waiting`
-  call has no way forward.
+  call has no way forward. The ledger has no deadline of its own: a request's
+  [approval deadline](approval-expiry.md) is where one would come from.
 - Audit event types for tool calls. The ledger writes no audit row. The slice that
   adds the gate must append one when it marks an effect `uncertain`.
 - The executor, the workspace, the sandbox, the egress proxy, and any limit on
@@ -571,6 +643,21 @@ The executor:
 
 The gate:
 
+- Decide whether the call's turn may still act, because the ledger does not. It
+  binds a call to a turn of its owner's conversation and checks nothing about
+  that turn: `record` and `admit` succeed for a turn that has committed or is
+  uncertain, for a request the owner cancelled or whose card expired, and for a
+  conversation a [handoff](handoffs.md) sealed. A sealed source admits no new
+  request, and its one turn that can still be recovering stays uncertain for
+  good, so nothing there may record or admit a call. The gate must hold the
+  conversation's row lock, as `proposeLocked` does through `lockTurn`, and
+  refuse unless the turn is `started` under the caller's token, the request is
+  not cancelled and the conversation is not a handoff's source. The ledger takes
+  the same lock first in every write, so the two cannot deadlock.
+- Give no standing grant to a request that its owner did not start. A handoff's
+  reserved first request and a routine's request never use a grant today
+  (`grantable` in `src/service/grants.ts`), and the ledger checks only that a
+  grant belongs to the member and, for a conversation grant, to the conversation.
 - Decide what a capability host pattern covers. Today `webFetch.hosts` names hosts
   only, so a listed host is reachable on every scheme and port, and a `GET` there
   is a read, which the design allows without a card. Either a pattern should mean
@@ -597,7 +684,9 @@ SDK 0.3.306 (bundled Claude Code 2.1.306), `@openai/codex` and `@openai/codex-sd
 0.167.1, `@earendil-works/pi-coding-agent` and `pi-agent-core` 1.5.2, and the
 vendored AG-UI adapters. Paths are below `node_modules/`. The Claude and Codex
 binaries have no line numbers, so their strings are quoted. Nothing in this slice
-depends on these answers.
+depends on these answers. They were read on 2026-11-12 under Node 22. `main` still
+installs the same SDK versions, and the citations into Crew's own source were
+checked again against `main` on 2026-11-18; the packages were not read again.
 
 | Assumption | Answer | Read at | Still open |
 | --- | --- | --- | --- |
@@ -605,10 +694,10 @@ depends on these answers.
 | The hook can defer one call and not another | **Confirmed** by the types: the hook is called for each call and may answer `defer` | `sdk.d.ts:1001` (`HookPermissionDecision = 'allow' \| 'deny' \| 'ask' \| 'defer'`), `:2797`, `:6050` (`deferred_tool_use` on the result) | The Claude binary holds `returned permissionDecision=defer in interactive mode; ignoring (defer is print-mode only)`. Whether an SDK `query()` counts as print mode is **unknown**: run one with a hook that defers and check for `stop_reason: "tool_deferred"` |
 | Several calls in one batch can be denied while one is deferred | **Refuted** | The Claude binary (`@anthropic-ai/claude-agent-sdk-linux-arm64/claude`) holds `returned permissionDecision=defer but ... tool calls are in this batch; ignoring (defer is solo-only — siblings would be orphaned on resume)`. The count is of the `tool_use` blocks in the assistant message, so denying the siblings does not help. `@ag-ui/claude-agent-sdk/README.md:142`: "Durable deferral supports **one tool call at a time**, not parallel calls." | What the ignored deferral falls through to. The handler of a gated tool must refuse to run when no decision reached it |
 | A deferred call of an in-process SDK MCP tool can be resumed | **Refuted** | The binary holds `tool_deferred_unavailable`; `@ag-ui/claude-agent-sdk/dist/index.mjs:2309` throws "This SDK cannot restore a deferred in-process MCP tool before startup"; `README.md:141`: such servers "register too late for replay" | This is why the design uses a loopback MCP server for Claude |
-| The Codex app-server can hold a dynamic tool call | **Confirmed** for the protocol: `item/tool/call` is a request with an id that the client answers. It is experimental and is not reachable through `@openai/codex-sdk` | Types generated from the installed binary with `codex app-server generate-ts --experimental`: `ServerRequest.ts`, `v2/DynamicToolCallParams.ts`, `v2/ThreadStartParams.ts` (`dynamicTools`). `@openai/codex-sdk/dist/index.js:178` runs `exec --experimental-json`, and the binary holds `dynamic tool calls are not supported in exec mode`. Crew's trusted lane already uses the app-server: `src/service/trusted-codex.ts:134-136` | |
-| The Codex app-server has no timeout shorter than Crew's | **Unknown** | No timeout field is on any dynamic tool type, and the binary holds only `dynamic tool call was cancelled before receiving a response`; a duration constant would not show as text. Crew waits 45 s for a live approval (`src/service/codex-live.ts:35`) and lets a live call last at most 170 s (`src/service/codex-calls.ts:59`) | Hold an `item/tool/call` for 46 s, 151 s and 171 s against a local fake provider and watch the turn. No test in the repository holds one that long |
+| The Codex app-server can hold a dynamic tool call | **Confirmed** for the protocol: `item/tool/call` is a request with an id that the client answers. It is experimental and is not reachable through `@openai/codex-sdk` | Types generated from the installed binary with `codex app-server generate-ts --experimental`: `ServerRequest.ts`, `v2/DynamicToolCallParams.ts`, `v2/ThreadStartParams.ts` (`dynamicTools`). `@openai/codex-sdk/dist/index.js:178` runs `exec --experimental-json`, and the binary holds `dynamic tool calls are not supported in exec mode`. Crew's trusted lane already uses the app-server: `src/service/trusted-codex.ts:137-139` | |
+| The Codex app-server has no timeout shorter than Crew's | **Unknown** | No timeout field is on any dynamic tool type, and the binary holds only `dynamic tool call was cancelled before receiving a response`; a duration constant would not show as text. Crew waits 120 s for a live approval (`src/service/codex-live.ts:35`) and lets a live call last at most 170 s (`src/service/codex-calls.ts:60`) | Hold an `item/tool/call` for 121 s, 151 s and 171 s against a local fake provider and watch the turn. No test in the repository holds one that long |
 | Pi has no blocking hook for built-in tools | **Refuted**: Pi has one | `@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts:999` ("Fired before a tool executes. Can block."), `:1109` (`ToolCallEventResult` with `block`), `:1266` (`on("tool_call", ...)`); `docs/extensions.md:975`, `:3253` ("`tool_call` errors block the tool (fail-safe)"); `@earendil-works/pi-agent-core/dist/types.d.ts:279` (`beforeToolCall`) | Whether a handler that waits for minutes is cut off |
-| Landlock does not restrict UDP | **Confirmed** for the launcher and for one kernel | `native/member-launch.c:82` handles network rights `3` (TCP bind and connect) for Codex and none for Claude; its seccomp filter refuses only `setsid` and `setpgid`. A probe on Linux 6.8.0 (Landlock ABI 4) with those rights handled and no rule: TCP connect failed with `EACCES`; UDP bind, send, receive and connect succeeded | Other kernels. The executor's sandbox must refuse UDP itself, as the design says |
+| Landlock does not restrict UDP | **Confirmed** for the launcher and for one kernel | `native/member-launch.c:228` handles network rights `3` (TCP bind and connect) for Codex and none for Claude or Pi; its seccomp filter refuses `setsid` and `setpgid` for every engine and, for Pi alone, every socket (`:158-163`). A probe on Linux 6.8.0 (Landlock ABI 4) with those rights handled and no rule: TCP connect failed with `EACCES`; UDP bind, send, receive and connect succeeded | Other kernels. The executor's sandbox must refuse UDP itself, as the design says |
 
 The vendored adapters do not hide these seams. `@ag-ui/claude-agent-sdk` passes the
 host's `hooks`, `canUseTool`, `mcpServers` and tool lists through and adds its own
@@ -619,53 +708,122 @@ host creates the Pi session and owns its tools.
 Three answers change the design's reasons, not its direction:
 
 - Pi can intercept its built-in tools, so "interception is confirmed only for
-  Claude" no longer holds. Pi's built-ins would still run unsandboxed in the
-  runner process.
+  Claude" no longer holds. When this was written Pi's built-ins would have run
+  unsandboxed in the runner process. Since then Pi's SDK runs in a
+  launcher-confined worker that holds no credentials and cannot open a socket or
+  start a process, and the host runs its tools
+  ([native confinement](verification.md#native-confinement)), so a built-in
+  shell could not run there at all.
 - Claude defers only a call that is alone in its message. A model that asks for
   two gated tools at once cannot be paused durably.
 - A dynamic tool call needs the Codex app-server, not the SDK that members use
-  today.
+  today. Members do reach Crew's one profile tool through an MCP server in exec
+  mode (`src/service/codex.ts`, `mcp_servers`), where a call can be held for as
+  long as a live approval lasts and no longer.
+
+These are engine seams, and the engines are to move behind Switchboard adapters
+(see [beside what else is on main](#beside-what-else-is-on-main)). Whoever wires a
+catalog tool to an engine should read them as what the SDKs allow, and decide
+where the wiring lives with the adapter that then drives the engine.
+
+## Open questions for the repository owner
+
+Nothing here needs an answer before this foundation can merge: no engine uses
+it. Each needs one before the slice it names.
+
+From the merge with `main`:
+
+1. **Whether the direction still stands.** The design behind this page has Crew
+   run a toolbox of its own behind one gate, with the engines' built-in tools
+   off. `main` has not decided otherwise: built-in tools are still off, and the
+   frontend tools contract says that cards and grants "keep their meaning for
+   Crew's own tools". It has, though, put a client-run lane first, and it plans
+   to move engine driving to Switchboard. Steps of the design that wire engines
+   or change the request loop need to be planned again against both.
+2. **One request loop or two.** Frontend tools need a request to run several
+   native turn segments, and so does a gate that can ask more than once in a
+   turn. `turns` holds one row for each request today. The two should not each
+   invent segments.
+3. **The portable client.** Should `capabilities` join `createMember`, the
+   member type and the OpenAPI file now, or when a member can use one? It is
+   left out here, so the field is reachable only by a caller that posts JSON
+   itself.
+4. **Advertising.** `GET /v1/capabilities` reports `memberCapabilities` with
+   `toolExecution: "not-implemented"`. The frontend tools contract takes the
+   stricter line that a capability is not reported until it can be used. Should
+   this entry wait as well?
+5. **Card shape.** Should a catalog tool's preview and selector travel on the
+   card, or through the approval detail route that owners already use for
+   `record_work_item`?
+6. **The rollback proof.** `tests/proof/delegation-control-rollback.mts` pinned
+   39 as the newest schema version and now pins 41. That proof, which runs the
+   accepted older application against the upgraded database, was not run with
+   migrations 40 and 41 in place.
+
+Raised when the foundation was built, and still open:
+
+7. The command splitter refuses `==` and `:=`, so `pip install pkg==1.2.3`
+   always needs a card.
+8. A capability host pattern binds no scheme and no port, and a `GET` counts as
+   a read.
+9. A list of wrappers that a `command_prefix` must not end at, and binding the
+   working directory into a `command_prefix`, are described above and not built.
+10. Paths such as `.git`, `.github/workflows` and `.husky` get no special
+    treatment.
+11. What a restore does with a `waiting` call.
+12. How long private arguments and results are kept, and how they are erased.
+13. The ledger does not know a sealed conversation. This page now gives that
+    check to the gate, with the turn's phase and the request's cancellation
+    (see [what later work must hold to](#what-later-work-must-hold-to)). The
+    owner may prefer the ledger to refuse it as well.
 
 ## Validation
 
-Use Node 22.23.3 on Linux and a disposable PostgreSQL 17 database whose role may
+Use Node 24.22.3 on Linux and a disposable PostgreSQL 17 database whose role may
 create databases. `npm run test:recovery` also needs PostgreSQL 17 `pg_dump` and
 `pg_restore` (`BIRBCREW_PG_BIN`).
 
 ```sh
 npm ci
-npm run typecheck
+npm run build
 export BIRBCREW_TEST_DATABASE_URL='postgresql://birbcrew:fixture-only@127.0.0.1:55432/integration_test'
 npm run test:capabilities
 npm run test:recovery
-npm run test:api && npm run test:audit && npm run test:memories
+npm run test:api && npm run test:audit && npm run test:memories && npm run test:instructions && npm run test:packs
 ```
 
-`npm run test:capabilities` runs four files against real PostgreSQL:
+`npm run test:capabilities` runs four files against real PostgreSQL, and pull
+request CI runs it with the other suites:
 
 - `hosts.test.ts`: canonical hosts, patterns, and URLs with userinfo, missing
-  slashes, other schemes and stripped characters.
+  slashes, other schemes and stripped characters, and a label that starts with
+  `xn--` without being Punycode, which is kept and matches only itself.
 - `capabilities.test.ts`: the schema and its illegal states, the subset check
   against an independent reading of 50 sets, the digest, spawn through the HTTP
   gateway (unchanged for a client that names none, within, above, invalid, empty,
-  retried, raced, and retried behind an attempt that rolled back), the database's
-  own refusals, including the shapes inside a capability that the reader refuses
-  and a registration that cannot be deleted or renamed, registration and the
-  relay rule, migration 40 on a version-39 database with a running native turn,
-  and capture, hold and restore.
+  retried, raced, and retried behind an attempt that rolled back), a set written
+  with instructions and packs, the database's own refusals, including the shapes
+  inside a capability that the reader refuses, a member that has already opened
+  a conversation and a registration that cannot be changed, deleted or renamed,
+  registration and the relay rule, migration 40 on a version-39 database with a
+  running native turn, and capture, hold and restore.
 - `tool-catalog.test.ts`: the command splitter against every ASCII character
   outside its alphabet and a list of shell constructs, generated simple commands
   run through the installed shells, path traversal and invisible characters with
   idempotence over every path of a small grammar, each tool's classification, the
   digest, each selector including what it must not match, that every offered
   selector can be stored and covers its call, and the preview: ASCII only,
-  one-to-one, complete where it must be at its size limits, padded content, and
-  a cut at the exact edge of the budget.
+  one-to-one, complete where it must be at its size limits, padded content,
+  spaces at the end of a line, a cut at the exact edge of the budget and a cut
+  inside a run of spaces. It also pins the guide's rule that a card wraps long
+  lines, and that no catalog name can pass for a frontend tool name.
 - `tool-calls.test.ts`: every operation and its retry, a call that claims a kind
-  or scope it does not have, results PostgreSQL cannot store or that are too deep
-  to read, the answers after a lost worker, owner isolation, about a hundred
-  illegal updates written directly in SQL, the 256-call limit under a race,
-  migration 41 with a running native turn, and a held, resumed and restored
+  or scope it does not have, results PostgreSQL cannot store, that are too deep
+  to read or that hold a sparse array, the answers after a lost worker, what the
+  ledger leaves to the gate (a committed turn, a cancelled request, a sealed
+  conversation), owner isolation, about a hundred illegal updates written
+  directly in SQL, the 256-call limit under a race, migration 41 with a running
+  native turn, a restore whose settling fails, and a held, resumed and restored
   installation.
 
 `recovery.test.ts` restores a real `pg_dump` archive holding member capabilities
@@ -673,6 +831,6 @@ and ledger rows, completes an effect on the source after the recovery point, and
 checks that the resumed target marks it `uncertain` and refuses to run it.
 
 Not run for this change: the service proofs (`scripts/verify-members`,
-`tests/proof/*.mts`), which need Temporal, Docker and Landlock together. This
+`tests/proof/*.mts`) and the workflow suites that need a Temporal server. This
 change adds no workflow or native launch behaviour. The Temporal workflow bundle
 was built without a server and contains none of the new modules.
