@@ -340,7 +340,7 @@ ASCII letters, digits and `_ @ % + = : , . / -`, and words are separated by spac
 Nothing else is accepted, so none of these can appear: quotes, a backslash, `$`,
 backquotes, `* ? [ ] { } ~ !`, `#`, `^`, `; & | < > ( )`, a tab, a newline, a
 control character, or any character outside ASCII, including spaces and letters
-that only look like ASCII. At most 64 words. Three more forms are refused because
+that only look like ASCII. At most 64 words. Four more forms are refused because
 some shell reads them as something other than a plain word:
 
 - A first word that holds `=`. It is an assignment, not a program: `A=1 cmd`,
@@ -357,10 +357,11 @@ A command that is not simple gets **no** prefix selector and matches none. It
 always needs a card. sh, dash, bash and zsh, run with no startup files and default
 options, read a simple command as exactly its words. A test runs generated simple
 commands through dash and bash, and through zsh where it is installed, and
-compares the words the program receives; it does the same behind a first word
-that is a builtin or a wrapper (`env`, `command`, `exec`). The test image has no
-zsh, so that leg runs only when someone installs it. That is evidence, not a
-proof for every shell and option.
+compares the words the program receives; it does the same for programs whose
+names use the alphabet's punctuation, and behind a first word that is a builtin
+or a wrapper (`env`, `command`, `exec`). The test image has no zsh, so that leg
+runs only when someone installs it; it passed with zsh 5.9 installed by hand on
+2026-11-18. That is evidence, not a proof for every shell and option.
 
 What a prefix does not say:
 

@@ -51,6 +51,8 @@ test("a command is split only when it is plain words; anything a shell would int
     "ls =cat", "=ls", "ls -la =(id)", "export a==ls", "typeset b=x:=ls", "pip install requests==2.31.0", "make A:=b",
     // sh -c reads a command that starts with - or + as shell options.
     "-x", "- ls", "-e ls", "+x ls", "--version",
+    // bash and zsh read a first word that starts with % as a job, not a program.
+    "%1", "%1 a b", "%tool x", "% ls", "%% ls", "%+ ls",
     // Whitespace and letters that only look like ASCII.
     "ls\u00a0-la", "ls\u3000-la", "ls\u2003-la", "ls\u200b", "ls\u2028rm", "ls\u0085rm", "ｌｓ", "l\u0455", "echo \u202egnp.exe", "echo caf\u00e9",
     "", " ", "    ", "a".repeat(catalogLimits.commandBytes + 1), Array.from({ length: catalogLimits.commandWords + 1 }, () => "a").join(" "),
@@ -89,6 +91,22 @@ test("real shells pass the words of a simple command to its program exactly as w
     compared++;
   }
   assert.ok(compared > 80, String(compared));
+  // The first word names the program too, whatever characters of the alphabet it holds. A name
+  // that starts with % is the exception: bash and zsh read it as a job to bring to the
+  // foreground (`%1` is `fg %1`) and never look for a program, so such a command is not simple.
+  for (const name of ["%1", "%tool", "%", "a%b", "x%", "@a", "a@b", "x:y", "a,b", "_", "0", "1x", "a.b", "a+b", "a-b", "a_b"]) {
+    await writeFile(join(directory, name), "#!/bin/sh\nfor word in \"$@\"; do printf '%s\\n' \"$word\"; done\n", { mode: 0o755 });
+    const command = `${name} a %1`;
+    if (name.startsWith("%")) {
+      assert.equal(simpleCommand(command), null, command);
+      continue;
+    }
+    assert.deepEqual(simpleCommand(command), [name, "a", "%1"], command);
+    for (const shell of shells) {
+      const { stdout } = await run(shell, [...invocations[shell], command], { cwd: directory, env: { PATH: `${directory}:/usr/bin:/bin` } });
+      assert.deepEqual(stdout.split("\n").slice(0, -1), ["a", "%1"], `${shell}: ${command}`);
+    }
+  }
   // A first word that is a builtin or a wrapper is still a plain word, and the words after it reach the program unchanged.
   for (const start of ["env A=1", "env -i", "command", "command -p", "exec"]) {
     const command = `${start} ${join(directory, "words")} a=b -n x:y %s`;

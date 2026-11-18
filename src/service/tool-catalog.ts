@@ -77,6 +77,8 @@ export function pathWithin(prefix: WorkspacePath, path: WorkspacePath): boolean 
  * - a first word that holds `=`: an assignment, not a program (`A=1 cmd`, `A+=1 cmd`, and in
  *   zsh `1=2 cmd`, which assigns a positional parameter and then runs `cmd`);
  * - a first word that starts with `-` or `+`: `sh -c` reads it as shell options;
+ * - a first word that starts with `%`: bash and zsh read it as a job to bring to the
+ *   foreground (`%1` is `fg %1`) and never look for a program of that name;
  * - a word that starts with `=`, or holds `==` or `:=`: zsh replaces `=name` with the path
  *   of a command there, at the start of a word and in the value of an assignment argument.
  *
@@ -89,7 +91,7 @@ export function simpleCommand(command: string): string[] | null {
   if (!/^[A-Za-z0-9_@%+=:,.\/ -]+$/.test(command)) return null;
   const words = command.split(" ").filter(word => word !== "");
   if (!words.length || words.length > catalogLimits.commandWords) return null;
-  if (/[=]|^[-+]/.test(words[0])) return null;
+  if (/[=]|^[-+%]/.test(words[0])) return null;
   if (words.some(word => word.startsWith("=") || word.includes("==") || word.includes(":="))) return null;
   return words;
 }
