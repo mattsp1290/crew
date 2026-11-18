@@ -51,9 +51,7 @@ async def fixture_stream(messages, info):
 def make_agent():
     config = settings()
     if config.mode == "project-live":
-        if config.live_attestation is None:
-            raise ValueError("Live account evidence is missing")
-        selected = provider.model(config.live_attestation)
+        selected = provider.model()
     elif config.mode == "project-test":
         selected = FunctionModel(fixture_response, stream_function=fixture_stream)
     else:
@@ -73,11 +71,9 @@ agent = make_agent()
 
 @activity.defn
 async def validate_project_provider() -> None:
-    config = settings()
-    if config.mode == "project-live":
-        if config.live_attestation is None:
-            raise ValueError("Live account evidence is missing")
-        provider.check_evidence(config.live_attestation)
+    """Refuse a live turn before dispatch when the provider credential is no longer readable."""
+    if settings().mode == "project-live":
+        provider.read_go_key()
 
 
 @activity.defn

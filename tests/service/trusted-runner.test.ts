@@ -14,6 +14,7 @@ import { runTrustedRequest } from "../../src/service/trusted-runner.ts";
 import { createProxyProfile } from "../../src/service/proxy-profiles.ts";
 import type { TrustedNativeProfile } from "../../src/service/trusted-native.ts";
 import { startProvider } from "../fixtures/engines/codex/provider.mts";
+import type { PriceTable } from "../../src/service/usage-prices.ts";
 
 const database=process.env.BIRBCREW_TEST_DATABASE_URL;
 if(!database)throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -21,7 +22,8 @@ if(!database)throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable Pos
 async function providerFixture(engine:"pi"|"claude"|"codex") {
   const seen:string[]=[];
   if(engine === "codex") {
-    const fixture=await startProvider(()=>{},(_prompt,system,messages)=>{seen.push(system+messages);},"application");
+    const fixture=await startProvider(()=>{},(_prompt,system,messages)=>{seen.push(system+messages);},"application",
+      ()=>({input_tokens:100,input_tokens_details:{cached_tokens:40},output_tokens:9,output_tokens_details:{reasoning_tokens:2},total_tokens:109}));
     return {...fixture,seen};
   }
   const server=createServer(async(req,res)=>{
@@ -36,7 +38,10 @@ async function providerFixture(engine:"pi"|"claude"|"codex") {
         const content=result?"received "+result.content:"recalled none";
         const frame=(delta:object,finish_reason:string|null=null)=>res.write("data: "+JSON.stringify({id:"fixture",object:"chat.completion.chunk",created:1,model:body.model,choices:[{index:0,delta,finish_reason}]})+"\n\n");
         frame({role:"assistant",...(call?{tool_calls:[{index:0,id:"call_"+randomUUID(),type:"function",function:{name:prompt === "choose"?"choose_next_step":"record_work_item",arguments:JSON.stringify(prompt === "choose"?{}:{operation_id:prompt.slice(7)})}}]}:{content})});
-        frame({},call?"tool_calls":"stop");res.end("data: [DONE]\n\n");return;
+        frame({},call?"tool_calls":"stop");
+        res.write("data: "+JSON.stringify({id:"fixture",object:"chat.completion.chunk",created:1,model:body.model,choices:[],
+          usage:{prompt_tokens:100,prompt_tokens_details:{cached_tokens:40},completion_tokens:9,total_tokens:109}})+"\n\n");
+        res.end("data: [DONE]\n\n");return;
       }
       const prompts=body.messages.filter((m:any)=>m.role === "user").flatMap((m:any)=>typeof m.content === "string"?[m.content]:m.content.filter((p:any)=>p.type === "text").map((p:any)=>p.text));
       const prompt=prompts.at(-1);const last=body.messages.at(-1)?.content;
@@ -74,6 +79,7 @@ for(const engine of ["pi","claude","codex"] as const) {
     const store=new TrustedContextStore(pool,app);await store.open(key,{scope:scopeA,version:"v1",text:"Authorized context "+scopeA});
     const native=await providerFixture(engine);t.after(native.close);
     const model=engine === "pi"?"fixture-chat":engine === "claude"?"claude-sonnet-4-6":"gpt-5.4";
+    const prices:PriceTable=new Map([[model,{input:"1",cachedInput:"0.5",cacheWrite:"1",output:"2"}]]);
     const proxy=await createProxyProfile({engine,model,protocol:engine === "pi"?"openai-chat-completions":engine === "claude"?"anthropic-messages":"openai-responses",
       accountId:"fixture",endpoint:native.url+(engine === "pi"?"/chat/completions":engine === "claude"?"/v1/messages":"/responses"),allowHttpLoopback:true,
       resolveCredential:async()=>({headers:{Authorization:"Bearer fixture-only"},expiresAt:Date.now()+60000})});t.after(proxy.close);
@@ -82,10 +88,10 @@ for(const engine of ["pi","claude","codex"] as const) {
     const profile:TrustedNativeProfile=engine === "pi"?{engine,profile:proxy.profile.pi!}:engine === "claude"?{engine,profile:{...proxy.profile.claude!,...identity}}:{engine,profile:{...proxy.profile.codex!,...identity}};
     const read=randomUUID(),effect=randomUUID(),afterRotation=randomUUID();
     assert.equal(await store.submit(key,read,"choose"),1);assert.equal(await store.submit(key,effect,"record "+effect),2);
-    assert.deepEqual(await runTrustedRequest(store,key,profile,t.signal),{requestId:read});
+    assert.deepEqual(await runTrustedRequest(store,key,profile,t.signal,prices),{requestId:read});
     assert.equal((await store.result(key,read)).phase,"completed");
     assert.ok((await store.result(key,read)).reply?.includes(scopeA));
-    assert.deepEqual(await runTrustedRequest(new TrustedContextStore(pool,app),key,profile,t.signal),{requestId:effect});
+    assert.deepEqual(await runTrustedRequest(new TrustedContextStore(pool,app),key,profile,t.signal,prices),{requestId:effect});
     assert.ok((await store.result(key,effect)).reply?.includes("receipt"));
     const calls=(await pool.query("SELECT tool_name,kind,outcome,released,acknowledged FROM birbcrew_ts.trusted_tool_calls WHERE conversation_id=$1",[key.conversationId])).rows;
     assert.equal(calls.length,2);assert.deepEqual(calls.map(c=>c.tool_name).sort(),["choose_next_step","record_work_item"]);
@@ -97,12 +103,23 @@ for(const engine of ["pi","claude","codex"] as const) {
     assert.deepEqual(await store.result(key,afterRotation),{phase:"held",reply:null});
     await store.releaseHeld(key,afterRotation,"run");
     const before=native.seen.length;
-    assert.deepEqual(await runTrustedRequest(store,key,profile,t.signal),{requestId:afterRotation});
+    assert.deepEqual(await runTrustedRequest(store,key,profile,t.signal,prices),{requestId:afterRotation});
     const requests=native.seen.slice(before);assert.ok(requests.length);assert.ok(requests.some(r=>r.includes(scopeB)));assert.ok(requests.every(r=>!r.includes(scopeA)));
     const current=(await pool.query("SELECT conversation_id,generation,native_thread_id FROM birbcrew_ts.trusted_sessions WHERE conversation_id=$1",[key.conversationId])).rows[0];
     assert.equal(current.conversation_id,key.conversationId);assert.equal(current.generation,2);assert.notEqual(current.native_thread_id,old.native_thread_id);
     const order=(await pool.query("SELECT request_id,phase FROM birbcrew_ts.trusted_requests WHERE conversation_id=$1 ORDER BY position",[key.conversationId])).rows;
     assert.deepEqual(order,[read,effect,afterRotation].map(request_id=>({request_id,phase:"completed"})));
-    assert.equal(await runTrustedRequest(store,key,profile,t.signal),null);
+    assert.equal(await runTrustedRequest(store,key,profile,t.signal,prices),null);
+
+    // One ledger row per trusted request, in its own lane: no launch token, bound to the request. The
+    // read and the effect each took two model calls (the tool call, then the answer), the recall one.
+    // Claude's fixture reports 10 and 10 per call; the others 100 input (40 cached) and 9 output.
+    const {rows:usage}=await pool.query(`SELECT request_id,token,trusted_request_id=request_id AS bound,engine,state,model,input_tokens AS input,
+      output_tokens AS output,cached_input_tokens AS cached,estimated_cost_usd::text AS estimate FROM birbcrew_ts.usage_ledger
+      WHERE conversation_id=$1 ORDER BY usage_id`,[key.conversationId]);
+    const call=engine === "claude"?{input:10,output:10,cached:0,picodollars:30_000_000}:{input:100,output:9,cached:40,picodollars:98_000_000};
+    const row=(request_id:string,calls:number)=>({request_id,token:null,bound:true,engine,state:"reported",model,input:call.input*calls,
+      output:call.output*calls,cached:call.cached*calls,estimate:(call.picodollars*calls/1e12).toFixed(12)});
+    assert.deepEqual(usage,[row(read,2),row(effect,2),row(afterRotation,1)]);
   });
 }

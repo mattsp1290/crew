@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/pointer.input.json",
+  "title": "pointer arguments",
+  "description": "Move, click, drag or scroll at positions given in the output pixel space of the named frame.",
+  "type": "object",
+  "properties": {
+    "holder_id": { "$ref": "../defs.json#/$defs/holder_id" },
+    "frame_id": { "$ref": "../defs.json#/$defs/frame_id" },
+    "operation_id": { "$ref": "../defs.json#/$defs/operation_id" },
+    "permitted_apps": { "$ref": "../defs.json#/$defs/permitted_apps" },
+    "action": {
+      "anyOf": [
+        { "$ref": "#/$defs/pointer_move" },
+        { "$ref": "#/$defs/pointer_click" },
+        { "$ref": "#/$defs/pointer_drag" },
+        { "$ref": "#/$defs/pointer_scroll" }
+      ]
+    }
+  },
+  "required": ["holder_id", "frame_id", "operation_id", "action"],
+  "additionalProperties": false,
+  "$defs": {
+    "pointer_move": {
+      "description": "Move the pointer to a point. Nothing is pressed.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "move" },
+        "x": { "$ref": "../defs.json#/$defs/frame_coordinate" },
+        "y": { "$ref": "../defs.json#/$defs/frame_coordinate" }
+      },
+      "required": ["type", "x", "y"],
+      "additionalProperties": false
+    },
+    "pointer_click": {
+      "description": "Move to a point, then press and release a button count times. Modifiers are held around all the clicks.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "click" },
+        "x": { "$ref": "../defs.json#/$defs/frame_coordinate" },
+        "y": { "$ref": "../defs.json#/$defs/frame_coordinate" },
+        "button": {
+          "$ref": "../defs.json#/$defs/mouse_button",
+          "default": "left"
+        },
+        "count": {
+          "description": "1 is a click, 2 a double-click, 3 a triple-click.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "modifiers": {
+          "$ref": "../defs.json#/$defs/modifiers",
+          "default": []
+        }
+      },
+      "required": ["type", "x", "y"],
+      "additionalProperties": false
+    },
+    "pointer_drag": {
+      "description": "Press the button at the first point, move through each later point in order, release at the last. A path of two identical points is a press-and-hold of duration_ms. duration_ms is a minimum for any other path.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "drag" },
+        "path": {
+          "type": "array",
+          "items": { "$ref": "../defs.json#/$defs/frame_point" },
+          "minItems": 2,
+          "maxItems": 32
+        },
+        "button": {
+          "$ref": "../defs.json#/$defs/mouse_button",
+          "default": "left"
+        },
+        "modifiers": {
+          "$ref": "../defs.json#/$defs/modifiers",
+          "default": []
+        },
+        "duration_ms": {
+          "description": "The least time from button down to button up, spread evenly along the path. A long path takes longer, because the pointer moves at most 8 frame pixels per event and each move is checked first.",
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 5000,
+          "default": 500
+        }
+      },
+      "required": ["type", "path"],
+      "additionalProperties": false
+    },
+    "pointer_scroll": {
+      "description": "Move to a point, then scroll. Positive dy reveals content further down; positive dx reveals content further right. Deltas are in output pixels of the frame. At least one of dx and dy must be present and non-zero.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "scroll" },
+        "x": { "$ref": "../defs.json#/$defs/frame_coordinate" },
+        "y": { "$ref": "../defs.json#/$defs/frame_coordinate" },
+        "dx": {
+          "type": "integer",
+          "minimum": -10000,
+          "maximum": 10000,
+          "default": 0
+        },
+        "dy": {
+          "type": "integer",
+          "minimum": -10000,
+          "maximum": 10000,
+          "default": 0
+        },
+        "modifiers": {
+          "$ref": "../defs.json#/$defs/modifiers",
+          "default": []
+        }
+      },
+      "required": ["type", "x", "y"],
+      "anyOf": [
+        {
+          "required": ["dx"],
+          "properties": { "dx": { "not": { "const": 0 } } }
+        },
+        {
+          "required": ["dy"],
+          "properties": { "dy": { "not": { "const": 0 } } }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

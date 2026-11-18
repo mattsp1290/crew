@@ -7,20 +7,31 @@ case "$(uname -s)/$(uname -m)" in
   *) echo 'Adapter verification requires Linux arm64 or x64.' >&2; exit 1 ;;
 esac
 
-node_image='node@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7'
+node_image='node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496'
 consumer=$(mktemp -d)
 trap 'rm -rf "$consumer"' EXIT
 mkdir -p "$consumer/tests/fixtures"
 cp package.json package-lock.json "$consumer/"
 mkdir -p "$consumer/packages/pi-subagents"
 cp packages/pi-subagents/*.tgz "$consumer/packages/pi-subagents/"
+mkdir -p "$consumer/packages/client"
+cp packages/client/package.json packages/client/tsconfig.json packages/client/LICENSE packages/client/README.md "$consumer/packages/client/"
+cp -R packages/client/src "$consumer/packages/client/"
 cp -R vendor "$consumer/"
 cp -R tests/fixtures/engines "$consumer/tests/fixtures/"
+cp -R tests/service "$consumer/tests/"
+mkdir -p "$consumer/src" "$consumer/native" "$consumer/scripts"
+cp -R src/service "$consumer/src/"
+cp native/member-launch.c "$consumer/native/"
+cp scripts/build-native "$consumer/scripts/"
 
 run() {
   docker run --rm --init --user "$(id -u):$(id -g)" --env HOME=/tmp \
     --volume "$consumer:/consumer" --workdir /consumer "$@"
 }
 
-run "$node_image" npm ci --omit=dev --no-audit --no-fund
+run "$node_image" npm ci --include=dev --no-audit --no-fund
+run --network none "$node_image" scripts/build-native
+run --network none "$node_image" npm run build:client
+run --network none "$node_image" npm prune --omit=dev --no-audit --no-fund
 run --network none "$node_image" npm test

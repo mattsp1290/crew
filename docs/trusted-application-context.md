@@ -18,7 +18,10 @@ The existing observer gateway continues to reject those inputs.
 - Claude and Pi SDK adapters and the pinned official Codex app-server expose only
   the registered catalog. Codex uses app-server dynamic tools instead of exec/MCP:
   the pinned MCP path adds resource helper tools that cannot be disabled.
-  Native built-ins remain disabled. Claude/Codex retain their isolated launchers.
+  Native built-ins remain disabled. All three engines run through the isolated
+  launcher. Pi's SDK runs in a confined worker with no network; the backend
+  process still runs each registered tool handler and the model request (see
+  [native confinement](verification.md#native-confinement)).
 - Native checkpoints bind engine, owner/conversation scope, version, generation,
   context and tool manifest. Rotation creates a fresh engine-native session;
   old transcripts are **not** summarized into the new context. Cold restoration
@@ -68,6 +71,21 @@ Claude/Codex owner and member identities must match the database conversation.
 The runner does not forward speculative text to observers: it buffers output,
 rechecks authorization and generation at commit, then returns only a request ID.
 `result()` checks current output authorization again before returning a reply.
+
+The runner meters each request in the [usage ledger](usage-metering.md#the-trusted-context-lane):
+one row of token counts and the model, written after the native turn returns and before
+the reply commits, priced from the table named by `BIRBCREW_USAGE_PRICES_PATH` in the
+backend's process unless a table is passed as `runTrustedRequest`'s fifth argument. The
+row holds no context, prompt, reply or tool data. The owner reads it through `/v1/usage`
+as `lane: "trusted"`, and its tokens count toward the member's daily budget, which does
+not refuse trusted requests. A malformed table makes `runTrustedRequest` throw before it
+claims a request; to fail at startup instead, read the table once and pass it:
+
+```ts
+import { operatorPrices } from "./src/service/usage-prices.ts";
+const prices = operatorPrices(); // throws, naming the setting, on a malformed table
+await runTrustedRequest(trusted, key, nativeProfile, abortSignal, prices);
+```
 
 Each registered tool supplies:
 
@@ -173,7 +191,8 @@ To erase: invalidate first, stop the worker/native processes, and use
 thread IDs. `erase(key)` requires the drain lease and clears database snapshot,
 checkpoint, prompt, reply, tool-result and legacy note contents. It leaves a
 non-reusable deleted session and minimal request/receipt digests as replay
-fences. A late callback cannot resurrect erased results. Separately remove the
+fences. It leaves the requests' usage ledger rows, which hold counts and a model
+name. A late callback cannot resurrect erased results. Separately remove the
 listed native directories from the configured private volume after confirming
 process termination. Erasure of backups, WAL, logs and provider-held data follows
 the deployment's retention policy; a SQL update is not physical media erasure.
@@ -188,7 +207,7 @@ rewrite the legacy workflow or prove a full Temporal-server replacement.
 
 ## Validate without personal credentials or paid inference
 
-Requires Linux with Landlock ABI 4+, Node **22.23.3**, a C compiler and a disposable
+Requires Linux with Landlock ABI 4+, Node **24.22.3**, a C compiler and a disposable
 PostgreSQL 17 database. CI uses Ubuntu 24.04 and exercises the actual locked SDKs
 against scripted local providers, not paid models.
 
@@ -216,7 +235,7 @@ committed fixture effect, lease disconnects, late settlement after erasure,
 rotation/order preservation and registry immutability. Native tests cover all
 three SDK tool catalogs, result correlation, cold restore and fresh-scope
 rotation. Runner tests compose the native SDK with the durable store. A kernel
-without Landlock fails closed for Claude/Codex; do not bypass that isolation or
+without Landlock fails closed for all three engines; do not bypass that isolation or
 report those tests as passing locally.
 
 This is offline fixture qualification. Live application policy/provider

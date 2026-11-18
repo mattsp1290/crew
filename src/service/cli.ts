@@ -32,17 +32,20 @@ async function main() {
           throw new Error("BIRBCREW_WORKER_HEARTBEAT_FILE must be in an existing writable directory");
         });
       }
+      // A malformed price table stops the worker here, naming the setting, before its supervisor reads it.
+      (await import("./usage-prices.ts")).operatorPrices();
       const { runMemberWorker } = await import("./worker.ts");
       const { registerProfiles } = await import("./deployment.ts");
+      const { controlPoolBounds } = await import("./delegation-control.ts");
       const { profiles, close } = await import(pathToFileURL(resolve(configPath)).href);
+      const controlPool = new Pool({ connectionString: url, max: 2, ...controlPoolBounds });
       try {
         await registerProfiles(pool, profiles, stateDir);
-        await runMemberWorker(store, temporal, profiles, resolve(configPath), stateDir, heartbeat);
+        await runMemberWorker({ store, temporal, profiles, configPath: resolve(configPath), stateDir, heartbeat, controlPool });
       } finally {
-        try {
-          await close?.();
-        } finally {
-          await flushTelemetry();
+        try { await controlPool.end(); }
+        finally {
+          try { await close?.(); } finally { await flushTelemetry(); }
         }
       }
       return;

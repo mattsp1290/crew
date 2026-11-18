@@ -28,7 +28,7 @@ export async function evidenceOutputs(env: NodeJS.ProcessEnv = process.env) {
 }
 
 const roots = ["src/service", "native", "scripts", "tests/service", "tests/proof", "tests/fixtures/engines",
-  "packages", "vendor/ag-ui", "clients"];
+  "packages", "vendor/ag-ui", "vendor/switchboard", "clients"];
 const files = [".gitattributes", "package.json", "package-lock.json", ".node-version", "tsconfig.json"];
 const hash = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
 const revision = z.string().regex(/^[a-f0-9]{40}$/);
@@ -101,7 +101,7 @@ export function attributable(source: Awaited<ReturnType<typeof sourceFingerprint
 
 export async function lockedPackages(engines: Engine[]) {
   const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
-  const native = ["@temporalio/worker", "@ag-ui/core", "@ag-ui/client", "@ag-ui/encoder",
+  const native = ["@temporalio/worker", "@ag-ui/core", "@ag-ui/client", "@ag-ui/encoder", "@mattsp1290/switchboard",
     ...(engines.includes("codex") ? ["@openai/codex-sdk", "@openai/codex", "@openai/codex-linux-" + process.arch] : []),
     ...(engines.includes("claude") ? ["@ag-ui/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk-linux-" + process.arch] : []),
     ...(engines.includes("pi") ? ["@ag-ui/pi", "@earendil-works/pi-coding-agent", "@birbcrew/pi-subagents"] : [])];

@@ -6,6 +6,24 @@ An owner spawns a member with a fixed engine and execution profile. Each convers
 
 Pi and Claude release the inference worker during a confirmed human wait. Pi can delegate to two child workflows with separate native sessions and one shared write budget. Codex keeps its invocation-scoped MCP call open until the owner responds or the deadline expires. SQL records the decision, effect receipt and confirmation of native delivery separately. On interruption, clients can distinguish a proven zero-effect call from a committed receipt with unknown delivery. See the [gateway contract](member-gateway.md).
 
+### Named child targets
+
+An operator profile declares destinations by fixed role in `childTargets`. `registerProfiles` seals each parent engine and profile on its first registration. The seal contains either legacy mode or the initial named role map. A separate active-role array can only shrink. Existing profiles and members remain legacy when migration 037 runs.
+
+Member spawn copies the currently active destinations into immutable `child_target_consent`. Spawn and owner-scoped member listing return that original identity with its current availability. Each destination includes engine, profile, model, canonical provider host, and account digest. The projection reads consent and availability in one SQL snapshot. The API request remains `{engine, profile, requestId}`. The model still proposes only `{role, task}`.
+
+`ChildStore.delegate` resolves each role against both the member's consent and current profile authority. It pins the target's model and writes the full versioned identity inside `pi_children.role_profile.target`. Missing or removed named roles fail without a legacy fallback. SQL independently checks fixed instructions, tools, model, and the actual joined parent consent, and prevents changes to any stored role profile. Profile registration, spawn, removal, and child insertion serialize through the same engine/profile advisory lock, including writes from older binaries.
+
+Removal blocks child insertion after the removal commits. A child recorded before removal may start, retry, or resume after approval on its recorded destination. Every native admission reads the owned child generation and compares its engine, profile, model, provider host, and account digest with the loaded configuration before a provider call. Configuration drift fails closed. Removal introduces no cancellation or deadline change.
+
+Only Pi parents and Pi children execute. A named Pi target needs the fixed role's tools but does not need permission to delegate. Claude and Codex declarations can describe future analyst destinations and report `unsupported_engine`. Claude parents permit only analyst. Codex parents cannot declare recorder, and Codex children cannot receive tools. The drivers still refuse non-Pi child execution. Children receive no conversation context, member instructions, or instruction packs.
+
+Workflow keys carry only engine and profile. Activities read the authoritative child row and reject an incorrect queue before reserving a launch. The full versioned target makes an old strict reader refuse the child even on the correct queue. Historical two-field targets remain available for inspection and settlement but cannot launch after migration 037. Untargeted legacy Pi children retain their execution path. Replay does not compare activity queues, so this runtime refusal remains necessary.
+
+Restore activation clears every named profile's active roles in the same transaction that retires restored external authority. Seals and member consent remain intact. Enabling new delegation requires a new profile name. Recorded children remain held until existing recovery reconciliation permits activation. An older backup cannot retain removals that happened after its recovery point.
+
+See [Configure named child destinations](member-profiles.md#configure-named-child-destinations) for registration and upgrade steps. `npm run test:child-targets` covers registry authority, races, migration refusal, actual Pi execution, budgets, approval resume, and legacy workflow replay.
+
 ## Historical Python proof
 
 One Temporal workflow owns each conversation. Its stable ID derives from the

@@ -8,6 +8,7 @@ import { getSessionMessages, type Options } from "@anthropic-ai/claude-agent-sdk
 import { z } from "zod";
 import { claudeCheckpoint } from "./claude.ts";
 import { trustedClaudeCommand } from "./trusted-claude.ts";
+import { claudeUsage } from "./usage-capture.ts";
 
 type Command=z.infer<typeof trustedClaudeCommand>;
 type Binding=z.infer<typeof claudeCheckpoint>["state"]["binding"];
@@ -57,9 +58,9 @@ async function run(command:Command) {
       await writeFile("binding.tmp",JSON.stringify(confirmed),{mode:0o600,flush:true});
       await rename("binding.tmp","binding.json");binding=confirmed;
     }}}});
-  let text="",finished=false,pendingIds:string[]|undefined,resultCount=0;
+  let text="",finished=false,pendingIds:string[]|undefined,resultCount=0,initModel:unknown,queryResult:unknown;
   let callId:string|undefined,toolName:string|undefined,argsBytes=0;
-  const terminal=z.object({outcome:z.object({type:z.literal("success"),pendingToolCallIds:z.array(z.string()).max(1).optional()}).optional()});
+  const terminal=z.object({outcome:z.object({type:z.literal("success"),pendingToolCallIds:z.array(z.string()).max(1).optional()}).optional(),result:z.unknown()});
   await adapter.run({threadId:command.threadId,runId:command.runId,
     messages:command.continuation ? [{role:"tool",id:command.runId+":result:"+command.continuation.nativeCallId,
       toolCallId:command.continuation.nativeCallId,content:command.continuation.text,...(command.continuation.isError ? {error:"application_tool_error"}: {})}]:
@@ -89,18 +90,24 @@ async function run(command:Command) {
       // not proof that the remote provider durably committed or acted on it.
       process.send?.({delivered:{nativeCallId:command.continuation.nativeCallId,toolName:command.continuation.toolName}});
     }
-    if (event.type==="RUN_FINISHED") {pendingIds=terminal.parse(event).outcome?.pendingToolCallIds;finished=true;}
+    if (event.type==="CUSTOM") {
+      const init=z.object({name:z.literal("system:init"),value:z.object({model:z.unknown()})}).safeParse(event);
+      if (init.success) initModel=init.data.value.model;
+    }
+    if (event.type==="RUN_FINISHED") {const done=terminal.parse(event);pendingIds=done.outcome?.pendingToolCallIds;queryResult=done.result;finished=true;}
   });
+  // As on the member lane (claude-worker.ts): this one query's main-loop usage, and the model its CLI started with.
+  const usage=claudeUsage(queryResult,initModel);
   await exited;
   if (!finished || !binding || binding.unsupportedPendingTools?.length || resultCount!==Number(!!command.continuation)) throw new Error("Claude run did not settle");
   if (binding.pending) {
     const call=binding.pending;
     const tool=command.tools.find(tool=>call.name==="mcp__ag_ui__"+tool.name);
     if (!tool || call.id!==callId || !isDeepStrictEqual(binding.frontendTools,tools) || !isDeepStrictEqual(pendingIds,[call.id]) || Buffer.byteLength(JSON.stringify(call.input))>tool.maxArgumentBytes) throw new Error("Claude pending call did not match registered tool");
-    return {kind:"pending",text,proposal:{nativeCallId:call.id,toolName:tool.name,args:call.input},checkpoint:await checkpoint(command,binding)};
+    return {kind:"pending",text,proposal:{nativeCallId:call.id,toolName:tool.name,args:call.input},checkpoint:await checkpoint(command,binding),usage};
   }
   if (pendingIds?.length || !text) throw new Error("Claude turn did not complete");
-  return {kind:"complete",text,checkpoint:await checkpoint(command,binding)};
+  return {kind:"complete",text,checkpoint:await checkpoint(command,binding),usage};
 }
 
 const invocationGroup=Number(process.env.BIRBCREW_INVOCATION_GROUP ?? process.pid);

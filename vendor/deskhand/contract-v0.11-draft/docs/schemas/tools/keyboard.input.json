@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/tools/keyboard.input.json",
+  "title": "keyboard arguments",
+  "description": "Type text, or press one key with optional modifiers.",
+  "type": "object",
+  "properties": {
+    "holder_id": { "$ref": "../defs.json#/$defs/holder_id" },
+    "frame_id": { "$ref": "../defs.json#/$defs/frame_id" },
+    "operation_id": { "$ref": "../defs.json#/$defs/operation_id" },
+    "permitted_apps": { "$ref": "../defs.json#/$defs/permitted_apps" },
+    "action": {
+      "anyOf": [
+        { "$ref": "#/$defs/keyboard_type" },
+        { "$ref": "#/$defs/keyboard_press" }
+      ]
+    }
+  },
+  "required": ["holder_id", "frame_id", "operation_id", "action"],
+  "additionalProperties": false,
+  "$defs": {
+    "keyboard_type": {
+      "description": "Type text as Unicode input, independent of the keyboard layout. Control characters, including newline and tab, are refused: send them as press actions.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "type" },
+        "text": {
+          "description": "1 to 1024 Unicode code points with no C0 or C1 control character, DEL, U+2028 or U+2029.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "not": {
+            "pattern": "[\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]"
+          }
+        }
+      },
+      "required": ["type", "text"],
+      "additionalProperties": false
+    },
+    "keyboard_press": {
+      "description": "Press the modifiers, press the key, hold for hold_ms, release the key, release the modifiers. A key with modifiers is a chord.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "press" },
+        "key": { "$ref": "../defs.json#/$defs/key" },
+        "modifiers": {
+          "$ref": "../defs.json#/$defs/modifiers",
+          "default": []
+        },
+        "hold_ms": {
+          "description": "How long the key stays down. Key repeat is not synthesized.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5000,
+          "default": 0
+        }
+      },
+      "required": ["type", "key"],
+      "additionalProperties": false
+    }
+  }
+}

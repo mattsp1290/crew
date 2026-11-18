@@ -1,3 +1,5 @@
+import { approvalDetailIdentitySchema, routes } from "@birbcrew/client/contract";
+import { readDecisionRecord, readOwnerApprovalDetail } from "./approvals.ts";
 import { childOpener } from "./child-observation.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
@@ -5,29 +7,36 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { EventType as E, type Event } from "@ag-ui/core";
+import { EventType as E, PROTOCOL_VERSION, type Event } from "@ag-ui/core";
 import { RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { EventEncoder } from "@ag-ui/encoder";
 import { Client, Connection, WorkflowUpdateFailedError } from "@temporalio/client";
 import { Client as PgClient, Pool, type PoolOptions } from "pg";
 import { z } from "zod";
-import { decisionSchema } from "./approvals.ts";
 import { AuditUnsettledError, auditCsv, auditParameterNames, auditQuerySchema, readAudit } from "./audit.ts";
 import { CapabilityCeilingError, spawnRequestSchema } from "./capabilities.ts";
 import { MemberClient } from "./client.ts";
 import { listGrants, revokeGrant } from "./grants.ts";
+import { HandoffApi } from "./handoffs.ts";
 import { MemoryApi, memoryListParameterNames } from "./memories.ts";
-import { MemberStoreError, openSchema, submitSchema, turnKey } from "./domain.ts";
-import { readEvents, readSnapshot, toolBootstrap, type PublicSnapshot } from "./observation.ts";
+import { readInstructions } from "./instructions.ts";
+import { PackApi, packListParameterNames } from "./instruction-packs.ts";
+import { MemberStoreError, turnKey } from "./domain.ts";
+import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
-import { IntegrationApi, integrationCapabilities } from "./integration-api.ts";
+import { IntegrationApi, integrationCapabilities, ReceiptContractError } from "./integration-api.ts";
 import { firingParameterNames, RoutineApi, RoutineDispatcher, routineListParameterNames, type Clock } from "./routines.ts";
 import { TemporalSettingsError, temporalConnectionOptions, temporalSettings } from "./temporal-config.ts";
+import { UsageApi, usageParameterNames } from "./usage.ts";
+import { defaultTargetPolicy, TargetRefusedError, type TargetPolicy } from "./webhook-target.ts";
+import { deliveryParameterNames, WebhookApi, WebhookDispatcher, webhookListParameterNames } from "./webhooks.ts";
+import { observerFanout, ObserverHubs, ObserverSettingsError, type FanoutBounds } from "./observer-hub.ts";
+import { readEventsIdleMs, type ObservedRow } from "./observation.ts";
 
 const credentials = z.record(z.string().regex(/^[0-9a-f]{64}$/), z.string().min(1));
 const encoder = new EventEncoder();
 const requestLimit = 128 * 1024;
-const human = decisionSchema.omit({ ownerId: true, conversationId: true, argumentDigest: true, nativeCallId: true });
+const human = routes.decide.body;
 
 class HttpError extends Error {
   readonly status: number;
@@ -112,8 +121,9 @@ async function health(schemaVersion: () => Promise<number | null>, members: Memb
   } as const;
 }
 
+/** `hubs` is the fan-out; without it this observer polls the database on its own. */
 async function observe(
-  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse,
+  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse, hubs?: ObserverHubs,
 ) {
   if (response.destroyed) return;
   const { conversationId: threadId } = snapshot.state;
@@ -126,14 +136,16 @@ async function observe(
     const data = (id === undefined ? "" : `id: ${id}\n`) + encoder.encode(event);
     if (!response.write(data)) await once(response, "drain", { signal: stop.signal });
   }
-  async function finish(phase: unknown) {
+  async function finish(phase: Phase) {
     if (phase === "failed") await send({ type: E.RUN_ERROR, code: "MEMBER_FAILED", message: "Member conversation failed" });
-    else if (phase === "complete" || phase === "cancelled") await send({ type: E.RUN_FINISHED, threadId, runId });
+    else if (phase === "complete") await send({ type: E.RUN_FINISHED, threadId, runId });
+    // AG-UI reads a RUN_FINISHED without an outcome as success, so a cancellation must say so.
+    else if (phase === "cancelled") await send({ type: E.RUN_FINISHED, threadId, runId, outcome: { type: "cancelled" } });
     else return false;
     return true;
   }
   try {
-    await send({ type: E.RUN_STARTED, threadId, runId });
+    await send({ type: E.RUN_STARTED, threadId, runId, protocolVersion: PROTOCOL_VERSION });
     await send({ type: E.MESSAGES_SNAPSHOT, messages: snapshot.messages });
     await send({ type: E.STATE_SNAPSHOT, snapshot: snapshot.state }, cursor);
     if (snapshot.state.openStep) await send({ type: E.STEP_STARTED, stepName: snapshot.state.openStep });
@@ -156,18 +168,23 @@ async function observe(
       for (const event of toolBootstrap(tool)) await send(event);
     }
     if (await finish(snapshot.state.phase)) return;
+    // Sends one committed row; true once the stream has ended. Rows go out in cursor order whoever read them,
+    // so a row that is not the next cursor means this observer fell behind the retained tail.
+    async function deliver(row: ObservedRow) {
+      if (row.cursor !== cursor + 1) {
+        await send({ type: E.RUN_ERROR, code: "CURSOR_EXPIRED", message: "Reconnect for the current conversation snapshot" });
+        return true;
+      }
+      await send(row.event, row.cursor);
+      cursor = row.cursor;
+      return row.event.type === E.STATE_SNAPSHOT && await finish(row.event.snapshot.phase);
+    }
+    // A hub's rows for as long as this observer can use one; after that, or without a hub, its own reads.
+    if (hubs) for await (const row of hubs.rows(owner, threadId, cursor, stop.signal)) if (await deliver(row)) return;
     while (!stop.signal.aborted) {
       const rows = await readEvents(pool, owner, threadId, cursor);
-      for (const row of rows) {
-        if (row.cursor !== cursor + 1) {
-          await send({ type: E.RUN_ERROR, code: "CURSOR_EXPIRED", message: "Reconnect for the current conversation snapshot" });
-          return;
-        }
-        await send(row.event, row.cursor);
-        cursor = row.cursor;
-        if (row.event.type === E.STATE_SNAPSHOT && await finish(row.event.snapshot.phase)) return;
-      }
-      if (!rows.length) await delay(75, undefined, { signal: stop.signal });
+      for (const row of rows) if (await deliver(row)) return;
+      if (!rows.length) await delay(readEventsIdleMs, undefined, { signal: stop.signal });
     }
   } catch {
     if (!stop.signal.aborted && !response.destroyed) {
@@ -184,9 +201,15 @@ function queryOf(url: URL, names: readonly string[]) {
   return Object.fromEntries(url.searchParams);
 }
 
-/** `clock` drives routine schedules; tests inject one. */
+/** `clock` drives routine schedules and webhook retries; tests inject one. `webhookTargets` is
+ * where webhooks may be sent: HTTPS to public addresses unless the operator allows insecure targets.
+ * `fanout` shares one database reader among the observers of each conversation; false restores one poll per
+ * observer. It defaults to BIRBCREW_OBSERVER_FANOUT so the kill switch also reaches gateways that suites build
+ * in process; an invalid value throws ObserverSettingsError. `fanoutBounds` are for tests. */
 export function createGateway(store: MemberStore, members: MemberClient, owners: Record<string, string>,
-  { clock = () => new Date() }: { clock?: Clock } = {}) {
+  { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env), fanoutBounds }:
+    { clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean; fanoutBounds?: Partial<FanoutBounds> } = {}) {
+  const hubs = fanout ? new ObserverHubs(store.pool, fanoutBounds) : undefined;
   const integration = new IntegrationApi(store, members);
   const accounts = Object.entries(credentials.parse(owners)).map(([hash, actor]) => ({ digest: Buffer.from(hash, "hex"), actor }));
   // One database probe at a time, shared by concurrent health calls, so polling holds at most one probe connection.
@@ -194,8 +217,17 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
   let databaseProbe: Promise<number | null> | undefined;
   const schemaVersion = () => databaseProbe ??= readSchemaVersion(store.pool.options).finally(() => { databaseProbe = undefined; });
   const routines = new RoutineApi(store, clock);
-  const memories = new MemoryApi(store);
+  // Owner collections that share one route shape: create and list on the collection, read and
+  // delete on one item, with strict UTF-8 bodies and no query string where none is read.
+  const collections = [
+    { pattern: /^\/memories(?:\/([^/]+))?$/, api: new MemoryApi(store), listParameterNames: memoryListParameterNames },
+    { pattern: /^\/instruction-packs(?:\/([^/]+))?$/, api: new PackApi(store), listParameterNames: packListParameterNames },
+  ];
+  const handoffs = new HandoffApi(store, members);
+  const usage = new UsageApi(store);
   const dispatcher = new RoutineDispatcher({ store, members, integration, owners: accounts.map(({ actor }) => actor), clock });
+  const webhooks = new WebhookApi(store, clock, webhookTargets);
+  const deliveries = new WebhookDispatcher({ store, owners: accounts.map(({ actor }) => actor), clock, policy: webhookTargets });
   async function route(request: IncomingMessage, response: ServerResponse) {
     const auth = request.headers.authorization;
     if (!auth?.startsWith("Bearer ") || auth.length === 7) throw new HttpError(401, "authentication_required");
@@ -244,22 +276,62 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       if (action === undefined && request.method === "DELETE") return json(response, 200, await routines.change(ownerId, routineId, "delete"));
       throw new HttpError(405, "method_not_allowed");
     }
-    const memoryRoute = versioned && /^\/memories(?:\/([^/]+))?$/.exec(path);
-    if (memoryRoute) {
-      const [, id] = memoryRoute;
+    for (const { pattern, api, listParameterNames } of collections) {
+      const match = versioned && pattern.exec(path);
+      if (!match) continue;
+      const [, id] = match;
       if (id === undefined) {
         if (request.method === "POST") {
           if (url.search) throw new HttpError(400, "invalid_input");
-          return json(response, 201, await memories.create(ownerId, await body(request, true)));
+          return json(response, 201, await api.create(ownerId, await body(request, true)));
         }
-        if (request.method === "GET") return json(response, 200, await memories.list(ownerId, queryOf(url, memoryListParameterNames)));
+        if (request.method === "GET") return json(response, 200, await api.list(ownerId, queryOf(url, listParameterNames)));
         throw new HttpError(405, "method_not_allowed");
       }
-      const memoryId = z.uuid().parse(id);
+      const itemId = z.uuid().parse(id);
       if (url.search) throw new HttpError(400, "invalid_input");
-      if (request.method === "GET") return json(response, 200, await memories.get(ownerId, memoryId));
-      if (request.method === "DELETE") return json(response, 200, await memories.delete(ownerId, memoryId));
+      if (request.method === "GET") return json(response, 200, await api.get(ownerId, itemId));
+      if (request.method === "DELETE") return json(response, 200, await api.delete(ownerId, itemId));
       throw new HttpError(405, "method_not_allowed");
+    }
+    const webhookRoute = versioned && /^\/webhooks(?:\/([^/]+)(?:\/(enable|disable|deliveries))?)?$/.exec(path);
+    if (webhookRoute) {
+      const [, id, action] = webhookRoute;
+      if (id === undefined) {
+        if (request.method === "POST") {
+          if (url.search) throw new HttpError(400, "invalid_input");
+          return json(response, 201, await webhooks.create(ownerId, await body(request, true)));
+        }
+        if (request.method === "GET") return json(response, 200, await webhooks.list(ownerId, queryOf(url, webhookListParameterNames)));
+        throw new HttpError(405, "method_not_allowed");
+      }
+      const webhookId = z.uuid().parse(id);
+      if (action === "deliveries" && request.method === "GET") {
+        return json(response, 200, await webhooks.deliveries(ownerId, webhookId, queryOf(url, deliveryParameterNames)));
+      }
+      if (url.search) throw new HttpError(400, "invalid_input");
+      if ((action === "enable" || action === "disable") && request.method === "POST") {
+        z.strictObject({}).parse(await body(request));
+        return json(response, 200, await webhooks.change(ownerId, webhookId, action));
+      }
+      if (action === undefined && request.method === "GET") return json(response, 200, await webhooks.get(ownerId, webhookId));
+      if (action === undefined && request.method === "DELETE") return json(response, 200, await webhooks.change(ownerId, webhookId, "delete"));
+      throw new HttpError(405, "method_not_allowed");
+    }
+    const usageRoute = versioned && /^\/usage(?:\/(members|conversations|records)|\/budgets\/([^/]+))?$/.exec(path);
+    if (usageRoute) {
+      const [, listing, budgetMember] = usageRoute;
+      const view = (listing ?? "summary") as keyof typeof usageParameterNames;
+      if (budgetMember !== undefined) {
+        if (url.search) throw new HttpError(400, "invalid_input");
+        const memberId = z.uuid().parse(budgetMember);
+        if (request.method === "GET") return json(response, 200, await usage.budget(ownerId, memberId));
+        if (request.method === "PUT") return json(response, 200, await usage.setBudget(ownerId, memberId, await body(request)));
+        if (request.method === "DELETE") return json(response, 200, await usage.clearBudget(ownerId, memberId));
+        throw new HttpError(405, "method_not_allowed");
+      }
+      if (request.method !== "GET") throw new HttpError(405, "method_not_allowed");
+      return json(response, 200, await usage[view](ownerId, queryOf(url, usageParameterNames[view])));
     }
     const grantRoute = versioned && /^\/members\/([^/]+)\/grants(?:\/([^/]+)\/(revoke))?$/.exec(path);
     if (grantRoute) {
@@ -272,31 +344,59 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       }
       throw new HttpError(405, "method_not_allowed");
     }
+    const instructionsRoute = versioned && /^\/members\/([^/]+)\/instructions$/.exec(path);
+    if (instructionsRoute) {
+      if (url.search) throw new HttpError(400, "invalid_input");
+      if (request.method === "GET") return json(response, 200, await readInstructions(store.pool, ownerId, instructionsRoute[1]));
+      throw new HttpError(405, "method_not_allowed");
+    }
+    const handoffRoute = versioned && /^\/conversations\/([^/]+)\/(handoffs|handoff)$/.exec(path);
+    if (handoffRoute) {
+      if (url.search) throw new HttpError(400, "invalid_input");
+      const [, conversationId, resource] = handoffRoute;
+      if (resource === "handoffs" && request.method === "POST") {
+        return json(response, 201, await handoffs.create(ownerId, z.uuid().parse(conversationId), await body(request)));
+      }
+      if (resource === "handoff" && request.method === "GET") return json(response, 200, await handoffs.read(ownerId, z.uuid().parse(conversationId)));
+      throw new HttpError(405, "method_not_allowed");
+    }
+    const detailRoute = versioned && /^\/conversations\/([^/]+)\/requests\/([^/]+)\/approvals\/([^/]+)(?<decision>\/decision)?$/.exec(path);
+    if (detailRoute) {
+      if (request.method !== "GET") throw new HttpError(405, "method_not_allowed");
+      const query = searchParams(url);
+      const key = approvalDetailIdentitySchema.parse({
+        ...routes.approvalDetail.query.extend({ version: z.string().regex(/^-?\d+$/).pipe(z.coerce.number<string>().int()) }).parse(query),
+        conversationId: detailRoute[1], requestId: detailRoute[2], approvalId: detailRoute[3],
+      });
+      if (detailRoute.groups?.decision) return json(response, 200, await readDecisionRecord(store.pool, ownerId, key));
+      return json(response, 200, await readOwnerApprovalDetail(store.pool, ownerId, key));
+    }
     const requestRoute = versioned && /^\/conversations\/([^/]+)\/requests(?:\/([^/]+)(\/cancel)?)?$/.exec(path);
     if (requestRoute) {
       const conversationId = z.uuid().parse(requestRoute[1]);
       if (!requestRoute[2] && request.method === "POST") {
-        const prompt = submitSchema.omit({ ownerId: true, conversationId: true }).parse(await body(request));
+        const prompt = routes.submit.body.parse(await body(request));
         return json(response, 202, await integration.submit({ ownerId, conversationId, ...prompt }));
       }
       if (requestRoute[2]) {
         const requestId = z.uuid().parse(requestRoute[2]);
         if (!requestRoute[3] && request.method === "GET") return json(response, 200, await integration.status({ ownerId, conversationId, requestId }));
         if (requestRoute[3] && request.method === "POST") {
-          z.strictObject({}).parse(await body(request));
+          routes.cancel.body.parse(await body(request));
           return json(response, 202, await integration.cancel({ ownerId, conversationId, requestId }));
         }
       }
       throw new HttpError(405, "method_not_allowed");
     }
     if (path === "/members" && request.method === "POST") {
-      const input = spawnRequestSchema.omit({ ownerId: true }).parse(await body(request));
+      // routes.createMember.body and the optional `capabilities`, which the portable client does not carry yet.
+      const input = spawnRequestSchema.omit({ ownerId: true }).parse(await body(request, true));
       const published = await store.pool.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2", [input.engine, input.profile]);
       if (!published.rowCount) throw new HttpError(409, "unknown_profile");
       return json(response, 201, await store.spawn({ ownerId, ...input }));
     }
     if (path === "/conversations" && request.method === "POST") {
-      const input = openSchema.omit({ ownerId: true }).parse(await body(request));
+      const input = routes.openConversation.body.parse(await body(request));
       await members.open({ ownerId, ...input });
       return json(response, 201, await readSnapshot(store.pool, ownerId, input.conversationId));
     }
@@ -313,7 +413,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     const input = await body(request);
     switch (parts[2]) {
       case "inputs": {
-        const prompt = submitSchema.omit({ ownerId: true, conversationId: true }).parse(input);
+        const prompt = routes.submit.body.parse(input);
         return json(response, 202, await members.accept({ ownerId, conversationId, ...prompt }));
       }
       case "cancel": {
@@ -329,7 +429,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
           [conversationId, key.approvalId, ownerId]);
         if (!call) throw new HttpError(409, "unknown_approval");
         const decision = await members.decide({ ownerId, conversationId, ...key, nativeCallId: call.native_call_id, argumentDigest: call.argument_digest });
-        return json(response, 200, { approvalId: key.approvalId, decision });
+        return json(response, 200, { approvalId: key.approvalId, decision, ...(key.decisionId && { decisionId: key.decisionId }) });
       }
       case "events": {
         const run = RunAgentInputSchema.parse(input);
@@ -338,7 +438,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
         const snapshot = await readSnapshot(store.pool, ownerId, conversationId);
         const after = url.searchParams.get("after");
         if (after !== null && after !== String(snapshot.cursor)) throw new HttpError(410, "CURSOR_EXPIRED");
-        return observe(store.pool, ownerId, snapshot, run.runId, response);
+        return observe(store.pool, ownerId, snapshot, run.runId, response, hubs);
       }
       default: throw new HttpError(404, "not_found");
     }
@@ -347,21 +447,25 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     void route(request, response).catch((error: unknown) => {
       if (response.destroyed || response.headersSent) return response.end();
       if (error instanceof HttpError) return json(response, error.status, { error: error.message });
+      if (error instanceof ReceiptContractError) return json(response, 500, { error: "retry_same_request" });
       if (error instanceof z.ZodError) return json(response, 400, { error: "invalid_input" });
       if (error instanceof CapabilityCeilingError) return json(response, 400, { error: error.message });
       if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : 409, { error: error.code });
       if (error instanceof WorkflowUpdateFailedError) return json(response, 409, { error: "update_rejected" });
       if (error instanceof AuditUnsettledError) return json(response, 503, { error: "audit_unsettled" }, { "Retry-After": "1" });
+      // No reason: which names resolve to private addresses is not the caller's to learn.
+      if (error instanceof TargetRefusedError) return json(response, 400, { error: "target_refused" });
       return json(response, 503, { error: "retry_same_request" });
     });
   });
-  // Background loops: the cancellation outbox and the routine dispatcher. Neither keeps the
-  // process alive; each skips a beat while its previous pass still runs.
+  // Background loops: the cancellation outbox, the routine dispatcher and the webhook outbox. None
+  // keeps the process alive; each skips a beat while its previous pass still runs.
   const timers: ReturnType<typeof setInterval>[] = [];
   server.once("listening", () => {
     const flush = () => { void integration.flushCancellations().catch(() => {}); };
     const dispatch = () => { void dispatcher.tick().catch(() => {}); };
-    for (const loop of [flush, dispatch]) {
+    const deliver = () => { void deliveries.tick().catch(() => {}); };
+    for (const loop of [flush, dispatch, deliver]) {
       const timer = setInterval(loop, 1000);
       timer.unref();
       timers.push(timer);
@@ -371,10 +475,12 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
   let stopping = Promise.resolve();
   server.once("close", () => {
     for (const timer of timers) clearInterval(timer);
-    stopping = dispatcher.stop();
+    hubs?.close();
+    stopping = Promise.all([dispatcher.stop(), deliveries.stop()]).then(() => {});
   });
-  // Settles once the close has ended the dispatcher's pass; await it before closing the pool.
-  return Object.assign(server, { stopped: () => stopping });
+  // Settles once the close has ended both dispatchers' passes; await it before closing the pool.
+  // `observerStats` reports the observer hubs, or undefined when every observer polls on its own.
+  return Object.assign(server, { stopped: () => stopping, observerStats: () => hubs?.stats() });
 }
 
 const configSchema = z.strictObject({ tokenHashes: credentials, port: z.number().int().min(0).max(65535) });
@@ -383,12 +489,15 @@ async function main() {
   if (!file || !database) throw new Error("Set BIRBCREW_DATABASE_URL and supply the gateway configuration file");
   const config = configSchema.parse(JSON.parse(await readFile(file, "utf8")));
   const temporal = temporalSettings(process.env);
+  const fanout = observerFanout(process.env);
   const pool = new Pool({ connectionString: database });
   const connection = await Connection.connect(await temporalConnectionOptions(temporal));
   try {
     const store = new MemberStore(pool);
     await store.migrate();
-    const server = createGateway(store, new MemberClient(store, new Client({ connection, namespace: temporal.namespace })), config.tokenHashes);
+    const webhookTargets = { allowInsecure: process.env.BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS === "1" };
+    const server = createGateway(store, new MemberClient(store, new Client({ connection, namespace: temporal.namespace })), config.tokenHashes,
+      { webhookTargets, fanout });
     server.listen(config.port, "127.0.0.1");
     await once(server, "listening");
     const address = server.address();
@@ -406,7 +515,7 @@ async function main() {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((error: unknown) => {
-    console.error(error instanceof TemporalSettingsError ? error.message : "Gateway could not start");
+    console.error(error instanceof TemporalSettingsError || error instanceof ObserverSettingsError ? error.message : "Gateway could not start");
     process.exitCode = 1;
   });
 }

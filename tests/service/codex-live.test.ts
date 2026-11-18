@@ -46,12 +46,15 @@ for (const choice of ["approve","deny","inspect"] as const) {
     const observer = host.attach(conversationId);
     await until(async () => observer.events.some(e => e.type === "STATE_SNAPSHOT") || undefined);
     const text = ordinary ? "choose" : "record " + requestId;
+    const submittedAt = Date.now();
     await host.post(path + "/inputs",{requestId,text});
     const card = await until(async () => {
       const {state:s} = await state(host,path);
       return (ordinary ? s.pendingQuestions : s.pendingApprovals)?.[0];
     });
-    assert.ok(Date.parse(card.expiresAt) > Date.now());
+    const deadline = Date.parse(card.expiresAt);
+    assert.ok(deadline >= submittedAt + 120_000, "native proposals offer two minutes for review");
+    assert.ok(deadline <= Date.now() + 120_000, "native proposals stay within the live approval window");
     assert.deepEqual(await countWrites(host,conversationId),[]);
     await host.restart();
     const readers = [host.attach(conversationId),host.attach(conversationId)];
@@ -92,12 +95,13 @@ for (const action of ["kill","cancel","expiry"] as const) {
     await until(async () => (await host.db.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine='codex' AND name=$1",[profile])).rowCount || undefined);
     const {requestId,conversationId,memberId,path} = await open(host,profile);
     const first = host.attach(conversationId);
-    await host.post(path + "/inputs",{requestId,text:"record " + requestId});
+    await host.post(`/v1${path}/requests`,{requestId,text:"record " + requestId,
+      ...(action === "expiry" && {approvalDeadlineSeconds:60})});
     const card = await until(async () => (await state(host,path)).state.pendingApprovals[0]);
     const key = {memberId,requestId,invocationId:card.invocationId,approvalId:card.approvalId,version:1,choice:"approve"};
     if (action === "kill") {await stop(); startWorker(t,profile,"codex",true);}
     if (action === "cancel") await host.post(path+"/cancel",{requestId});
-    // The expiry case leaves the call untouched until its published deadline.
+    // The expiry case leaves the call untouched until its shorter request deadline.
     await first.done;
     const late = host.attach(conversationId);
     await late.done;

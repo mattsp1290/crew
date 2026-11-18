@@ -14,7 +14,7 @@ import { commands } from "./member-commands.mts";
 import { run, services, until, type Engine, type Services } from "./member-services.mts";
 
 const matrix = {
-  pi: { native: ["pi/durable", "pi/protected", "pi/delegation"], service: ["child-launch"], archive: "^(?:@ag-ui/pi |Pi's )",
+  pi: { native: ["pi/durable", "pi/protected", "pi/delegation", "pi/confinement"], service: ["child-launch"], archive: "^(?:@ag-ui/pi |Pi's )",
     observers: "^pi |^two HttpAgents .*child|^two HttpAgents .*subagents|^terminated Pi child" },
   claude: { native: ["claude/durable", "claude/protected"], service: [], archive: "^@ag-ui/claude", observers: "^claude " },
   codex: { native: ["codex/qualification", "codex/native"], service: ["codex-subscription", "codex-mcp", "codex-registration", "codex-chat", "codex-calls", "codex-live", "codex-live-crashes"],
@@ -125,17 +125,17 @@ async function verify(s: Services, engines: Engine[], pass: (name: string) => vo
   await temporal();
 }
 const { values } = parseArgs({ options: { engine: { type: "string" }, mode: { type: "string", default: "fixture" },
-  attestation: { type: "string" }, help: { type: "boolean" } }, strict: true });
+  approval: { type: "string" }, help: { type: "boolean" } }, strict: true });
 if (values.help) {
-  console.log("scripts/verify-members [--mode fixture] [--engine pi|claude|codex]\nscripts/verify-members --mode live --engine ENGINE --attestation FILE");
+  console.log("scripts/verify-members [--mode fixture] [--engine pi|claude|codex]\nscripts/verify-members --mode live --engine ENGINE --approval FILE");
 } else {
-  assert.equal(process.version, "v22.23.3", "Activate pinned Node 22.23.3");
+  assert.equal(process.version, "v24.22.3", "Activate pinned Node 24.22.3");
   const engine = z.enum(["pi", "claude", "codex"]).optional().parse(values.engine);
   if (values.mode === "live") {
-    if (!engine || !values.attestation) throw new Error("Supply an engine and explicit account attestation");
-    await execute(process.execPath, ["tests/proof/live-members.ts", "--engine", engine, "--attestation", values.attestation], process.env);
+    if (!engine || !values.approval) throw new Error("Supply an engine and an explicit proof approval");
+    await execute(process.execPath, ["tests/proof/live-members.ts", "--engine", engine, "--approval", values.approval], process.env);
   } else {
-    if (values.mode !== "fixture" || values.attestation) throw new Error("Expected fixture mode with no account attestation");
+    if (values.mode !== "fixture" || values.approval) throw new Error("Expected fixture mode with no proof approval");
     const outputs = await evidenceOutputs();
     await run("scripts/build-native", []);
     const engines: Engine[] = engine ? [engine] : ["pi", "claude", "codex"];

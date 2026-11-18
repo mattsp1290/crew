@@ -27,7 +27,7 @@ if (process.argv[2] === "offline-replay") {
   }
   console.log(`Offline replay passed for ${manifest.length} captured generations; no network or activities.`);
 } else {
-  assert.equal(process.version,"v22.23.3");
+  assert.equal(process.version,"v24.22.3");
   const s = await services();
   try {
     const fixtures = await startRestartFixtures();

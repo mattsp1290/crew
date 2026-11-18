@@ -1,4 +1,5 @@
 import { appendFile } from "node:fs/promises";
+import { handoffAcknowledgement } from "../handoff.mts";
 import { streamGate, waitForGate } from "../stream-gate.mts";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
@@ -20,7 +21,7 @@ function send(response: ServerResponse, type: string, value: Record<string, unkn
 
 export async function startProvider(onFailure = () => {},
   onRequest?: (prompt:string, instructions:string, messages:string, continuation:boolean) => void,
-  dynamicNamespace?: string) {
+  dynamicNamespace?: string, usage?: (request: number) => Record<string, unknown>) {
   const toolSurfaces: z.infer<typeof providerInput>["tools"][] = [];
   const requests: InputItem[][] = [];
   let cancelled = 0;
@@ -101,6 +102,7 @@ export async function startProvider(onFailure = () => {},
       } else {
         let text: string;
         if (output) text = "settled " + JSON.stringify(output.output);
+        else if (handoffAcknowledgement(prompt)) text = handoffAcknowledgement(prompt)!;
         else if (prompt?.startsWith("remember ")) text = "stored " + memory;
         else if (prompt === "recall") text = "recalled " + (memory ?? "none");
         else if (prompt === "wait") text = "waiting";
@@ -109,7 +111,8 @@ export async function startProvider(onFailure = () => {},
           role:"assistant", phase:prompt === "wait" ? "commentary" : "final_answer", content:[{type:"output_text", text}] } });
         if (prompt === "wait") return;
       }
-      send(response, "response.completed", { response: { id, usage: { input_tokens:0, output_tokens:0, total_tokens:0 } } });
+      send(response, "response.completed", { response: { id,
+        usage: usage?.(requests.length) ?? { input_tokens:0, output_tokens:0, total_tokens:0 } } });
       response.end();
     } catch {
       if (response.headersSent) response.destroy();

@@ -16,37 +16,46 @@ provider account.
 ## Build the image
 
 `packaging/service.Dockerfile` has no default base image. Pass a digest-pinned
-Node 22.23.3 Debian bookworm image; the build stops for a tag without a digest,
+Node 24.22.3 Debian bookworm image; the build stops for a tag without a digest,
 another Node version or another Debian release.
 
 ```sh
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f packaging/service.Dockerfile \
-  --build-arg NODE_IMAGE=node:22.23.3-bookworm-slim@sha256:3ed98443660ff48413b5af19ecefce3b9d50845a901a43420d47cc63a9fddbe9 \
+  --build-arg NODE_IMAGE=node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 \
   -t REGISTRY/crew-service:COMMIT --push .
 ```
 
-The digest above is the `node:22.23.3-bookworm-slim` index resolved on
-2026-11-12. Use BuildKit: the build context is limited by
+The digest above is the `node:24.22.3-bookworm-slim` index resolved on
+2026-11-14. Use BuildKit: the build context is limited by
 `packaging/service.Dockerfile.dockerignore` to the lockfiles, vendored packages,
-`scripts/build-native`, `native/member-launch.c` and `src/service`. Each platform
-runs `npm ci --omit=dev` and compiles the native launcher against the same
-bookworm glibc into `/app/.proof/bin/member-launch`, the path the source
-resolves. The image runs as `10001:10001` under `tini` and contains no
+the shared client's build inputs, `scripts/build-native`, `native/member-launch.c`
+and `src/service`. Each platform installs the locked development dependencies,
+compiles the shared client, then runs `npm prune --omit=dev`. The runtime image
+includes the client's compiled files and license at the local dependency's link
+target. Pi confinement grants read access to only that client's compiled `dist`
+directory and package manifest, so npm's local dependency link works without
+exposing the client source or granting writes to package files.
+The runtime image omits TypeScript and the client's source files. The builder compiles
+the native launcher against the same bookworm glibc into
+`/app/.proof/bin/member-launch`, the path the source resolves.
+The image runs as `10001:10001` under `tini` and contains no
 credentials. The `Service image` workflow rebuilds it for amd64 on relevant pull
-requests and runs it read-only with the flags below. **Verified:** the command above without `--push` built both
+requests and runs it read-only with the flags below. **Verified** on the previous Node 22.23.3 base: the command above without `--push` built both
 platforms, arm64 natively and amd64 under QEMU. The amd64 image completed the Pi
-fixture path below under emulation; Codex was exercised on arm64 only.
+fixture path below under emulation; Codex was exercised on arm64 only. On the
+Node 24.22.3 base only that workflow's amd64 build and smoke run are verified.
 
 ## Processes
 
-Both commands run from `/app`. Every process applies the `birbcrew_ts`
-migrations at startup (see [Database role](#database-role)).
+Both commands run from `/app` and apply the `birbcrew_ts` migrations at startup
+(see [Database role](#database-role)). The private
+[delegation-control CLI](delegation-control.md) uses an already migrated database.
 
 | Process | Command | Notes |
 | --- | --- | --- |
-| Gateway | `node src/service/gateway.ts /etc/crew/gateway.json` | JSON `{ "port": 8080, "tokenHashes": { "<sha256 hex>": "<owner id>" } }` as in the [gateway guide](member-gateway.md). Listens on `127.0.0.1:<port>` and prints `{"url": ...}`. Also runs the [scheduled-routine](scheduled-routines.md) dispatcher. |
-| Worker | `node src/service/cli.ts worker src/service/providers.ts` | Registers the profiles enabled by the attestation variables below. |
+| Gateway | `node src/service/gateway.ts /etc/crew/gateway.json` | JSON `{ "port": 8080, "tokenHashes": { "<sha256 hex>": "<owner id>" } }` as in the [gateway guide](member-gateway.md). Listens on `127.0.0.1:<port>` and prints `{"url": ...}`. Also runs the [scheduled-routine](scheduled-routines.md) and [outbound webhook](webhooks.md) dispatchers. |
+| Worker | `node src/service/cli.ts worker src/service/providers.ts` | Registers the profiles named by `BIRBCREW_LIVE_PROFILES`. Stops at startup without it. |
 
 Every gateway fires scheduled routines from a PostgreSQL leased queue, beside its
 cancellation outbox; there is no separate scheduler process and no Temporal
@@ -60,6 +69,26 @@ one replica, a restart skips any window in those 5 minutes. A routine fires only
 while at least one gateway runs, so stopping every gateway pauses routines and their
 missed windows are skipped, not replayed. Routine firings use the gateway's clock;
 keep replicas' clocks synchronised.
+
+Gateways also send [outbound webhooks](webhooks.md): once an owner registers an
+endpoint, every gateway replica connects out to it. Give gateways egress to DNS (the
+servers in the container's `/etc/resolv.conf`, queried directly; the hosts file is
+not read) and to the HTTPS hosts and ports owners register, which may be any public
+address and port. Crew refuses private and loopback addresses by default, and
+always refuses the listed metadata addresses. The explicit
+[insecure-target setting](webhooks.md#network-safety)
+also permits HTTP and private or loopback destinations. An egress policy
+(a Kubernetes `NetworkPolicy` or a firewall) is the place to narrow
+it further, for example to an allow-list of receivers. Webhook requests ignore
+`HTTP_PROXY`, `HTTPS_PROXY` and `NODE_USE_ENV_PROXY`, so an installation whose only
+way out is a proxy cannot deliver them. Add a private certificate authority with
+`NODE_EXTRA_CA_CERTS`. Workers never send webhooks. An endpoint in the `slack` or
+`ntfy` [format](webhooks.md#formats) posts to that service's host, such as
+`hooks.slack.com` or an ntfy server, so an allow-list has to include it. Each
+endpoint's signing secret, and its URL, which for those formats is itself a
+credential, are stored as plain text in the application database, so protect
+database access and backups as
+[outbound webhooks](webhooks.md#the-secret-and-where-it-is-kept) explains.
 
 Run one container per process with the hardening below. `tini` is the image
 entrypoint and reaps orphaned SDK descendants, so do not add Docker's `--init`.
@@ -86,9 +115,13 @@ In Kubernetes pass the command as `args:`; setting `command:` replaces `tini`.
 | `BIRBCREW_TEMPORAL_TLS_SERVER_NAME` | both | unset | Name checked against the frontend certificate and sent as SNI. |
 | `BIRBCREW_STATE_DIR` | worker | `/var/lib/birbcrew/native` | Native state directory. Keep the image default. |
 | `HOME` | both | `/tmp` | Writable home for SDK caches. |
-| `BIRBCREW_WORKER_HEARTBEAT_FILE` | worker | unset | Absolute path the worker touches every 5 seconds from the start of its Temporal workers until shutdown begins. See [Health](#health). |
-| `BIRBCREW_PI_ATTESTATION`, `OPENCODE_GO_API_KEY` | worker | unset | Pi on OpenCode Go. See [Provider accounts](#provider-accounts). |
-| `BIRBCREW_CODEX_ATTESTATION`, `BIRBCREW_CODEX_AUTH_HOME` | worker | unset | Codex with a ChatGPT subscription. |
+| `BIRBCREW_WORKER_HEARTBEAT_FILE` | worker | unset | Absolute path touched every 5 seconds while Temporal workers run and a healthy delegation-control pass completed within 60 seconds. The first touch waits for a successful pass. See [Health](#health). |
+| `BIRBCREW_USAGE_PRICES_PATH` | worker, and a backend that runs `runTrustedRequest` | unset | Absolute path to the operator's JSON price table, USD per million tokens per model. Read once at worker start; a malformed file stops the worker. Unset, no cost is estimated. See [estimated cost](usage-metering.md#estimated-cost). |
+| `BIRBCREW_WEBHOOK_ALLOW_INSECURE_TARGETS` | gateway | unset | `1` lets webhooks use plain `http` and loopback or private addresses, including in deployed installations. This also permits public HTTP receivers and is not restricted to mesh peers. Any other value leaves it off. See [outbound webhooks](webhooks.md#network-safety). |
+| `BIRBCREW_OBSERVER_FANOUT` | gateway | `true` | `true` gives the observers of a conversation one shared PostgreSQL reader per gateway process; `false` restores one poll per observer every 75 ms. The stream is the same either way. Any other value stops the gateway at startup. See [the gateway guide](member-gateway.md). |
+| `BIRBCREW_LIVE_PROFILES` | worker | unset, required | JSON naming the live account of each engine this worker serves. See [Provider accounts](#provider-accounts). |
+| `OPENCODE_GO_API_KEY` | worker | unset | Required when `BIRBCREW_LIVE_PROFILES` has a `pi` entry. |
+| `BIRBCREW_CODEX_AUTH_HOME` | worker | unset | Codex sign-in directory for a `chatgpt-subscription` entry. |
 
 Temporal TLS is all or nothing: set all four TLS variables, or none for the
 previous plaintext connection. A partial set, a relative path or an unreadable
@@ -107,7 +140,7 @@ certificate, and no member workflow appeared in `default`. A gateway without
 TLS settings or with a wrong server name exited with status 1, as did a worker
 with a missing namespace. `npm run test:temporal:tls` repeats this in CI with a
 separate Node TLS terminator, which also refuses a handshake without a client
-certificate; it needs Docker, OpenSSL, Node 22.23.3 and the pinned Temporal CLI
+certificate; it needs Docker, OpenSSL, Node 24.22.3 and the pinned Temporal CLI
 1.10.0. **Unverified:** a real Temporal 1.32
 frontend with server-side mTLS, its authorizer or claim mapper, and certificate
 rotation.
@@ -123,8 +156,8 @@ the gateway, worker and CLI, and a plaintext connection was refused.
 | --- | --- | --- |
 | `/var/lib/birbcrew/native` | Persistent volume, worker only | Writable by uid 10001. The worker creates `.birbcrew-volume` identity files, at the root for Claude and under `codex/` for Codex. Those profiles are registered to that identity, so a replacement worker must mount the same volume. Pi context lives in PostgreSQL. |
 | `/tmp` | tmpfs | Writable, exec allowed, mode `1777`. |
+| `BIRBCREW_CODEX_AUTH_HOME` | Codex sign-in, worker only | Read-only is enough. `auth.json` must be readable by uid 10001. The worker never writes this directory, so the Codex CLI that owns the login stays its only writer. |
 | `/etc/crew/...` | Read-only secrets | Gateway configuration and Temporal TLS files, readable by uid 10001. |
-| Attestation directory | Private writable volume | See below. Must not be under `/app`. |
 
 Keep the state directory at the same absolute path for the life of the
 installation. Codex records absolute session paths and the worker validates
@@ -143,7 +176,7 @@ to fail (**unverified** on a cluster).
 
 ## Database role
 
-Each gateway, worker and CLI process calls `MemberStore.migrate()` at startup
+Each gateway, worker and members CLI process calls `MemberStore.migrate()` at startup
 with the `BIRBCREW_DATABASE_URL` role. That role runs the `birbcrew_ts`
 migrations, under an advisory lock, and owns the schema it creates. Give Crew
 its own database and role, separate from Temporal persistence.
@@ -185,7 +218,60 @@ without applying anything. Restart it once the other sessions are done (see
 From version 24 both run in one transaction, and 26 retries while holding 25's
 locks, so admissions and audited writes wait meanwhile; an open of the previous
 release still in flight makes it fail after the 60 s (see
-[member memory](memories.md#upgrade)).
+[member memory](memories.md#upgrade)). Migration 27 (conversation handoff) does the
+same for all four tables. It also raises the internal turn bound from 16 KiB to 64 KiB
+for a handoff's first request, which a previous-release worker refuses, and a
+previous-release gateway or worker ignores handoff seals, so stopping the previous
+release first is required for it; rolling back past it is unsupported (see
+[conversation handoff](handoffs.md#upgrade)). Migration 28 (approval expiry) does the
+same for `deferred_calls`, `request_admissions`, `routines`, `routine_firings` and
+`audit_events`, retrying while it holds 27's locks when both run in one transaction. A
+previous-release workflow worker never expires a card that has a deadline, while the
+database refuses a decision past it, so stopping the previous release first is required
+for it too; rolling back once a request with a deadline was accepted is unsupported (see
+[approval expiry](approval-expiry.md#upgrade-in-flight-workflows-and-recovery)).
+Migration 29 (member instructions) does the same for `members` and `audit_events`.
+After 27 in one transaction it already holds both; from version 27 it retries for
+`members` while holding 28's locks, and a spawn of the previous release still in flight
+makes it fail after the 60 s (see [member instructions](member-instructions.md#upgrade)).
+Migration 30 (audit filters) builds three indexes under `SHARE` on `audit_events`,
+taken the same way; after 27, 28 or 29 in one transaction it already holds that
+table. Audited writes wait for a time that grows with the audit table, and from
+version 29 a long autovacuum of that table can also make it fail after the 60 s
+(see [audit filters](audit-filters.md#upgrade-and-recovery)).
+Migration 31 (usage metering) takes `members` and `native_launches` in
+`SHARE ROW EXCLUSIVE` and `audit_events` and `routine_firings` in `ACCESS EXCLUSIVE`, with
+`NOWAIT` and retries like 25 to 30; after 27 to 30 in one transaction it retries while
+holding their locks, and a running native turn never delays it (see
+[usage metering](usage-metering.md#upgrade-and-recovery)). Migration 32 (outbound
+webhooks) takes `audit_events` alone in `ACCESS EXCLUSIVE` the same way; after 31 in
+one transaction it already holds it (see [outbound webhooks](webhooks.md#upgrade)).
+Migration 33 (instruction packs) takes `members` in `SHARE ROW EXCLUSIVE` and
+`audit_events` in `ACCESS EXCLUSIVE` the same way; from version 31 it retries for
+`members` while holding 32's lock, and a spawn of the previous release still in flight
+makes it fail after the 60 s (see [instruction packs](instruction-packs.md#upgrade)).
+Migration 34 (notification formats) takes `webhook_endpoints` alone in `ACCESS EXCLUSIVE`
+without retrying: only the webhook routes, the webhook dispatcher and a restore use that
+table (see [outbound webhooks](webhooks.md#upgrade)). Migration 35 (estimated cost) takes
+`usage_ledger` in `ACCESS EXCLUSIVE` and `trusted_requests` in `SHARE ROW EXCLUSIVE` with
+`NOWAIT` and retries like 25 to 33, and a running trusted turn's lease never delays it (see
+[usage metering](usage-metering.md#upgrade-and-recovery)).
+Migration 38 installs delegation-control tables and write guards using normal
+PostgreSQL DDL locks in the migration transaction. It has no migration-specific
+`NOWAIT` retry loop. Stop all previous-release processes before applying it. For
+the exact retained-state rollback floor and required global disable, drain, and
+process shutdown sequence, follow
+[delegation control](delegation-control.md#upgrade-or-roll-back-with-retained-state).
+From the release that adds migration 31 on, every gateway, worker and CLI process
+refuses to start with
+`Migration N would apply after migration M` when it would apply a migration numbered 27
+or above below one the database already has, because applying the older one would
+silently narrow constraints the newer one widened.
+Nothing was applied, and the previous release still starts: keep running it. The usual
+cause is a release that numbered a migration below one an earlier release already
+shipped; report it and deploy a release that renumbers that migration. Do not delete the
+`schema_versions` row. Only a database that ran an unreleased or branch build needs
+restoring from a backup taken before that build, or rebuilding.
 
 A Kubernetes Deployment's default `RollingUpdate` strategy starts new pods while
 old ones still run, which is exactly what this forbids. Scale every Deployment
@@ -200,31 +286,63 @@ is enough on its own only when one Deployment runs every Crew process
 Claude is not covered here. The worker loads profiles from
 `src/service/providers.ts` as described in [member profiles](member-profiles.md).
 
-Attestation files are checked on every turn. Each must be a regular file of at
-most 16 KiB, owned by the worker's uid (10001), with no group or other
-permission bits, outside `/app`, and with `checked_at` from the past 12 hours.
-Kubernetes Secret volumes present files owned by root, so copy the attestation
-into a private volume owned by 10001 and renew it before it expires
-(**unverified** on a cluster).
+Set `BIRBCREW_LIVE_PROFILES` to one JSON object with an entry for each engine
+this worker serves. The worker stops at startup when the variable is unset or
+invalid, or when a configured engine's API key is missing. The Codex sign-in is
+read on every turn instead, and a turn fails without a current sign-in for the
+configured account. The setting itself needs no file or volume and does not
+expire. The value names accounts, so supply it from a Secret.
 
-- **Pi (OpenCode Go):** set `BIRBCREW_PI_ATTESTATION` to the attestation path
-  and `OPENCODE_GO_API_KEY` to the eligible key. Profiles:
-  `pi-go-glm-5.3-flash.v1`, `.approval.v1`, `.next-step.v1` and `.crew.v1`.
-- **Codex (ChatGPT subscription):** set `BIRBCREW_CODEX_ATTESTATION` with
-  provider `chatgpt-subscription` and `BIRBCREW_CODEX_AUTH_HOME` to an absolute
-  directory holding a Codex CLI ChatGPT login. Each turn starts the bundled
-  `codex app-server` with that directory as `CODEX_HOME` and reads the current
-  access token without refreshing it. Without `BIRBCREW_CODEX_AUTH_HOME` the
+```json
+{"pi": {"provider": "opencode-go", "account": "ACCOUNT LABEL"},
+ "codex": {"provider": "chatgpt-subscription", "account_id": "CHATGPT_ACCOUNT_ID", "model": "gpt-5.4"}}
+```
+
+- **Pi (OpenCode Go):** add the `pi` entry and set `OPENCODE_GO_API_KEY` to the
+  key. Profiles: `pi-go-glm-5.3-flash.v1`, `.approval.v1`, `.next-step.v1` and
+  `.crew.v1`.
+- **Codex (ChatGPT subscription):** add the `codex` entry with provider
+  `chatgpt-subscription` and set `BIRBCREW_CODEX_AUTH_HOME` to an absolute
+  directory holding a Codex CLI ChatGPT login in `auth.json`. Each turn copies
+  that file without its refresh token into a private directory under `/tmp`,
+  starts the bundled `codex app-server` there and reads the current access token.
+  The copy is removed after the read. A worker killed during the read leaves its
+  copy behind, and a later read removes copies older than five minutes. Refresh
+  requests from that app-server go to a closed loopback port, so the worker never
+  rotates the login. It never writes the sign-in directory either, which can be
+  mounted read-only. The turn stops
+  unless the token is current and belongs to `account_id`. Without `BIRBCREW_CODEX_AUTH_HOME` the
   worker falls back to `CODEX_HOME`, then `$HOME/.codex`, which is the tmpfs
   `/tmp/.codex` in this image, so set it explicitly. Keep the login current with the Codex
   CLI against the same directory. How that refresh runs in the cluster is
   **unverified**.
 
+A failed member turn writes one JSON line per cause to the worker's stderr, each
+with `"level":"warn"`, `conversationId` and `requestId`. A Codex sign-in problem
+gives `codex_signin_unavailable`. Its `reason` is one of `login-file`, `scratch`,
+`start`, `exited`, `timeout`, `protocol`, `signed-out`, `token`, `expired` or
+`account`. An `expired` line carries `expiredAt`. A `codex app-server` that
+stopped adds `exitCode` or `signal` and the end of its stderr. The turn runner
+then logs `native_turn_failed` and the supervisor `native_turn_unconfirmed`, with
+the error class and message. A runner that died without a reply is named with
+its exit code or signal. `codex_signin_copy_left` means a sign-in copy could not
+be removed. Token-shaped text in these lines is replaced with `[redacted]`. The
+message a member sees does not carry the cause.
+
+Releases before this setting read dated attestation files through
+`BIRBCREW_PI_ATTESTATION` and `BIRBCREW_CODEX_ATTESTATION`. Those variables are
+no longer read. To upgrade, set `account` to the file's `account_path`, copy
+`account_id` and `model`, and remove the variables, the files and their volume.
+A different `account` or `account_id` stops the worker with `Profile registered
+for another account`. [Member profiles](member-profiles.md#what-replaced-provider-attestations)
+lists what each field became.
+
 ## Kernel
 
-Codex members run through the native launcher, which requires Linux Landlock
-ABI 4 or newer and exits with status 126 otherwise (`native/member-launch.c`).
-Claude needs ABI 3. Pi does not use the launcher. Landlock ABI 4 shipped in
+Every member engine runs through the native launcher (`native/member-launch.c`).
+Codex needs Linux Landlock ABI 4 or newer, and Claude and Pi need ABI 3; with
+less, the launcher exits with status 126 and the turn fails, with no unconfined
+fallback. See [native confinement](verification.md#native-confinement). Landlock ABI 4 shipped in
 Linux 6.7; the node must also list `landlock` in `/sys/kernel/security/lsm`, and
 the container seccomp profile must allow the `landlock_*` syscalls.
 
@@ -288,15 +406,18 @@ livenessProbe:
 
 Set `BIRBCREW_WORKER_HEARTBEAT_FILE` to an absolute path, for example
 `/tmp/crew-worker.heartbeat`. The worker refuses to start if the path is
-relative or its directory is not writable. It touches the file when it starts
-its Temporal workers, then every 5 seconds until shutdown begins. A touch
-creates the file if needed and never truncates it. If a touch fails, the worker
+relative or its directory is not writable. It touches the file every 5 seconds
+while all Temporal workers report `RUNNING` and a healthy delegation-control pass
+completed within the last 60 seconds, until shutdown begins. The first touch
+waits for a successful pass. A touch creates the file if needed and never
+truncates it. If a touch fails, the worker
 logs `Cannot update BIRBCREW_WORKER_HEARTBEAT_FILE` once and keeps running.
 
 A recent modification time proves that:
 
 - the worker's main event loop is running;
 - the worker started its Temporal workers;
+- delegation-control reconciliation completed successfully within the last 60 seconds;
 - shutdown has not begun.
 
 It does not prove that the workers can reach Temporal or are polling. The SDK
@@ -305,8 +426,21 @@ The file also does not detect an activity or the SDK supervisor child that
 hangs without blocking the event loop. A supervisor that exits does stop the
 worker.
 
-Startup runs migrations, connects to Temporal and bundles workflow code before
-the first touch, so give it a startup probe:
+The worker logs `delegation_control_pending` when retirement settlement remains
+pending or a workflow wake is unavailable. It logs `delegation_control_failed`
+with `source` set to `reconciliation` when the pass fails, or to `pool` when an
+idle controller pool connection fails. Either failure, or an unavailable wake,
+suppresses heartbeat touches until a healthy pass. Pending native teardown
+alone does not suppress them. Historical parent discovery also runs independently of child
+retirement. Missing or unknown parent histories keep drain completion blocked
+without failing worker health. Database failures and unavailable parent-history
+reads fail the pass. The controller uses its own pool with connection and query
+timeouts, leaving native execution settings unchanged. Use the private
+[delegation drain](delegation-control.md#observe-the-drain) to confirm
+child closure, parent delivery, and native stops.
+
+Startup runs migrations, connects to Temporal, bundles workflow code, and
+completes a healthy control pass before the first touch. Give it a startup probe:
 
 ```yaml
 startupProbe:
@@ -319,6 +453,13 @@ livenessProbe:
   exec:
     command: ["sh", "-c", "test $(( $(date +%s) - $(stat -c %Y /tmp/crew-worker.heartbeat) )) -lt 30"]
 ```
+
+A failed control pass stops heartbeat touches at once, so this liveness probe
+restarts the worker about a minute into a PostgreSQL outage, or into a Temporal
+outage that reaches unobserved delegation work. A restart repairs neither
+dependency and interrupts native turns. Set `failureThreshold` and
+`periodSeconds` to tolerate the outages you expect, or alert on the heartbeat
+instead of restarting on it.
 
 The probe checks only the file's age. A file left on the same volume by a
 previous container passes it until that file is 30 seconds old. In Kubernetes,
@@ -340,8 +481,12 @@ development server, not in the hardened image:
 - The worker probe passed while the worker ran, failed after 35 seconds of
   `SIGSTOP` and passed again 6 seconds after `SIGCONT`. Content already in the
   file was kept.
-- With the Temporal server stopped for 60 seconds, the worker kept running and
-  its heartbeat stayed fresh, so the probe kept passing.
+- Before delegation control, with the Temporal server stopped for 60 seconds,
+  the worker kept running and its heartbeat stayed fresh. This no longer holds
+  in general. A PostgreSQL outage fails every control pass. A Temporal outage
+  fails a pass that reaches a retired child awaiting a wake or a committed
+  parent without an observation, which is common after an upgrade with earlier
+  delegations and after a restore.
 - `npm run test:temporal:tls` runs the gateway probe command against a real
   gateway and checks that the worker's heartbeat advances.
 

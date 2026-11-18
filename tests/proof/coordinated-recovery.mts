@@ -16,10 +16,10 @@ import {answerLive} from '../../src/service/codex-calls.ts';
 import {InstallationRecovery,readRecoveryManifest,type RecoveryPins} from '../../src/service/recovery.ts';
 import {FileRecoveryFence} from '../../src/service/recovery-fence.ts';
 import {commands,pendingSchema,decision} from './member-commands.mts';
-import {services,run,until,type Services,type Engine} from './member-services.mts';
+import {services,run,until,type Services,type ServiceHandle,type Engine} from './member-services.mts';
 import {prepareRecoveryNativeRuntime} from './recovery-native-runtime.mts';
 
-assert.equal(process.version,'v22.23.3');
+assert.equal(process.version,'v24.22.3');
 const postgresImage='postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94';
 async function pg(tool:'pg_dump'|'pg_restore',url:string,input?:Buffer) {
  const parsed=new URL(url);
@@ -33,7 +33,7 @@ async function pg(tool:'pg_dump'|'pg_restore',url:string,input?:Buffer) {
  });
 }
 const source=await services();
-let target:Services|undefined;
+let target:ServiceHandle|undefined;
 let runtime:Awaited<ReturnType<typeof prepareRecoveryNativeRuntime>>|undefined;
 let sourcePool:Pool|undefined,targetPool:Pool|undefined,sourceConnection:Connection|undefined;
 let stopSourceWorker:(()=>Promise<void>)|undefined,stopSourceTemporal:(()=>Promise<void>)|undefined;

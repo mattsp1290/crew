@@ -6,31 +6,48 @@ store, native SDKs, or Temporal workflows. Start the normal gateway described in
 one owner. All routes below require that bearer token. Never send proxy credentials,
 trusted scopes, tool registries, or engine configuration in a turn request.
 
+The portable [TypeScript client](../packages/client/README.md) provides one-attempt
+commands and explicit receipt reconciliation. Its [generated OpenAPI 3.1 document](../packages/client/openapi.json)
+covers the core integration routes and lists excluded extensions in `x-excluded-routes`.
+It is not a complete specification of every `/v1` route. Run `npm run openapi` to
+regenerate it and `npm run check:openapi` to reject a stale document.
+
 ## Discovery and routes
 
 `GET /v1/capabilities` returns `apiVersion: "1"`, request and cancellation contract
 identifiers, proxy protocol versions, conversation/generation limits, trusted-context
 transport availability, observation limits, receipt retention semantics, the
-request initiator kinds (`initiatorKinds`, today `["owner", "routine"]`), the audit
-contract (event types, page limits, formats) and the scheduled-routine limits and
-policies (`routines`), `standingGrants` (the standing
+request initiator kinds (`initiatorKinds`, today `["owner", "routine", "handoff"]`), the audit
+contract (event types, page limits, formats, filter names and actor kinds) and the
+scheduled-routine limits and policies (`routines`), `standingGrants` (the standing
 choices, the card and state fields, the grantable tool, policy version and
 initiator kinds, the grants route and the inactive-list limit), `memories` (the
 member memory route, limits, injection and deletion semantics per engine),
 `memberCapabilities` (the capability set version, the spawn and member fields, the
 kinds, and `toolExecution: "not-implemented"`: no engine runs a capability tool
-yet, see [member capabilities](member-capabilities.md)), health
-dependencies and listing limits. Additive
+yet, see [member capabilities](member-capabilities.md)), `handoffs`
+(the conversation handoff routes, delivery and transcript and prompt limits),
+`approvalExpiry` (the deadline field, its bounds and the fields that report an
+expiry), `memberInstructions` (the spawn field, the read route, limits, order and
+restore), `usage` (the ledger states, what each engine reports, the cost rules and the
+operator's price table setting, the lanes, the budget period and refusal codes),
+`webhooks` (the webhook route, kinds, formats and the default one, signature and the
+formats it covers, retry and restore semantics, and `insecureTargets`, which says an
+operator setting for HTTP and private-address targets exists, not whether it is on),
+`instructionPacks` (the pack
+route, the spawn field, limits, order, deletion and restore), health dependencies and
+listing limits. Additive
 response fields are compatible; consumers must reject an unsupported major version.
 Trusted context is currently an operator-configured local runtime, **not** a public
 HTTP context/tool injection endpoint. Capabilities are implementation contracts, not
 proof of the operator's provider access or configured profile availability.
+Proposed, not advertised: [frontend tools](frontend-tools.md) specifies a future `frontendTools` capability. It adds only optional fields and new routes (definition, batch and call routes) and leaves existing text submit and the observation route and stream unchanged.
 
 | Route | Purpose |
 | --- | --- |
-| `POST /v1/members` | Existing member creation contract (`requestId`, `engine`, `profile`), with an optional `capabilities` set within the profile's ceiling; a set above it is `400 capabilities_exceed_profile` |
+| `POST /v1/members` | Existing member creation contract (`requestId`, `engine`, `profile`), plus optional `instructions` and `instructionPacks`, and an optional `capabilities` set within the profile's ceiling; a set above it is `400 capabilities_exceed_profile` |
 | `POST /v1/conversations` | Open an owned conversation (`conversationId`, `memberId`) |
-| `POST /v1/conversations/{conversationId}/requests` | Submit `{ "requestId": "UUID", "text": "exact input" }` |
+| `POST /v1/conversations/{conversationId}/requests` | Submit `{ "requestId": "UUID", "text": "exact input" }`, optionally with `approvalDeadlineSeconds` |
 | `GET /v1/conversations/{conversationId}/requests/{requestId}` | Reconcile status and original committed result; never invokes inference |
 | `POST /v1/conversations/{conversationId}/requests/{requestId}/cancel` | Persist cancellation intent, body `{}` |
 | `GET /v1/conversations/{conversationId}` | Current public snapshot |
@@ -39,7 +56,7 @@ proof of the operator's provider access or configured profile availability.
 | `GET /v1/health` | Readiness of PostgreSQL and Temporal; `200` ready, `503` not ready |
 | `GET /v1/members` | The owner's members, keyset-paginated |
 | `GET /v1/conversations` | The owner's conversations with coarse phase, optional `memberId` filter, keyset-paginated |
-| `GET /v1/audit` | Owner-scoped, append-only audit events; keyset pages as JSON or CSV export |
+| `GET /v1/audit` | Owner-scoped, append-only audit events; keyset pages as JSON or CSV export, with optional filters |
 | `POST /v1/routines`, `GET /v1/routines` | Create (`requestId`, `memberId`, `schedule`, `prompt`, `approvalPolicy`) and list scheduled routines |
 | `GET`/`DELETE /v1/routines/{routineId}`, `POST .../enable`, `POST .../disable` | Read, tombstone, enable or disable one routine |
 | `GET /v1/routines/{routineId}/firings` | Firing history, newest first, with each firing's conversation and request |
@@ -47,6 +64,17 @@ proof of the operator's provider access or configured profile availability.
 | `POST /v1/members/{memberId}/grants/{grantId}/revoke` | Revoke a standing grant for later calls, body `{}`; repeating returns the same grant |
 | `POST /v1/memories`, `GET /v1/memories` | Create (`requestId`, `memberId`, `text`) and list member memory entries |
 | `GET`/`DELETE /v1/memories/{memoryId}` | Read one entry, or erase its text and keep a tombstone |
+| `POST /v1/conversations/{conversationId}/handoffs` | Hand the conversation to another member (`requestId`, `memberId`): seal it and open a target whose first request carries its transcript |
+| `GET /v1/conversations/{conversationId}/handoff` | The handoff that created or sealed this conversation; never its transcript |
+| `GET /v1/members/{memberId}/instructions` | The member's instructions, or `null`, and its instruction packs |
+| `POST /v1/instruction-packs`, `GET /v1/instruction-packs` | Create (`requestId`, `name`, optional `description`, `text`) and list the owner's instruction packs |
+| `GET`/`DELETE /v1/instruction-packs/{packId}` | Read one pack, or delete one no member has: erase its text and keep a tombstone |
+| `GET /v1/usage`, `GET /v1/usage/members`, `GET /v1/usage/conversations` | Token totals for the owner, per member (with its budget) and per conversation, over an optional time range |
+| `GET /v1/usage/records` | Usage ledger rows, one per native segment, newest first |
+| `GET`/`PUT`/`DELETE /v1/usage/budgets/{memberId}` | Read, set (`tokenLimit`) or clear a member's daily token budget |
+| `POST /v1/webhooks`, `GET /v1/webhooks` | Create (`requestId`, `url`, `kinds`, optional `format`; the response alone carries the signing secret) and list webhook endpoints |
+| `GET`/`DELETE /v1/webhooks/{webhookId}`, `POST .../enable`, `POST .../disable` | Read, tombstone, enable or disable one endpoint |
+| `GET /v1/webhooks/{webhookId}/deliveries` | Delivery rows, newest event first |
 
 Authentication is required even for capabilities and health. There is no
 unauthenticated route. A request without a valid token gets `401` before the gateway
@@ -111,9 +139,11 @@ through the pool still work. Allow the parameter in the pooler (PgBouncer's
 
 When the database is ready, `schemaVersion` is the highest migration number applied to
 it. It is `null` when the database is unavailable. Migration numbers are not
-contiguous, and a later release can add a migration numbered below one that an earlier
-release already applied, so a database can gain a migration without `schemaVersion`
-changing. `schemaVersion` therefore names the newest migration present, not the full
+contiguous. Up to migration 26, a later release could add a migration numbered below one
+that an earlier release had already applied (22 came after 26), so a database can gain a
+migration without `schemaVersion` changing. (From the release that adds migration 31
+on, every gateway, worker and CLI process refuses to start rather than apply a migration
+numbered 27 or above below the newest applied one.) `schemaVersion` therefore names the newest migration present, not the full
 applied set, and cannot by itself identify a release. The gateway applies its
 migrations at startup, so a value below the largest number in the deployed release's
 migration list (in `src/service/store.ts`) means the database is behind that release;
@@ -125,6 +155,10 @@ rows:
 ```json
 { "apiVersion": "1", "members": [{ "memberId": "UUID", "engine": "pi", "profile": "name" }], "next": "opaque" }
 ```
+
+A member spawned with instructions also carries `"instructions": { "bytes": 73, "digest": "sha256 hex" }`,
+never the text, and one spawned with instruction packs carries `"instructionPacks": ["UUID", ...]`, their
+IDs in order.
 
 ```json
 {
@@ -178,8 +212,11 @@ reported in the health body itself.
 The identity is **(authenticated owner, conversation UUID, request UUID)**.
 UUIDs are normalized to lowercase. Payload equivalence is exact UTF-8 text equality:
 whitespace and Unicode normalization are not changed. The 16 KiB text limit and valid
-Unicode rules of the existing input contract apply. Reusing an identity with changed
-text returns `409 conflict`; it never creates a second turn.
+Unicode rules of the existing input contract apply. Only a conversation handoff's
+reserved first request, which the server submits, may be longer (see below). Reusing an identity with changed
+text returns `409 conflict`; it never creates a second turn. The optional
+`approvalDeadlineSeconds` is part of the payload too: a reuse must repeat it exactly, or
+omit it if the first submission did.
 
 A consumer with owner-scoped event identities must durably record their mapping to
 **both** conversation and request UUID before sending. Use a deterministic UUID
@@ -209,7 +246,10 @@ owner, so the owner kind carries no ID. A request a scheduled routine submitted
 reports `{"kind": "routine", "id": "<routineId>"}`; only the routine's firing record
 can make an admission say so (see [scheduled routines](scheduled-routines.md)), and
 a request sent here under a claimed firing's conversation and request UUIDs with
-exactly the routine's prompt is that firing's request. No request body can set it. A later release that adds a kind lists it in
+exactly the routine's prompt is that firing's request. A conversation handoff's
+reserved first request reports `{"kind": "handoff", "id": "<handoffId>"}`; only the
+handoff's own record can make an admission say so, for that one request and exactly its
+transcript. No request body can set it. A later release that adds a kind lists it in
 `initiatorKinds`. The field is absent for a request admitted before admissions were
 durable (a workflow history older than bounded conversations) until a cancellation
 intent records its admission.
@@ -245,6 +285,13 @@ the cancellation fields, not an assumption that `completed` means a tool succeed
   **not** proof it can never appear; retry the same identity/payload.
 - `409`: explicit conflict, capacity limit, or rejected request. Inspect the error and
   reconcile that identity. Never silently generate a replacement UUID.
+  `409 usage_limit` means the member has used its daily token budget: nothing was
+  admitted, and the same request can be sent again once the window or the budget
+  allows it (see [usage metering](usage-metering.md)). `409 usage_limit_closed` is the
+  same refusal from Crew's second budget check, which only refuses when usage was
+  recorded, or the budget set or lowered, between the two checks. As after any refused
+  admission, that conversation is then closed to new turns; send the request again in a
+  new conversation.
 - `503 retry_same_request`, connection loss, timeout: the outcome may be ambiguous.
   GET the same identity, then retry the exact submission if needed. Do not infer a
   rejection from a lost acknowledgement. A validation/explicit rejected submission
@@ -322,6 +369,20 @@ without the old cursor for a fresh snapshot. Do not promise arbitrary historic t
 replay, including across rollover. Committed per-request results use the separate
 request lookup above, not the event cursor.
 
+The stream opens with `RUN_STARTED` carrying `protocolVersion: "1.0"`, the AG-UI
+version the gateway speaks, which the official client checks against its own.
+The stream ends when the conversation does, with an event that matches the final
+`state.phase`. `complete` (the conversation used its last turn) sends `RUN_FINISHED`
+with no `outcome`, which AG-UI reads as success. `cancelled` sends `RUN_FINISHED`
+with `outcome: {"type":"cancelled"}`, which the official client reports to
+`onRunFinishedEvent` as `outcome: "cancelled"`. `failed` sends `RUN_ERROR` with code
+`MEMBER_FAILED`.
+
+If the gateway cannot read the observation stream, it sends `RUN_ERROR` with code
+`OBSERVATION_FAILED` and closes that stream. This is an observation failure, not
+proof that the conversation or its active request failed. Reconnect for a fresh
+snapshot and reconcile the original request through its status route.
+
 ## Standing grants
 
 A work-item card may carry `standingChoices: ["allow_conversation", "allow_always"]`
@@ -333,12 +394,29 @@ the grant. No route creates a grant. Revocation affects later calls only. Crew h
 one token per owner, so it cannot tell a person from an automated client holding
 it, and a grant covers both. See [standing grants](standing-grants.md).
 
+## Approval expiry
+
+A request may carry `approvalDeadlineSeconds`, an integer from 60 to 604800; a
+routine may too, for each firing. It is part of the request's identity: a retry with
+another value, or without one, fails `409 conflict`, and the receipt reports it. A
+Claude or Pi card of such a request shows `expiresAt`. From then on a decision fails
+`409 conflict`, and Crew cancels the request as a cancel would. The receipt then
+carries `expiredApproval: { approvalId, expiresAt, expiredAt }`, the conversation
+state's `expiredCalls` lists the card, and the audit trail has `approval.expired`; the
+receipt `status` values are unchanged. A Codex card keeps the earlier of its live
+deadline and the request's. A conversation handoff's reserved first request never
+carries one; its ID sent with a deadline fails `409 conflict`. See
+[approval expiry](approval-expiry.md).
+
 ## Audit trail
 
 `GET /v1/audit` returns the authenticated owner's durable record of who acted and
 when. It covers member spawn, conversation open, request admission, approval and
 question decisions, committed work-item and trusted effects, cancellation requests
-and terminal request status. Unlike the AG-UI tail, it is not truncated. Each fact
+and terminal request status, and the facts later releases added: pending cards,
+grants and automatic approvals, approval expiry, routines and their firings, memory,
+handoffs, instructions and packs, usage budgets and refusals, and webhook endpoints.
+Unlike the AG-UI tail, it is not truncated. Each fact
 is written in the same transaction as the change it records, appears once despite
 retries, and cannot be updated or deleted. Only releases that include the audit
 migration write facts: while a process of an earlier release still runs, during an
@@ -351,7 +429,15 @@ upgrade without them.
 | `after` | Decimal event ID; return later events only. Default `0`. |
 | `limit` | Default 100 in both formats. At most 1000 for JSON and 10000 for CSV (the hard row cap). |
 | `conversationId` | Restrict to one conversation. Another owner's ID yields an empty page. |
+| `memberId` | Restrict to one member. Another owner's ID yields an empty page. `webhook.*` and `instruction_pack.*` rows name no member and never match. |
+| `eventType` | Comma-separated registered event types. |
+| `actorKind`, `initiatorKind` | `owner` or `system`; one of `initiatorKinds`. |
+| `initiatorId` | Requests a routine or a handoff started, by routine or handoff ID. Another owner's ID yields an empty page. |
+| `from`, `to` | RFC 3339 timestamps with an offset, at most six fractional digits, no leap second, offsets within ±15:59; `occurredAt` at or after `from` and before `to`. Encode `+` as `%2B`. |
 | `format` | `json` (default) or `csv`. |
+
+Filters combine with AND, work in both formats and leave paging unchanged; see
+[audit filters](audit-filters.md).
 
 Unknown, repeated or malformed parameters fail `400`, as strict bodies do. JSON
 responses are `{ apiVersion, events, nextAfter, hasMore }`. CSV responses carry the
@@ -388,12 +474,14 @@ are strict and the owner comes only from the bearer token.
 
 An owner can save up to 32 active entries of at most 1024 bytes for each member. A
 conversation records the member's active entries when it opens, and its native
-launches get them, framed as reference data, after any project notes. Entries created
+launches get them, framed as reference data, after any project notes; Pi children and
+the trusted-context lane do not. Entries created
 later never reach it. Only the owner writes memory; the model cannot. A create is
 idempotent by `requestId`; a replay of a deleted entry fails `409 memory_deleted`,
 and a 33rd active entry `409 memory_limit`. `POST /v1/conversations` also fails
 `409 memory_limit` when the conversation's project notes fit what the member's engine
-can be given but notes and entries together do not; nothing is opened. Deleting an
+can be given but notes and entries together do not, counting any member instructions
+and instruction packs with the notes; nothing is opened. Deleting an
 entry erases its text and keeps a tombstone. A deletion reaches every later launch on
 Pi with Crew's Pi models. Codex replays the context its rollout recorded on a
 conversation's first turn, and Claude's SDK may resend the prompt it recorded then, so
@@ -401,9 +489,114 @@ on those engines a deletion may reach only conversations that have not run a tur
 `capabilities.memories.startedConversations` says which. See
 [member memory](memories.md) for the trust boundary and what deletion does not erase.
 
+## Conversation handoff
+
+An owner can hand a conversation to another of their members, often of another engine.
+One transaction checks that both are the owner's, refuses a busy, trusted-lane, empty or
+already handed off source, seals the source, opens a fresh target exactly as an open
+would, and records a transcript of the source's newest whole committed turns, at most
+64 KiB, with a server-reserved request for the target's first turn. The gateway then
+submits that request through the normal path; the target model gets the transcript as a
+user message, quoted as data. The source keeps its snapshot and receipts but admits no
+new request (`409 handed_off`), and the target admits no other request before the
+reserved one (`409 handoff_pending`). Every other request keeps the 16 KiB limit. Retry a
+POST with the same `requestId`: it returns the same handoff and submits the reserved request again
+if a failure interrupted it. A target whose workflow has closed stays unadmitted. See [conversation handoff](handoffs.md) for what is carried, the
+errors, costs and the trust boundary.
+
+## Member instructions
+
+`POST /v1/members` takes optional `instructions`: 1 to 16,384 bytes under memory's
+character rules. The route now decodes its body strictly, so bytes that are not UTF-8
+fail `400 invalid_json` with or without the field. Instructions are fixed for the life
+of the member; a spawn replay must repeat them exactly, or fails `409 conflict`. Every native launch of the member's conversations
+gets them after any [instruction packs](#instruction-packs) and before project notes and
+memory; Pi children and the trusted-context lane do not. They never change the member's
+tools, approvals or limits.
+`GET /v1/members/{memberId}/instructions` returns the text to its owner only; spawn
+responses, `GET /v1/members` and the `member.instructions_set` audit row carry its
+SHA-256 and byte count. `POST /v1/conversations`, and a handoff to the member, which
+opens its target the same way, fail `409 instructions_limit` when the conversation's
+project notes fit what the member's engine can be given but notes and instructions
+together do not, and `409 memory_limit` when notes and instructions fit but memory on top
+does not. A handoff adds no instructions to its transcript; a source reply that quotes
+them is carried like any other reply. A restore keeps instructions as they were. See
+[member instructions](member-instructions.md).
+
+## Instruction packs
+
+An owner can write up to 32 active instruction packs: a name and an optional description for
+the owner, and 1 to 16,384 bytes of text for the model. A pack never changes. `POST /v1/members`
+takes optional `instructionPacks`, 1 to 8 distinct pack IDs of the owner's, in order; a member's
+packs are fixed for its life, and a spawn replay must repeat them exactly or fails
+`409 conflict`. A pack that is not the owner's fails `404 not_found` and a deleted one
+`409 pack_deleted`. The member's own instructions and its packs' texts share 16,384 bytes; a
+spawn over that fails `409 pack_limit`, as does a 33rd active pack. Every native launch of the
+member's conversations gets the packs' texts first, before its instructions, project notes and
+memory; Pi children and the trusted-context lane do not, and a handoff carries none: its target
+gets its own member's packs. Names and descriptions never reach the model. A pack any member has
+cannot be deleted (`409 pack_in_use`); deleting another erases its text. Packs never change a
+member's tools, approvals or limits, and the model follows their text as the owner's
+instructions, so text pasted into a pack from an untrusted source is a prompt-injection path to
+every member that has it. `instruction_pack.*` audit rows belong to no member, like
+`webhook.*`. Packs count with instructions toward `409 instructions_limit` when a
+conversation opens. A restore keeps packs as they were at the recovery point, so a pack
+deleted after it comes back, unattached. See [instruction packs](instruction-packs.md).
+
+## Usage metering
+
+Crew records one ledger row for each native segment with the token counts the engine's
+SDK reported, or `unknown` when it reported none, in the member lane and in the
+trusted-context lane alike. A row carries a billed cost when the provider billed one, or
+else an estimated cost when the operator's price table (`BIRBCREW_USAGE_PRICES_PATH`)
+prices its model; Crew ships no prices. The `/v1/usage` routes total an owner's rows,
+per member and per conversation, and mark the parts that routines started and that the
+trusted lane used. Totals report `costUsd` (billed) and `estimatedCostUsd` apart, each
+with its segment count, and never add them; records gain `lane`, `estimatedCostUsd` and
+`estimatePrice`. These are additive fields, and `costUsd` keeps its meaning. An
+owner can set one daily token budget per member (`PUT /v1/usage/budgets/{memberId}`).
+While the member's input and output tokens for the UTC day are at or over it, a new
+request fails `409 usage_limit` (or `409 usage_limit_closed` when the refusal also closed
+the conversation), and a routine's firing fails with reason `usage_limit`; a request already
+admitted is never refused or interrupted, so the cap can be passed by what running
+requests use. The budget counts the member's trusted-context tokens too, but refuses only
+member-lane requests, routine firings and handoffs. See [usage metering](usage-metering.md).
+
+## Outbound webhooks
+
+An owner can register up to 10 enabled endpoints, which require HTTPS by default.
+Crew posts to an endpoint
+when an event it selected happens: a card or question became pending
+(`approval.pending`), a request finished (`request.finished`), a routine firing
+settled (`routine.firing_settled`), or Crew disabled a routine after ten failures
+(`routine.disabled`). Each is derived from a committed audit event. The body carries
+IDs, the kind, the time and a status only; fetch details with your token. Each
+request in the default `crew` format is signed with HMAC-SHA256 over a timestamp and
+the body, using a secret that only the create response returns. An endpoint can
+choose another `format` at creation, fixed for its life and returned by every read.
+`slack` posts `{"text": ...}`, which Slack, Mattermost and Discord's
+Slack-compatible incoming webhooks show. `ntfy` posts plain text with a `Title`
+header to an ntfy topic. Both send a fixed template of the same IDs, status, tool
+name and time to a third-party service, unsigned, because those services check no
+signature. A `slack` or `ntfy` URL is itself a credential: the routes return it to
+the owner's token only, and the audit trail keeps only its host. An unknown format
+fails `400 invalid_input`, and a replay with another format `409 conflict`. Delivery
+is at least once and unordered, with ten attempts over about three hours, and an
+endpoint that gives up ten deliveries in a row is disabled. Crew sends only to
+public addresses over HTTPS, unless the operator enables the explicit
+[HTTP and private-address override](webhooks.md#network-safety). It follows no
+redirect and sends no credential. `webhook.*` audit rows belong
+to no member, so their `memberId` is `null` and a `memberId` filter never matches
+them. An expired card, a handoff and a budget refusal add no kind: a handoff's
+reserved request and an expired card's request are sent as `request.finished`, and a
+refused request sends nothing (see
+[what they send](webhooks.md#handoffs-approval-expiry-and-usage-budgets)). See
+[outbound webhooks](webhooks.md) for the receiver's checks, the formats and their
+templates, the secret's storage and the restore behaviour.
+
 ## Validation
 
-Use Node 22.23.3 and a disposable PostgreSQL 17 database. The test role needs
+Use Node 24.22.3 and a disposable PostgreSQL 17 database. The test role needs
 CREATEDB so the fixture can create and remove its separate consumer database:
 
 ```sh

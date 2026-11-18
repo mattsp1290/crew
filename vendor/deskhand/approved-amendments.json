@@ -1,0 +1,15 @@
+{
+  "source": "approval-source.json",
+  "issue": "crew-6dd8",
+  "approvedBy": "Matt-Spurlin",
+  "approvedOn": "2026-11-14",
+  "amendments": [
+    "Screenshot long edge <= 2576 px, pixels <= 3588000, raw image bytes <= 3750000.",
+    "The gated state refuses every tool except status and lease release while the allowance is missing or expired.",
+    "Deskhand has no node-IP allowlist. The host pf anchor, mTLS and token own access control.",
+    "The sixth tool lease owns acquire, renew and release with holder_id. Status is a pure read with operation lookup."
+  ],
+  "interpretation": "Lease is effect-classified for Crew authority but never carries operation_id. Only pointer and keyboard carry operation_id. The exact pinned contract sections 1, 3.2 and 5.1 and the closed lease input schema resolve the broader call-ID wording in the issue.",
+  "scope": "Approval provenance only. Exact upstream source retains its pending-amendment prose. This record adds no client, permission, deployment or v1.0 acceptance.",
+  "sourceSha256": "b31be32b568fa1ea7efbf37f9452473b8d32f03167c56a05b091d450fb75739c"
+}

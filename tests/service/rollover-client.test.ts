@@ -11,8 +11,9 @@ function fixture(reply?: string) {
   const request = {ownerId:conversation.ownerId,conversationId:conversation.conversationId,requestId:randomUUID(),text:"hello"};
   const routes: unknown[][] = [];
   const calls: string[] = [];
+  const checks: string[] = [];
   let failures = 0;
-  const store = {requestAdmission:async()=>undefined,getConversation:async () => conversation, workflowRunId:async () => "persisted-first-run", committedReply:async () => reply} as unknown as MemberStore;
+  const store = {requestAdmission:async()=>undefined,checkAdmission:async()=>{checks.push(request.requestId);},getConversation:async () => conversation, workflowRunId:async () => "persisted-first-run", committedReply:async () => reply} as unknown as MemberStore;
   const temporal = { workflow:{ getHandle:(...args:unknown[]) => {
     routes.push(args);
     return {executeUpdate: async (name:string) => {
@@ -21,13 +22,14 @@ function fixture(reply?: string) {
       return name === "acceptTurn" ? request.requestId : "reply";
     }};
   }}} as unknown as Client;
-  return {client:new MemberClient(store,temporal), request,routes,calls};
+  return {client:new MemberClient(store,temporal), request,routes,calls,checks};
 }
 
 test("admission retries only rollover rejection and routes by logical workflow, never stored first run", async () => {
   const f=fixture();
   assert.deepEqual(await f.client.accept(f.request),{requestId:f.request.requestId});
   assert.deepEqual(f.calls,["acceptTurn","acceptTurn"]);
+  assert.equal(f.checks.length,2,"admission is checked again before every attempt");
   assert.equal(f.routes.length,2);
   for (const args of f.routes) assert.equal(args.length,1);
 });
@@ -48,7 +50,7 @@ test("earlier generation committed requests never address a workflow", async () 
 
 test("unknown accepted-update outcomes are not retried", async () => {
   const f=fixture();
-  const store = {requestAdmission:async()=>undefined,getConversation:async () => ({}), workflowRunId:async () => "run", committedReply:async () => undefined} as unknown as MemberStore;
+  const store = {requestAdmission:async()=>undefined,checkAdmission:async()=>{},getConversation:async () => ({}), workflowRunId:async () => "run", committedReply:async () => undefined} as unknown as MemberStore;
   let calls=0;
   const error = new Error("transport lost after acceptance");
   const temporal={workflow:{getHandle:()=>({executeUpdate:async()=>{calls++;throw error;}})}} as unknown as Client;

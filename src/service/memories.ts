@@ -2,7 +2,8 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { appendAudit } from "./audit.ts";
 import { claudeCommand } from "./claude.ts";
-import { MemberStoreError, type Conversation, type Engine } from "./domain.ts";
+import { MemberStoreError, ownerText, type Conversation, type Engine } from "./domain.ts";
+import { memberFixedContext } from "./instructions.ts";
 import { trustedProjectContext } from "./project-notes.ts";
 import type { MemberStore } from "./store.ts";
 
@@ -28,18 +29,26 @@ export function memoryContext(entries: readonly Entry[]): string | undefined {
     .replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
-/** The system context a native launch of this conversation receives: its project notes, then
- * the snapshot's entries that are still active. Pi children get neither (supervisor-runner.ts). */
-export async function conversationContext(db: Queryable, conversation: Conversation): Promise<string | undefined> {
+const joined = (...blocks: (string | undefined)[]) => blocks.filter(block => block !== undefined).join("\n") || undefined;
+
+async function contextBlocks(db: Queryable, conversation: Conversation) {
   const notes = await trustedProjectContext(db, conversation);
+  const fixed = await memberFixedContext(db, conversation);
   const { rows } = await db.query<Entry>(`SELECT m.memory_id AS "memoryId", m.body AS text
       FROM birbcrew_ts.conversation_memories r
       JOIN birbcrew_ts.conversations c USING (conversation_id)
       JOIN birbcrew_ts.member_memories m ON m.memory_id = r.memory_id AND m.owner_id = c.owner_id AND m.member_id = c.member_id
      WHERE r.conversation_id = $1 AND c.owner_id = $2 AND c.member_id = $3 AND m.state = 'active'
      ORDER BY r.position`, [conversation.conversationId, conversation.ownerId, conversation.memberId]);
-  const memory = memoryContext(rows);
-  return notes && memory ? notes + "\n" + memory : notes ?? memory;
+  return { fixed, notes, memory: memoryContext(rows) };
+}
+
+/** The system context a native launch of this conversation receives: its member's instruction
+ * packs and instructions (instructions.ts), its project notes, then the snapshot's entries that are still active. Pi
+ * children get none of them (supervisor-runner.ts). */
+export async function conversationContext(db: Queryable, conversation: Conversation): Promise<string | undefined> {
+  const { fixed, notes, memory } = await contextBlocks(db, conversation);
+  return joined(fixed, notes, memory);
 }
 
 // Every UTF-8 byte of an entry's text costs at most two bytes in the block: '"', '\', tab and
@@ -72,19 +81,22 @@ export function contextFits(engine: Engine, context: string | undefined): boolea
 
 /** Inside openConversation's transaction, once the conversation and its project notes are in:
  * references the member's active entries, oldest first. A later entry is never added; a deleted
- * or suspended one is left out at each launch. Notes and the snapshot never grow afterwards, so
- * a context that fits the engine now fits at every later launch. One that fits without the
- * memory but not with it is refused here, rather than failing the conversation's first turn.
- * Notes too large on their own are left as they were before memory existed. */
+ * or suspended one is left out at each launch. Instructions, notes and the snapshot never grow
+ * afterwards, so a context that fits the engine now fits at every later launch. One that does not
+ * fit is refused here, rather than failing the conversation's first turn: `memory_limit` when the
+ * instructions (with any packs) and notes fit without the memory, otherwise `instructions_limit`.
+ * Notes too large on their own are left as they were before memory and instructions existed. */
 export async function snapshotMemories(db: Queryable, conversation: Conversation) {
   const { rowCount } = await db.query(`INSERT INTO birbcrew_ts.conversation_memories (conversation_id, position, memory_id)
     SELECT $1, row_number() OVER (ORDER BY created_at, memory_id), memory_id FROM birbcrew_ts.member_memories
      WHERE owner_id = $2 AND member_id = $3 AND state = 'active'`,
     [conversation.conversationId, conversation.ownerId, conversation.memberId]);
-  if (rowCount && !contextFits(conversation.engine, await conversationContext(db, conversation))
-      && contextFits(conversation.engine, await trustedProjectContext(db, conversation))) {
-    throw new MemberStoreError("memory_limit");
-  }
+  const fixed = await memberFixedContext(db, conversation);
+  if (!rowCount && fixed === undefined) return;
+  const { notes, memory } = await contextBlocks(db, conversation);
+  const fits = (context: string | undefined) => contextFits(conversation.engine, context);
+  if (fits(joined(fixed, notes, memory)) || !fits(notes)) return;
+  throw new MemberStoreError(fits(joined(fixed, notes)) ? "memory_limit" : "instructions_limit");
 }
 
 export const memoryCapabilities = {
@@ -99,11 +111,7 @@ export const memoryCapabilities = {
   startedConversations: { pi: "deletions-apply-at-next-launch", claude: "first-turn-context-may-persist", codex: "first-turn-context-persists" },
 } as const;
 
-// \p{Cc} is C0, DEL and C1. Tab and newline are the only control characters an entry may hold.
-const disallowedControl = /(?![\t\n])\p{Cc}/u;
-export const memoryText = z.string().min(1).refine(text => text.isWellFormed() && !disallowedControl.test(text)
-  && Buffer.byteLength(text) <= memoryLimits.textBytes,
-  { message: `Expected well-formed UTF-8 text of at most ${memoryLimits.textBytes} bytes without control characters other than tab and newline` });
+export const memoryText = ownerText(memoryLimits.textBytes);
 
 const lowerUuid = z.uuid().transform(value => value.toLowerCase());
 const createSchema = z.strictObject({ requestId: lowerUuid, memberId: lowerUuid, text: memoryText });

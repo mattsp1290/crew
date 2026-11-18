@@ -160,7 +160,7 @@ export async function verifyLive(account: LiveAccount, signal: AbortSignal, cont
   const final = await sourceFingerprint();
   if (!isDeepStrictEqual(source, final)) throw new Error("Source changed during the provider proof");
   const { revision, state, sourceSha256 } = final;
-  return { ...result, source: { revision, state, sourceSha256 }, cleanup: "verified", billing: "owner-attested" };
+  return { ...result, source: { revision, state, sourceSha256 }, cleanup: "verified", billing: "not verified" };
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
@@ -172,7 +172,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   let stage = "account preflight", attemptedRequests = 0;
   try {
     const account = await authorizeLive(process.argv.slice(2), process.env);
-    verifiedGates.push("fresh owner-authorized private account and model");
+    verifiedGates.push("owner-approved private proof, account and model");
     stage = "provider journey or cleanup";
     const report = await verifyLive(account, AbortSignal.any([controller.signal, AbortSignal.timeout(10 * 60_000)]), undefined,
       (gate) => verifiedGates.push(gate), (count) => { attemptedRequests = count; });

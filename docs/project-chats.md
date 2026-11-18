@@ -22,7 +22,7 @@ Source content is captured once at the recorded commits. This release does not a
 
 `python -m birbcrew.project_worker` registers only project conversation activities and their workflow. `project_task_queue` selects its queue. Without that setting, the queue is `task_queue` followed by `-projects`. The API can retain `approved-goal` mode while a separate project worker uses `project-live` mode.
 
-`project-live` requires the existing `live_attestation` path. The provider checks that attestation at startup and before every new turn. The attestation must record eligible coding use, disabled Extra Usage, and a check within twelve hours. The maintained provider checks its model list before a live acceptance run. Project calls identify `birbcrew-project-chat/0.1.0`, use a stable conversation session header, and permit up to 4096 output tokens. `project-test` uses a visibly injected deterministic model and proves no live-provider behavior.
+`mode` is required. A configuration without it, or with an unknown value, fails to load. The project worker accepts only `project-live` and `project-test`. `project-live` needs the OpenCode Go key in `$HOME/.profile` and nothing else. The worker reads the key at startup and exits without it. Before every new turn it checks that the key is still readable and refuses the turn otherwise; a changed key takes effect after a restart. It never substitutes the injected model. Earlier releases also required `live_attestation`, a dated owner statement that expired after twelve hours. That setting was removed, and a configuration that still names it fails to load. Nothing now asserts the statement's claims of eligible coding use and disabled Extra Usage. The maintained provider checks its model list before a live acceptance run. Project calls identify `birbcrew-project-chat/0.1.0`, use a stable conversation session header, and permit up to 4096 output tokens. `project-test` uses a visibly injected deterministic model and proves no live-provider behavior.
 
 ## Recovery and limits
 
@@ -42,6 +42,6 @@ If a provider violates the reserved response envelope and exceeds the 128 KiB na
 
 These intersecting limits bound payload growth. The sizing fixture records measured history and payload sizes for its exact inputs. It does not prove every theoretical combination of the configured maxima or remove Temporal's history warning threshold.
 
-A provider eligibility preflight failure records `provider_preflight_rejected_not_dispatched`, finalizes that request as failed without a provider attempt, and leaves the conversation idle. The unchanged request remains reconciled. After the owner refreshes account evidence, a new explicit request UUID can proceed.
+A provider credential preflight failure records `provider_preflight_rejected_not_dispatched`, finalizes that request as failed without a provider attempt, and leaves the conversation idle. The unchanged request remains reconciled. After the operator restores the key, a new explicit request UUID can proceed.
 
 The context contract includes `unavailable_sources` entries with `repository_id`, `path`, and `reason`, and `unavailable_notes` entries with `key` and `reason`. Both default to empty arrays and participate in the context digest. They record evidence gaps without inventing source content.

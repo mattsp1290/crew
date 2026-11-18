@@ -4,7 +4,7 @@ import { canonical, canonicalDigest } from "./canonical-json.ts";
 import { MemberStoreError, openSchema, turnKey } from "./domain.ts";
 import { classify, ToolArgumentError, type Classified, type ToolCall } from "./tool-catalog.ts";
 
-/** The tool-call ledger (docs/member-capabilities.md, 033-tool-calls.sql): one row for each
+/** The tool-call ledger (docs/member-capabilities.md, 041-tool-calls.sql): one row for each
  * call of a Crew tool the gate decided, from its verdict to the delivery of its outcome. The
  * database enforces every phase rule; this module is the only writer and maps what it finds
  * to what the caller should do next. Arguments and results are private: never audit, publish
@@ -12,7 +12,7 @@ import { classify, ToolArgumentError, type Classified, type ToolCall } from "./t
  *
  * Nothing calls this yet: no engine offers a Crew tool, and the gate is a later slice. */
 export const toolCallLimits = {
-  perRequest: 256, // guard_tool_call in 033-tool-calls.sql repeats it
+  perRequest: 256, // guard_tool_call in 041-tool-calls.sql repeats it
   // Canonical JSON. The result CHECK allows twice this, because jsonb prints with more spaces;
   // a result that still prints larger (a very large number does) is refused as input_limit.
   resultBytes: 65_536,

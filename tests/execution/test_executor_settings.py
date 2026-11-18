@@ -42,11 +42,9 @@ def test_claude_reviewer_requires_claude_path(setup):
 
 def test_opencode_reviewer_needs_no_claude_and_rejects_one(setup):
     config, _, _ = setup
-    reviewer = {"kind": "opencode-go", "subscription_evidence": "/private/go-evidence.json"}
+    reviewer = {"kind": "opencode-go"}
     loaded = installed(config, reviewer=reviewer)
-    assert loaded.reviewer == OpenCodeGoReviewer(
-        kind="opencode-go", subscription_evidence=Path("/private/go-evidence.json")
-    )
+    assert loaded.reviewer == OpenCodeGoReviewer(kind="opencode-go")
     assert loaded.claude is None and loaded.reviewer.api_key_file is None
     with pytest.raises(ValidationError, match="claude_path_requires_claude_reviewer"):
         installed(config, reviewer=reviewer, claude="/opt/claude")
@@ -55,10 +53,12 @@ def test_opencode_reviewer_needs_no_claude_and_rejects_one(setup):
 @pytest.mark.parametrize(
     "reviewer",
     [
-        {"kind": "opencode-go"},
         {"kind": "opencode"},
-        {"kind": "claude", "subscription_evidence": "/private/go-evidence.json"},
-        {"kind": "opencode-go", "subscription_evidence": "/e.json", "fallback": "claude"},
+        {"kind": "claude", "api_key_file": "/private/go.key"},
+        {"kind": "opencode-go", "fallback": "claude"},
+        # The removed attestation path is refused, not ignored, so no installation can
+        # believe it still gates reviews.
+        {"kind": "opencode-go", "subscription_evidence": "/private/go-evidence.json"},
         "opencode-go",
     ],
 )
@@ -73,14 +73,7 @@ def test_reviewer_selection_rejects_illegal_shapes(setup, reviewer):
 @pytest.mark.parametrize(
     "changes",
     [
-        {"reviewer": {"kind": "opencode-go", "subscription_evidence": "evidence.json"}},
-        {
-            "reviewer": {
-                "kind": "opencode-go",
-                "subscription_evidence": "/private/evidence.json",
-                "api_key_file": "go.key",
-            }
-        },
+        {"reviewer": {"kind": "opencode-go", "api_key_file": "go.key"}},
         {"claude": "claude"},
         {"claude": "/opt/claude", "codex_socket": "codex.sock"},
     ],
@@ -249,30 +242,10 @@ def test_interrupt_uses_configured_codex_socket(setup, daemon, monkeypatch):
 
 def opencode_settings(config, tmp_path, key_mode=0o600):
     key = write_key(tmp_path / "go.key", "token-1\n", key_mode)
-    evidence = tmp_path / "go-evidence.json"
-    evidence.write_text(
-        json.dumps(
-            {
-                "provider": "opencode-go",
-                "account_path": "fixture account",
-                "extra_usage_disabled": True,
-                "eligible_coding_use": True,
-                "checked_at": "2020-01-01T00:00:00Z",
-                "evidence": "stale but well formed",
-            }
-        )
-    )
-    return installed(
-        config,
-        reviewer={
-            "kind": "opencode-go",
-            "subscription_evidence": str(evidence),
-            "api_key_file": str(key),
-        },
-    )
+    return installed(config, reviewer={"kind": "opencode-go", "api_key_file": str(key)})
 
 
-def test_worker_preflight_rejects_unusable_reviewer_configuration(setup, tmp_path):
+def test_worker_preflight_rejects_unusable_reviewer_configuration(setup, tmp_path, monkeypatch):
     from birbcrew.execution.review import preflight_reviewer
 
     config, _, _ = setup
@@ -284,15 +257,50 @@ def test_worker_preflight_rejects_unusable_reviewer_configuration(setup, tmp_pat
     ):
         preflight_reviewer(opencode_settings(config, tmp_path, 0o644))
     broken = opencode_settings(config, tmp_path)
-    broken.reviewer.subscription_evidence.write_text("{}")
-    with pytest.raises(ValueError, match="^subscription_evidence_unusable: ValidationError$"):
-        preflight_reviewer(broken)
-    broken.reviewer.subscription_evidence.unlink()
-    with pytest.raises(ValueError, match="^subscription_evidence_unusable: FileNotFoundError$"):
-        preflight_reviewer(broken)
     broken.reviewer.api_key_file.write_bytes(b"\xff" * 8)
     with pytest.raises(ValueError, match="^opencode_go_key_unusable: OpenCode Go key file must"):
         preflight_reviewer(broken)
+    broken.reviewer.api_key_file.unlink()
+    with pytest.raises(ValueError, match="^opencode_go_key_unusable: FileNotFoundError$"):
+        preflight_reviewer(broken)
+    # Without a key file the reviewer reads ~/.profile. A missing key there stops the worker too.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = installed(config, reviewer={"kind": "opencode-go"})
+    with pytest.raises(ValueError, match="^opencode_go_key_unusable: FileNotFoundError$"):
+        preflight_reviewer(profile)
+    (tmp_path / ".profile").write_text("export OTHER=1\n")
+    with pytest.raises(ValueError, match="^opencode_go_key_unusable: No literal OPENCODE_GO"):
+        preflight_reviewer(profile)
+    (tmp_path / ".profile").write_text("export OPENCODE_GO_API_KEY=token-1\n")
+    preflight_reviewer(profile)
+
+
+@pytest.mark.parametrize("state", ["absent", "expired", "extra_usage_on", "not_json"])
+def test_worker_preflight_reads_the_key_and_no_former_attestation_file(
+    setup, tmp_path, opened_files, state
+):
+    from birbcrew.execution.review import preflight_reviewer
+
+    config, _, _ = setup
+    former = tmp_path / "go-evidence.json"
+    statement = {
+        "provider": "opencode-go",
+        "account_path": "fixture account",
+        "extra_usage_disabled": state != "extra_usage_on",
+        "eligible_coding_use": True,
+        "checked_at": "2020-01-01T00:00:00Z",
+        "evidence": "left over from before the gate was removed",
+    }
+    if state == "not_json":
+        former.write_text("renew me")
+    elif state != "absent":
+        former.write_text(json.dumps(statement))
+    settings = opencode_settings(config, tmp_path)
+    del opened_files[:]
+    preflight_reviewer(settings)
+    root = str(tmp_path.resolve()) + "/"
+    read = {path for path in opened_files if path.startswith(root)}
+    assert read == {str(settings.reviewer.api_key_file.resolve())}
 
 
 def test_invalid_installation_file_names_fields_without_values(setup, tmp_path, monkeypatch):
@@ -316,8 +324,9 @@ def test_invalid_installation_file_names_fields_without_values(setup, tmp_path, 
     finally:
         policy.installation.cache_clear()
     printed = "".join(traceback.format_exception(caught.value))
-    assert "execution_config_invalid: reviewer.opencode-go.api_key: Extra inputs" in printed
-    assert secret[:14] not in printed
+    assert "reviewer.opencode-go.api_key: Extra inputs" in printed
+    assert "reviewer.opencode-go.subscription_evidence: Extra inputs" in printed
+    assert secret[:14] not in printed and "go-evidence" not in printed
 
 
 def test_worker_preflight_never_echoes_file_contents(setup, tmp_path):
@@ -326,11 +335,11 @@ def test_worker_preflight_never_echoes_file_contents(setup, tmp_path):
     config, _, _ = setup
     swapped = opencode_settings(config, tmp_path)
     secret = "fixture-token-" + "A" * 40
-    write_key(swapped.reviewer.subscription_evidence, secret + "\n")
+    write_key(swapped.reviewer.api_key_file, secret + "\n" + secret + "\n")
     with pytest.raises(ValueError) as caught:
         preflight_reviewer(swapped)
     printed = "".join(traceback.format_exception(caught.value))
-    assert "subscription_evidence_unusable" in printed and secret[:14] not in printed
+    assert "opencode_go_key_unusable" in printed and secret[:14] not in printed
 
 
 def test_configured_codex_socket_must_accept_connections():

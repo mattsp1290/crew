@@ -12,6 +12,7 @@ import { ClaudeAgentAdapter, type SessionBinding } from "@ag-ui/claude-agent-sdk
 import { getSessionMessages, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { claudeCheckpoint, claudeCommand } from "./claude.ts";
+import { claudeUsage } from "./usage-capture.ts";
 
 const recordTools: RunAgentInput["tools"] = [{
   name: "record_work_item", description: "Record one work item after the owner approves.",
@@ -145,13 +146,14 @@ async function run(command: Command) {
   let finished = false;
   let pendingIds: string[] | undefined;
   let resultCount = 0;
+  let initModel: unknown, queryResult: unknown;
   let streamingCall: { id: string; bytes: number; args: ToolCallArgumentsStream } | undefined;
   const reportPreview = toolPreviewReporter(command.runId, (toolArgs, matchedOperation) => process.send?.({ toolArgs, matchedOperation }));
   const textEvent = z.object({ delta: z.string() });
   const terminal = z.object({ outcome: z.object({
     type: z.literal("success"),
     pendingToolCallIds: z.array(z.string()).max(1).optional(),
-  }).optional() });
+  }).optional(), result: z.unknown() });
   await adapter.run({
     threadId: command.threadId, runId: command.runId,
     messages: command.continuation ? [{
@@ -187,21 +189,28 @@ async function run(command: Command) {
         throw new ClaudeTurnError("Unexpected Claude tool result");
       resultCount++;
     }
+    if (event.type === "CUSTOM") {
+      const init = z.object({ name: z.literal("system:init"), value: z.object({ model: z.unknown() }) }).safeParse(event);
+      if (init.success) initModel = init.data.value.model;
+    }
     if (event.type === "RUN_FINISHED") {
-      pendingIds = terminal.parse(event).outcome?.pendingToolCallIds;
+      const done = terminal.parse(event);
+      pendingIds = done.outcome?.pendingToolCallIds;
+      queryResult = done.result;
       finished = true;
     }
   });
+  const usage = claudeUsage(queryResult, initModel);
   await exited;
   if (!finished || !binding || binding.unsupportedPendingTools?.length || resultCount !== Number(!!command.continuation)) throw new ClaudeTurnError("Claude turn did not settle");
   if (binding.pending) {
     if (command.mode !== "protected" || !isDeepStrictEqual(pendingIds, [binding.pending.id])) {
       throw new ClaudeTurnError("Claude deferral was not confirmed");
     }
-    return confirmedProposal(command, binding);
+    return { ...await confirmedProposal(command, binding), usage };
   }
   if (pendingIds?.length || !text.length) throw new ClaudeTurnError("Claude turn did not complete");
-  return { kind: "complete", text, checkpoint: await checkpointFor(command, binding) };
+  return { kind: "complete", text, checkpoint: await checkpointFor(command, binding), usage };
 }
 
 // The adapter owns a detached process group. Losing the host revokes that entire turn.

@@ -97,12 +97,17 @@ trigger keeps a firing's identity fixed.
 | `owner_unavailable` | `skipped` | yes |
 | `rejected` | `failed`: opening or admitting was refused for good | yes |
 | `approval_required` | `failed` (or `waiting` until then): a `fail_closed` request reached a human decision | yes |
+| `approval_expired` | `failed`: a card of the firing's request reached the routine's [approval deadline](approval-expiry.md) undecided | yes |
 | `turn_failed`, `turn_cancelled`, `turn_uncertain` | `failed`: the request's receipt ended `failed`, `cancelled` or `uncertain` | yes |
+| `usage_limit` | `failed`: admission refused the request because the member used its daily [usage budget](usage-metering.md) | yes |
 
 An open refused with `409 memory_limit`, because the member's [memory](memories.md)
 with the project notes would not fit its engine, is such a refusal: the firing fails
-`rejected` and counts. It names no other reason, so check the member's entries when a
-Codex member's firings start failing `rejected`.
+`rejected` and counts. So is `409 instructions_limit`, when the member's
+[instructions](member-instructions.md) and [instruction packs](instruction-packs.md) with
+the project notes would not fit. It names no
+other reason, so check the member's entries and instructions when a Codex member's
+firings start failing `rejected`.
 
 A success resets the consecutive-failure count. A failure adds one, and the tenth in
 a row disables the routine with reason `consecutive_failures`, in the transaction
@@ -157,7 +162,10 @@ A routine's request reaches a human decision like an owner's.
   `pendingQuestions`) and the firing shows `waiting`. Find it from the firing's
   `conversationId`, then decide it through `POST /v1/conversations/{id}/human`. Pi
   and Claude cards wait durably. A Codex card expires after its live-call deadline,
-  which leaves the turn `uncertain`, so the firing fails `turn_uncertain`.
+  which leaves the turn `uncertain`, so the firing fails `turn_uncertain`. A routine
+  created with `approvalDeadlineSeconds` bounds the wait: a Pi or Claude card still
+  undecided at the deadline cancels the request and fails the firing
+  `approval_expired` (see [approval expiry](approval-expiry.md)).
 - `fail_closed`: when the dispatcher sees the firing's request `waiting`, it records
   `approval_required` on the firing first and then requests cancellation through
   the v1 durable cancellation intent, the same path as
@@ -166,8 +174,8 @@ A routine's request reaches a human decision like an owner's.
   no deny choice. However the request then ends, even with a committed reply after
   the cancelled card, the firing fails with `approval_required`.
 
-Standing approval grants, if a later release adds them, match only owner-initiated
-requests, so a routine's request always gets a card.
+[Standing approval grants](standing-grants.md) match only owner-initiated requests, so
+a routine's request always gets a card, and the card offers no standing choice.
 
 ## What a firing records
 
@@ -225,7 +233,7 @@ routine is `404 not_found`. Bodies are strict: an unknown field, including an
 
 | Route | Purpose |
 | --- | --- |
-| `POST /v1/routines` | Create `{ "requestId", "memberId", "schedule", "prompt", "approvalPolicy" }`; `201` with the routine |
+| `POST /v1/routines` | Create `{ "requestId", "memberId", "schedule", "prompt", "approvalPolicy" }`, optionally with `approvalDeadlineSeconds`; `201` with the routine |
 | `GET /v1/routines?after=&limit=` | The owner's routines in every state, including deleted ones, ordered by `routineId`; `{ apiVersion, routines, nextAfter, hasMore }` |
 | `GET /v1/routines/{routineId}` | One routine, including a deleted one |
 | `POST /v1/routines/{routineId}/enable` | Body `{}`; `200` with the routine |
@@ -298,7 +306,7 @@ safe: two gateways never fire one window twice. With several gateways:
 - a firing whose gateway stopped mid-attempt is retried by any gateway after its
   2-minute lease, with the same identity.
 
-The gateway cannot see a profile's attestation status, which only the worker reads.
+The gateway cannot see whether a profile's credential works, which only the worker checks.
 A firing whose profile is unavailable is admitted, its turn fails or becomes
 uncertain in the worker, and the firing fails, counting toward the limit of ten.
 
@@ -359,14 +367,16 @@ expired, never under a new one. The gateway is consumer ingress: see
 - Changing a routine's definition, or a prompt that varies between firings.
 - Retention or cleanup of firing conversations, workflows and session directories.
 - An explicit owner action to retry or abandon a stuck `claimed` firing.
-- A routine-level view in the audit trail beyond `routineId` in payloads, and
-  per-routine audit filters.
+- A routine-level view in the audit trail. `initiatorId` selects the rows of a
+  routine's requests ([audit filters](audit-filters.md)), but the routine's own
+  lifecycle and firing rows carry `routineId` only in their payloads, which no
+  filter reads.
 - A gateway that should serve requests but not fire routines: every gateway runs the
   dispatcher.
 
 ## Validation
 
-Use Node 22.23.3 on Linux and a disposable PostgreSQL 17 database whose role may
+Use Node 24.22.3 on Linux and a disposable PostgreSQL 17 database whose role may
 create databases. `BIRBCREW_PG_BIN` must name PostgreSQL 17 `pg_dump`/`pg_restore`,
 or set `BIRBCREW_RECOVERY_POSTGRES_CONTAINER`.
 

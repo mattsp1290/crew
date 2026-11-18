@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+umask 077
+
+pin=88b219c18adeb352d2f291f099ede990a3190a58
+repository=$(cd "$(dirname "$0")/.." && pwd)
+run=$(mktemp -d /tmp/birbcrew-finance-baseline.XXXXXXXX)
+echo "Private baseline evidence: $run"
+trap 'rm -rf -- "$run/source"' EXIT
+
+git clone --quiet --local --no-checkout "$repository" "$run/source"
+cd "$run/source"
+git checkout --quiet --detach "$pin"
+export TMPDIR="$run"
+scripts/setup
+scripts/verify --mode test

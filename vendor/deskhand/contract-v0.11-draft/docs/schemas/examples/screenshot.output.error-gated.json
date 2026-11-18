@@ -1,0 +1,5 @@
+{
+  "code": "gated",
+  "message": "The LAN gate allowance is missing or expired.",
+  "state": "gated"
+}

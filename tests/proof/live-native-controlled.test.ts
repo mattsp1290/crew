@@ -31,10 +31,9 @@ for (const provider of ["anthropic-api", "openai-api", "chatgpt-subscription"] a
     const turnState = randomUUID();
     const endpoint = subscription ? codexSubscriptionEndpoint : claude ? "https://api.anthropic.com" : "https://api.openai.com/v1";
     const model = claude ? "claude-sonnet-4-6" : "gpt-5.4";
-    await writeFile(path, JSON.stringify({ approval_id: randomUUID(), provider, ...(subscription && {account_id:accountId}), account_path: "controlled",
-      checked_at: new Date().toISOString(), evidence: "offline rehearsal", approved_live_proof: true, max_requests: 12,
-      approved_sdk_use: true, endpoint, model }), { mode: 0o600 });
-    const args = ["--engine", engine, "--attestation", path];
+    await writeFile(path, JSON.stringify({ approval_id: randomUUID(), provider, ...(subscription ? {account_id:accountId} : {account: "controlled"}),
+      approved_live_proof: true, max_requests: 12, endpoint, model }), { mode: 0o600 });
+    const args = ["--engine", engine, "--approval", path];
     const claims = join(dir, "claims");
     const signIn = async (_home: string, expected?: string) => {
       assert.equal(expected, accountId);

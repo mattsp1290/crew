@@ -182,9 +182,6 @@ class Proof:
             "evidence_dir": str(self.root),
             "mode": self.args.mode,
             "interrupt_after_effect": self.args.mode == "test",
-            "live_attestation": str(self.args.attestation.resolve())
-            if self.args.attestation
-            else None,
         }
         write_private(self.root / "config.json", config)
         write_private(self.root / "clients.json", {"url": self.url, "tokens": self.tokens})
@@ -814,14 +811,11 @@ class Proof:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["test", "live"], default="test")
-    parser.add_argument("--attestation", type=Path)
     args = parser.parse_args()
     proof = Proof(args)
     try:
         if args.mode == "live":
-            if args.attestation is None:
-                raise ValueError("Live calls blocked. Supply current owner account evidence.")
-            proof.report["account"] = preflight_account(args.attestation)
+            proof.report["account"] = preflight_account()
         proof.boot()
         proof.journey()
     except BaseException as error:

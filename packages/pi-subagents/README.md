@@ -6,4 +6,4 @@ On SDK settlement, pass the assistant's complete ordered tool-call batch and its
 
 The host starts child workflows after committing the proposals. Once every child has a durable outcome, call `delegationToolResults(proposals, outcomes, recordedTimestamp)` to reconstruct the ordered native tool results. The host appends these results once before resuming the parent. Temporary SDK acknowledgements stay in the segment that captured the proposals.
 
-Run `npm test` with Node 22.23.3 to pack the extension, install it in a clean consumer, and exercise its registered tool with Pi coding sessions.
+Run `npm test` with Node 24.22.3 to pack the extension, install it in a clean consumer, and exercise its registered tool with Pi coding sessions.

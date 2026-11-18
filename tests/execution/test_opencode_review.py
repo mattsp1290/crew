@@ -26,16 +26,17 @@ KEY = "fixture-token-not-a-credential"
 READ_GO_KEY = provider.read_go_key
 
 
-def attestation(path, *, age=timedelta(0)):
+def former_attestation(path, *, age=timedelta(hours=13), extra_usage_disabled=True):
+    """The dated owner statement the removed gate read, always past its 12-hour limit."""
     path.write_text(
         json.dumps(
             {
                 "provider": "opencode-go",
                 "account_path": "fixture account",
-                "extra_usage_disabled": True,
+                "extra_usage_disabled": extra_usage_disabled,
                 "eligible_coding_use": True,
                 "checked_at": (datetime.now(UTC) - age).isoformat(),
-                "evidence": "fixture attestation",
+                "evidence": "fixture statement",
             }
         )
     )
@@ -52,11 +53,7 @@ def opencode(setup, daemon, monkeypatch, tmp_path):
     key.chmod(0o600)
     raw = config.model_dump(mode="json") | {
         "claude": None,
-        "reviewer": {
-            "kind": "opencode-go",
-            "subscription_evidence": str(attestation(tmp_path / "go-evidence.json")),
-            "api_key_file": str(key),
-        },
+        "reviewer": {"kind": "opencode-go", "api_key_file": str(key)},
     }
     config = ExecutionSettings.model_validate(raw)
     monkeypatch.setattr(review, "installation", lambda: config)
@@ -215,31 +212,51 @@ def test_provider_failure_is_inconclusive_and_retry_reviews_same_candidate(openc
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("problem", ["expired", "future", "naive", "missing", "extra_usage"])
-def test_subscription_evidence_is_enforced_before_any_request(
-    opencode, monkeypatch, tmp_path, problem
+@pytest.mark.parametrize("state", ["absent", "past_limit", "month_old", "extra_usage", "garbage"])
+def test_a_review_reads_the_key_and_no_former_subscription_evidence(
+    opencode, monkeypatch, tmp_path, opened_files, state
 ):
     config, request, _ = opencode
-    path = config.reviewer.subscription_evidence
-    if problem == "expired":
-        attestation(path, age=timedelta(hours=12, minutes=1))
-    elif problem == "future":
-        attestation(path, age=-timedelta(minutes=5))
-    elif problem == "naive":
-        attestation(path)
-        raw = json.loads(path.read_text())
-        raw["checked_at"] = datetime.now(UTC).replace(tzinfo=None).isoformat()
-        path.write_text(json.dumps(raw))
-    elif problem == "missing":
-        path.unlink()
-    else:
-        path.write_text(path.read_text().replace('"extra_usage_disabled": true', '"x": 1'))
+    path = tmp_path / "go-evidence.json"
+    if state == "past_limit":
+        former_attestation(path, age=timedelta(hours=12, minutes=1))
+    elif state == "month_old":
+        former_attestation(path, age=timedelta(days=30))
+    elif state == "extra_usage":
+        former_attestation(path, extra_usage_disabled=False)
+    elif state == "garbage":
+        path.write_text("renew me")
     calls = scripted(monkeypatch, [verdict()])
-    monkeypatch.setattr(provider, "read_key_file", lambda path: pytest.fail("key read"))
+    del opened_files[:]
+    result = asyncio.run(review.review_candidate(request.model_dump(mode="json")))
+    assert result["disposition"] == "approved"
+    recorded = evidence(config, request)
+    assert recorded["error_code"] is None
+    assert [item["outcome"] for item in recorded["diagnostics"]] == ["verdict"]
+    assert len(calls) == 1
+    # The review opened its key and never the statement, whatever state that file is in.
+    assert str(config.reviewer.api_key_file.resolve()) in opened_files
+    assert str(path.resolve()) not in opened_files
+
+
+@pytest.mark.parametrize("problem", ["missing", "empty", "two_tokens", "directory"])
+def test_missing_or_invalid_key_blocks_the_request(opencode, monkeypatch, problem):
+    config, request, _ = opencode
+    key = config.reviewer.api_key_file
+    key.unlink()
+    if problem == "empty":
+        key.write_text("")
+        key.chmod(0o600)
+    elif problem == "two_tokens":
+        key.write_text("first second\n")
+        key.chmod(0o600)
+    elif problem == "directory":
+        key.mkdir(mode=0o700)
+    calls = scripted(monkeypatch, [verdict()])
     result = asyncio.run(review.review_candidate(request.model_dump(mode="json")))
     assert result["disposition"] == "inconclusive"
     recorded = evidence(config, request)
-    assert recorded["error_code"] == "subscription_evidence_rejected"
+    assert recorded["error_code"] == "provider_credential_unavailable"
     assert recorded["diagnostics"] == []
     assert calls == []
 

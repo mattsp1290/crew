@@ -6,6 +6,7 @@ import test from "node:test";
 import { Pool } from "pg";
 import { MemberStore } from "../../src/service/store.ts";
 import { ApprovalStore } from "../../src/service/approvals.ts";
+import type { PublicSnapshot } from "../../src/service/observation.ts";
 import { service, startWorker, until } from "./observer-host.ts";
 import { fileURLToPath } from "node:url";
 import { Worker } from "@temporalio/worker";
@@ -17,6 +18,12 @@ for (const engine of ["claude", "pi"]) {
     const cid = randomUUID(), path = "/conversations/" + cid;
     const opened = await host.post("/conversations", { memberId: member.memberId, conversationId: cid });
     assert.equal(opened.state.engine, engine);
+    // The gateway sends RUN_FINISHED only when the conversation ends: it is cancelled, or the input
+    // that uses its last turn completes. A new conversation has 128 turns (docs/bounded-conversations.md),
+    // so pin this one to the four-turn budget migration 16 keeps for older conversations. The record
+    // request (sent twice under one requestId) and three recalls below use exactly four turns.
+    const pinned = await host.db.query("UPDATE birbcrew_ts.conversations SET turn_limit=4 WHERE conversation_id=$1 AND turn_limit=128", [cid]);
+    assert.equal(pinned.rowCount, 1);
     assert.equal((await host.api(path, undefined, host.stranger)).status, 404);
     assert.equal((await host.api(path, undefined, "wrong")).status, 401);
     let first = host.attach(cid);
@@ -34,7 +41,11 @@ for (const engine of ["claude", "pi"]) {
     await host.post(path + "/inputs", { requestId, text: "record " + requestId });
     const proposal = await until(async () => first.events.find((e) => e.type === "TOOL_CALL_START"));
     assert.equal(proposal.toolCallId, pending.approvalId);
-    await until(async () => second.agent.messages.some((m) => m.role === "assistant" && m.toolCalls?.length) || undefined);
+    await until(async () => [first, second].every((reader) =>
+      reader.agent.state.phase === "waiting" &&
+      reader.agent.state.pendingApprovals?.some((approval: PublicSnapshot["state"]["pendingApprovals"][number]) =>
+        approval.requestId === requestId && approval.approvalId === pending.approvalId)
+    ) || undefined);
     assert.deepEqual(first.agent.messages, second.agent.messages);
     const initialFrames = [first.events, second.events];
     await host.restart();

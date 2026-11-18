@@ -2,8 +2,8 @@
 
 This is the supported **custom profile** path for the AI proxy request
 `birbcrew-r-ooha`. It is independent of the built-in direct-provider and ChatGPT
-subscription profiles in `providers.ts`. It does not inherit their twelve-hour
-attestation policy, use their auth files, or fall back to them.
+subscription profiles that `providers.ts` exports. It does not read their
+`BIRBCREW_LIVE_PROFILES` setting, use their auth files, or fall back to them.
 
 ## Exact protocol contract
 
@@ -101,8 +101,9 @@ new 256-bit local token. Codex acquires a separate relay/token for each invocati
 its host `AbortSignal` directly closes that invocation's upstream requests, even
 when the native SDK has not yet disconnected its socket. The driver awaits lease
 cleanup in `finally`; cancelling one turn cannot cancel another concurrent turn.
-Profile shutdown closes all outstanding leases. The native SDK receives only that local token, never the
-upstream credential. Each **actual forwarded HTTP request** invokes the resolver
+Profile shutdown closes all outstanding leases. The Claude and Codex SDKs receive only that
+local token, never the upstream credential. The confined Pi worker receives neither: the
+host makes each Pi model request through the relay and passes the reply to the worker. Each **actual forwarded HTTP request** invokes the resolver
 and checks expiry immediately before fetch, including SDK-internal tool
 continuations and any compaction requests using the same route. Nothing caches a
 credential for a turn. On restart, the trusted module creates a new relay/token
@@ -139,7 +140,7 @@ your deployment; this relay is not a replacement for a host network firewall.
 
 ## Offline validation and remaining live acceptance
 
-On Linux with Landlock ABI 4 or newer, Node **22.23.3**, a C compiler and the checked-in package lock:
+On Linux with Landlock ABI 4 or newer, Node **24.22.3**, a C compiler and the checked-in package lock:
 
 ```sh
 npm ci
@@ -217,7 +218,7 @@ its acceptance scope.
 ## Maintained service-restart fixture
 
 Run `npm run test:proxy:restart` after `npm ci` and `npm run build` on Linux with
-Landlock ABI4+, Node22.23.3, Docker and Temporal CLI **1.10.0** on PATH (or set
+Landlock ABI4+, Node24.22.3, Docker and Temporal CLI **1.10.0** on PATH (or set
 `TEMPORAL_CLI` to its absolute path). The `proxy-service-restart` CI job installs
 and checksum-verifies that CLI and runs the same command with disposable services.
 

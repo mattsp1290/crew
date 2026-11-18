@@ -7,11 +7,14 @@ import { recoverClaudeProposal } from "./claude.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Delegation, ChildOutcome } from "@birbcrew/pi-subagents";
 import { ChildStore, type ChildKey } from "./children.ts";
+import { ChildTargetError, hasChildDriver, type ChildTarget } from "./child-target.ts";
+import { activityQueue } from "./queues.ts";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/client";
 import { ApprovalStore, type Approval, type Decision, type ToolOutcome } from "./approvals.ts";
 import { MemberStoreError, type Checkpoint, type Conversation, type TurnRequest } from "./domain.ts";
 import type { MemberStore } from "./store.ts";
+import type { SegmentUsage } from "./usage-capture.ts";
 
 export interface DriverInput {
   threadId: string;
@@ -30,14 +33,34 @@ export interface DriverInput {
   continuation?: { nativeCallId: string; result: ToolOutcome };
 }
 
+// usage: what the SDK reported for this segment's model calls; the supervisor records it once.
 export type DriverResult =
-  | { kind: "complete"; text: string; checkpoint: unknown }
-  | { kind: "delegated"; proposals: Delegation[]; checkpoint: unknown }
-  | { kind: "pending"; proposal: z.infer<typeof nativeProposal>; checkpoint: unknown };
+  | { kind: "complete"; text: string; checkpoint: unknown; usage?: SegmentUsage }
+  | { kind: "delegated"; proposals: Delegation[]; checkpoint: unknown; usage?: SegmentUsage }
+  | { kind: "pending"; proposal: z.infer<typeof nativeProposal>; checkpoint: unknown; usage?: SegmentUsage };
 export type TurnDriver = (input: DriverInput, member: Conversation) => Promise<DriverResult>;
 export type MemberProfiles = ReadonlyMap<string, Readonly<Partial<Record<Conversation["engine"], TurnDriver>>>>;
 export type PublicSegment = { kind: "complete"; text: string } | { kind: "pending"; approval: Approval } | { kind: "delegated"; children: ChildKey[] };
 export type Resume = { approval: Approval; outcome: ToolOutcome };
+
+/** Refuses, before a launch is reserved, a child that is not on the queue its row names. A workflow
+ * worker from before child targets schedules every child on its parent's Pi queue, and replay does
+ * not compare task queues, so this check is what stops such a worker from misrouting a targeted child;
+ * the workflow then settles it failed. It also refuses a stored target this release cannot read, and
+ * one whose engine has no child driver yet. */
+async function refuseMisroutedChild(children: ChildStore, key: ChildKey, taskQueue: string) {
+  let target: ChildTarget;
+  try {
+    target = await children.target(key);
+  } catch (error) {
+    if (error instanceof ChildTargetError) throw ApplicationFailure.nonRetryable(error.message, "ChildTargetError");
+    throw error;
+  }
+  if (taskQueue !== activityQueue(target.engine, target.profile)) {
+    throw ApplicationFailure.nonRetryable("Child scheduled on another engine queue", "ChildTargetMismatch");
+  }
+  if (!hasChildDriver(target.engine)) throw ApplicationFailure.nonRetryable("Only Pi runs delegated children so far", "ChildTargetError");
+}
 
 export function memberActivities(store: MemberStore, supervisor: Supervisor, profiles: ReadonlyMap<string, MemberProfile>, stateDir: string, engine: Conversation["engine"]) {
   const ledger = new ApprovalStore(store.pool);
@@ -74,6 +97,7 @@ export function memberActivities(store: MemberStore, supervisor: Supervisor, pro
       if (execution?.workflowId !== `birbcrew-ts/child/${key.childId}`) throw ApplicationFailure.nonRetryable("Incorrect child workflow");
       const timer = setInterval(() => ctx.heartbeat(), 2000);
       try {
+        await refuseMisroutedChild(children, key, ctx.info.taskQueue);
         const identity = {workflowRunId: execution.runId, activityId: ctx.info.activityId, attempt: ctx.info.attempt};
         let start = await children.begin(key, identity, !!resume);
         if (start.kind === "draining") {
@@ -146,3 +170,17 @@ export function memberActivities(store: MemberStore, supervisor: Supervisor, pro
   };
 }
 export type MemberActivities = ReturnType<typeof memberActivities>;
+
+/** The conversation workflow's expireApproval activity (docs/approval-expiry.md). It touches only
+ * the database, so it runs on the member task queue, not an engine's. */
+export function expiryActivity(store: MemberStore) {
+  const ledger = new ApprovalStore(store.pool);
+  return async (approval: Approval) => {
+    try {
+      return await ledger.expireTurn(approval);
+    } catch (error) {
+      if (error instanceof MemberStoreError) throw ApplicationFailure.nonRetryable(error.code);
+      throw error;
+    }
+  };
+}

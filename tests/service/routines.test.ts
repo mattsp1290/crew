@@ -1,3 +1,4 @@
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -32,7 +33,7 @@ const window = (minutes: number) => new Date(Date.parse(T0) + minutes * 60_000);
 
 /** A database migrated only up to `version`, as that release left it; dropped after the test. */
 async function databaseAt(t: TestContext, version = Infinity) {
-  const name = "routines_" + randomUUID().replaceAll("-", "");
+  const name = testDatabaseName("routines_");
   await pool.query("CREATE DATABASE " + name);
   const target = new URL(url!); target.pathname = "/" + name;
   const db = new Pool({ connectionString: target.href });
@@ -206,7 +207,7 @@ test("the routine routes are strict, bounded, idempotent and owner-scoped", asyn
   await assert.rejects(pool.query("DELETE FROM birbcrew_ts.routines WHERE routine_id=$1", [routineId]), { code: "23514", message: /tombstones/ });
 
   const capabilities = (await g.api("/v1/capabilities")).body;
-  assert.deepEqual(capabilities.initiatorKinds, ["owner", "routine"]);
+  assert.deepEqual(capabilities.initiatorKinds, ["owner", "routine", "handoff"]);
   assert.deepEqual([capabilities.routines.route, capabilities.routines.minimumIntervalMinutes, capabilities.routines.maximumEnabledPerOwner,
     capabilities.routines.promptBytes, capabilities.routines.approvalPolicies, capabilities.routines.timezone],
     ["/v1/routines", 15, 20, 16_384, ["wait", "fail_closed"], "UTC"]);
@@ -705,9 +706,10 @@ test("migration 025 completes while a native turn holds its admission", async (t
   await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 25).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 025 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
   await current.commitTurn({ ownerId, conversationId, requestId, token: start.token, reply: "still running", checkpoint: { version: 1, engine: "pi", state: {} } });
 });

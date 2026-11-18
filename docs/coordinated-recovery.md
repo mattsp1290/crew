@@ -11,7 +11,7 @@ Keep all of the following at the same quiesced boundary:
 
 | Artifact | Required contents |
 | --- | --- |
-| `application-postgres` | Entire Crew application database: schema/version table, members/profiles, volume identities and account digests, conversation mappings, native checkpoints, admissions/turns, effect and delivery receipts, decisions, observation snapshots/events/cursors, append-only audit events, scheduled routines and their firings, member memory entries (including their text) and each conversation's references to them, capability ceilings, member capability sets and the tool-call ledger (including each call's private arguments and result), trusted sessions/generations and historical receipt authority, and recovery control row. |
+| `application-postgres` | Entire Crew application database: schema/version table, members/profiles, volume identities and account digests, conversation mappings, native checkpoints, admissions/turns, effect and delivery receipts, decisions, observation snapshots/events/cursors, append-only audit events, standing grants, conversation handoffs (including their transcripts), scheduled routines and their firings, member memory entries (including their text) and each conversation's references to them, member instructions (including their text), instruction packs (including their text) and each member's attached packs, the usage ledger and member usage budgets, webhook endpoints (including their URLs and signing secrets), deliveries and fan-out cursor, capability ceilings, member capability sets and the tool-call ledger (including each call's private arguments and result), trusted sessions/generations and historical receipt authority, and recovery control row. |
 | `native-volumes` | Full private Claude and Codex native session trees, SQLite indexes and sidecars (after teardown), rollout/transcript bytes, identity markers, and any consumer-owned native stores. A checkpoint digest is not the underlying file. Pi context normally lives in application checkpoints. |
 | `temporal-persistence` | Supported consistent backup of the actual self-hosted Temporal persistence, visibility and required cluster/configuration state. Include all relevant stores in one opaque archive or provider snapshot export. A workflow-history export is insufficient to recreate the service's execution identities, queues and cluster persistence. |
 | `configuration` | Non-secret deployment configuration, application commit, lockfile, image/package/native pins, profile identities, models/tool schemas, logical native mount paths, PostgreSQL/Temporal server versions and store layout. |
@@ -30,6 +30,11 @@ engine's global authentication file as a recovery mechanism.
 A checksum detects corruption, not a maliciously replaced bundle. Keep the
 manifest checksum in an independently trusted backup catalog; authenticate and
 verify the bundle before invoking restore. Never extract an untrusted archive.
+
+The application database backup also retains delegation-control state, immutable
+command receipts, selected child cohorts, and permanent retirements. Keep these
+tables with the children, approvals, effects, and native-launch records they
+govern. See [delegation control](delegation-control.md) for the operator commands.
 
 ## Operator interface
 
@@ -241,6 +246,27 @@ snapshot or copied from another fence, and never deleted. See
    npm run recovery -- resume /absolute/target-operator.ts /private/generation
    ```
 
+   Activating a restored installation now creates a fresh global delegation
+   disable command for the new recovery instance in the activation transaction.
+   It permanently retires unfinished restored children without changing their
+   sealed destinations or identities. It also removes all active named roles
+   under restored profile names. Recorded parent observations retain their old
+   instance identity, so matching workers must observe parent histories again
+   before those observations can establish drain completion. A parent whose
+   history Temporal no longer retains stays a permanent drain blocker; see
+   [blockers that never clear](delegation-control.md#blockers-that-never-clear). A held source that
+   resumes without a restore keeps its delegation-control settings, parent
+   observations, and named roles.
+
+   Keep consumer ingress disabled while matching workers reconcile retired
+   children as failed, or cancelled when request cancellation already applies.
+   Reconciliation closes unanswered cards without recording an owner choice and
+   preserves committed effect receipts. Enabling delegation later permits only
+   future children and cannot revive retired work. Use a new command UUID and
+   current revision after reconciliation. An old enable command belongs to the
+   previous instance and is refused. Named delegation also requires a new parent
+   profile name. Follow [delegation control](delegation-control.md#re-enable-future-delegation).
+
    Activating a restored installation revokes every standing grant that is not
    already revoked, with reason `recovery_restore`, in the same transaction, and
    audits each one: the restore can bring back grants revoked after its recovery
@@ -254,6 +280,34 @@ snapshot or copied from another fence, and never deleted. See
    still applies. A held source that resumes without a restore keeps its entries. The
    restored native volumes still hold the system context that Claude and Codex
    sessions recorded. See [member memory](memories.md#recovery).
+
+   Member instructions are kept as they were at the recovery point, and nothing is
+   audited about them: they are fixed at spawn and never removed, so a restore cannot
+   bring back text an owner took away. See [member instructions](member-instructions.md#recovery).
+
+   Instruction packs and each member's packs are kept as they were at the recovery point,
+   and nothing is audited about them: a member's packs never change, and a pack any member
+   has can never be deleted. A pack the owner deleted after the recovery point comes back,
+   text and all, unattached; it reaches no model until a spawn names it, so owners delete
+   it again. See [instruction packs](instruction-packs.md#recovery).
+
+   Resume changes neither the usage ledger nor usage budgets. Tokens spent after the
+   recovery point are no longer in the ledger, so for the rest of that UTC day each
+   member's budget counts less than it used, and a budget set, changed or cleared
+   after the recovery point is back to its earlier state. Owners check each member's
+   budget after a restore. The ledger reissues the record IDs drawn after the recovery
+   point, so before resuming, read `SELECT max(usage_id) FROM birbcrew_ts.usage_ledger`
+   on the restored database and give it to consumers that mirror usage records. See
+   [usage metering](usage-metering.md#upgrade-and-recovery).
+
+   In the same transaction it disables every enabled webhook endpoint with reason
+   `recovery_restore`, auditing each `webhook.disabled`, cancels every undelivered
+   webhook delivery, and moves the webhook cursor past every restored audit event,
+   so no event from before the restore is sent: an undelivered row may already have
+   reached its receiver on the discarded timeline, and the restore can bring back an
+   endpoint the owner deleted. The owner enables each endpoint again. A held source
+   that resumes without a restore keeps its endpoints. See
+   [outbound webhooks](webhooks.md#recovery).
 
    In the same transaction it marks every tool-call ledger row that is an effect and
    is `ready` or `admitted` as `uncertain` with reason `recovery_restore`: the effect
@@ -342,7 +396,10 @@ step of the restore procedure in [source fencing and restore](#source-fencing-an
 Schedule would fire whenever the Temporal server runs, including before `resume`;
 the dispatcher instead runs only in a gateway and checks the recovery phase before
 every pass, and both routine tables carry the write barrier, so a held or restored
-installation records no firing even if a gateway was left running.
+installation records no firing even if a gateway was left running. The
+[webhook](webhooks.md) dispatcher runs in gateways too, checks the phase the same
+way, and its three tables carry the barrier, so a held installation starts no new
+delivery; an attempt already in flight at the hold may still reach its receiver.
 
 Windows that fall while the installation is held or its gateways are stopped are
 never run late. The first gateway to start is armed from then on; a window it was not
@@ -372,9 +429,17 @@ The existing proxy restart proof uses Temporal CLI 1.10.0 development SQLite
 persistence. That is **development fixture evidence only**, not support for using
 `start-dev` as production persistence, nor an in-flight multi-store restore proof.
 
+The selected PostgreSQL dump-and-restore case checks the new delegation-control
+activation policy. Whole-installation coordinated restore remains unqualified
+for this policy. The database case does not establish native teardown or workflow
+recovery across a restored installation. The accepted
+[application rollback](delegation-control.md#upgrade-or-roll-back-with-retained-state)
+uses retained state with delegation globally disabled. It does not authorize
+restore activation under the older application, which lacks this policy.
+
 ## Reproduce checks
 
-Use Node 22.23.3 and disposable PostgreSQL 17, with permission to create/drop test
+Use Node 24.22.3 and disposable PostgreSQL 17, with permission to create/drop test
 databases. `BIRBCREW_PG_BIN` may name the directory containing matching `pg_dump`
 and `pg_restore`, or `BIRBCREW_RECOVERY_POSTGRES_CONTAINER` may name the PostgreSQL
 17 container for `docker exec`. These tools operate only on randomly named test

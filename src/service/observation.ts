@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { applyChild, endChildStep, insertToolResult, type ChildChange, type ObservedChild } from "./child-observation.ts";
 import { EventType as E, type Event, type Message } from "@ag-ui/core";
 import type { Pool, PoolClient } from "pg";
-import { standingChoice, toolChoices } from "./deferral.ts";
+import { publicToolArguments, standingChoice, toolChoices } from "./deferral.ts";
 import type { ActiveGrant } from "./grants.ts";
 import type { Approval, ToolOutcome } from "./approvals.ts";
 import { MemberStoreError, type Conversation } from "./domain.ts";
@@ -11,12 +11,14 @@ const retainedEvents = 256;
 // The per-request call cap, so every granted call of the current request stays listed while the
 // snapshot stays bounded. The audit trail keeps every one.
 const retainedGrantedCalls = 16;
+// One card per request can expire; the last 16 bound the snapshot as granted calls do.
+const retainedExpiredCalls = 16;
 
 type PublicApproval = Omit<Approval, "argumentDigest" | "ownerId" | "nativeCallId" | "grantId"> & {
-  expiresAt?: string; choices: typeof toolChoices.record_work_item; standingChoices?: typeof standingChoice.options;
+  argumentsComplete?: true; expiresAt?: string; choices: typeof toolChoices.record_work_item; standingChoices?: typeof standingChoice.options;
 };
 type PublicQuestion = Omit<PublicApproval, "choices"> & { choices: typeof toolChoices.choose_next_step };
-type Phase = "idle" | "running" | "waiting" | "complete" | "cancelled" | "failed";
+export type Phase = "idle" | "running" | "waiting" | "complete" | "cancelled" | "failed";
 interface ClosedCall {
   requestId: string;
   approvalId: string;
@@ -27,9 +29,12 @@ interface ClosedCall {
 // A call a standing grant approved, which had no card. Per call, so creating or revoking a
 // member-wide grant republishes no conversation's snapshot.
 type GrantedCall = ActiveGrant & { requestId: string; approvalId: string };
+// A card nobody decided before its deadline; Crew cancelled its request (docs/approval-expiry.md).
+type ExpiredCall = { requestId: string; approvalId: string; expiresAt: string; expiredAt: string };
 type Projection = {
   interruptedCalls?: ClosedCall[];
   grantedCalls?: GrantedCall[];
+  expiredCalls?: ExpiredCall[];
   liveOperations?: (Omit<ClosedCall,"effect"> & {effect:"pending" | ClosedCall["effect"]})[];
   conversationId: string;
   memberId: string;
@@ -48,8 +53,10 @@ type Change = ChildChange
   | ({ kind: "reply"; requestId: string; cancelled?: boolean } & ({ text: string } | { itemCount: number }))
   | { kind: "toolValue"; invocationId: string; publicId: string; requestId: string }
   | { kind: "toolPreview"; invocationId: string; publicId: string }
-  | { kind: "call"; approval: Approval; expiresAt?: string; standing?: true; grant?: ActiveGrant }
+  // expiresAt marks a Codex live call; deadline is the expiry of a card the workflow waits on.
+  | { kind: "call"; approval: Approval; argumentsComplete?: true; expiresAt?: string; deadline?: string; standing?: true; grant?: ActiveGrant }
   | ({ kind: "liveClosed" } & ClosedCall)
+  | ({ kind: "expired" } & ExpiredCall)
   | { kind: "liveDelivered"; requestId: string; approvalId: string }
   | { kind: "answered" | "resume"; approvalId: string }
   | { kind: "cancelled"; requestId: string }
@@ -112,6 +119,7 @@ function logicalKey(change: Change) {
     case "answered":
     case "resume":
     case "liveClosed":
+    case "expired":
     case "liveDelivered":
     case "result": return change.kind + "/" + change.approvalId;
     default: return change.kind + "/" + change.requestId;
@@ -214,14 +222,15 @@ function apply(snapshot: StoredSnapshot, change: Change): Event[] {
       const { memberId, conversationId, requestId, invocationId, approvalId, version, policyVersion,
         toolName, summary } = change.approval;
       commitPreamble(invocationId === requestId ? undefined : invocationId);
-      const card = { ...(change.expiresAt && {expiresAt:change.expiresAt}), memberId, conversationId, requestId, invocationId, approvalId, version, policyVersion, toolName, summary };
+      const expiresAt = change.expiresAt ?? change.deadline;
+      const card = { ...(change.argumentsComplete === true && {argumentsComplete: true as const}), ...(expiresAt && {expiresAt}), memberId, conversationId, requestId, invocationId, approvalId, version, policyVersion, toolName, summary };
       if (change.grant) state.grantedCalls = [...state.grantedCalls ?? [], { requestId, approvalId, ...change.grant }].slice(-retainedGrantedCalls);
       else if (toolName === "choose_next_step") (state.pendingQuestions ??= []).push({ ...card, choices: toolChoices.choose_next_step });
       else state.pendingApprovals.push({ ...card, choices: toolChoices.record_work_item,
         ...(change.standing && { standingChoices: standingChoice.options }) });
       if (!change.grant) state.phase = "waiting";
       const attribution = invocationId === requestId ? {} : { subagentRunId: invocationId };
-      const args = toolName === "choose_next_step" ? "{}" : JSON.stringify({ operation_id: requestId });
+      const args = JSON.stringify(publicToolArguments(toolName, requestId));
       const messageId = approvalId + "/assistant";
       const preamble = snapshot.openTools[invocationId]?.preamble;
       if (preamble) messages.push({id:preamble.id,role:"assistant",content:preamble.prefix,...attribution});
@@ -284,6 +293,14 @@ function apply(snapshot: StoredSnapshot, change: Change): Event[] {
       state.pendingApprovals = state.pendingApprovals.filter((p) => p.requestId !== change.requestId);
       state.phase = state.pendingApprovals.length || state.pendingQuestions?.length ? "waiting" : "running";
       break;
+    case "expired": {
+      const { kind, ...call } = change;
+      if (state.pendingQuestions) state.pendingQuestions = state.pendingQuestions.filter((p) => p.requestId !== call.requestId);
+      state.pendingApprovals = state.pendingApprovals.filter((p) => p.requestId !== call.requestId);
+      state.expiredCalls = [...state.expiredCalls ?? [], call].slice(-retainedExpiredCalls);
+      state.phase = state.pendingApprovals.length || state.pendingQuestions?.length ? "waiting" : "running";
+      break;
+    }
     case "resume":
       startStep(change.approvalId + "/continue");
       break;
@@ -351,7 +368,8 @@ function apply(snapshot: StoredSnapshot, change: Change): Event[] {
   }
   // A finalized snapshot omits live messages and would remove them from HttpAgent.
   const hasPartialMessage = snapshot.openText || Object.keys(snapshot.childText).length || Object.keys(snapshot.openTools).length;
-  if (!hasPartialMessage && change.kind !== "resume" && change.kind !== "answered" && change.kind !== "cancelled") {
+  if (!hasPartialMessage && change.kind !== "resume" && change.kind !== "answered" && change.kind !== "cancelled"
+      && change.kind !== "expired") {
     if ((change.kind === "childEnded" || change.kind === "failed") && state.children?.some(c => c.requestId === change.requestId) &&
       state.children.every(c => c.requestId !== change.requestId || (c.phase !== "ready" && c.phase !== "running"))) {
       // HttpAgent updates existing IDs in place. Drop this delegation’s provisional ordering
@@ -400,9 +418,38 @@ export async function publishObservation(db: PoolClient, id: string, change: Cha
   await db.query("DELETE FROM birbcrew_ts.public_events WHERE conversation_id=$1 AND cursor<=$2", [id, cursor - retainedEvents]);
 }
 
-export async function readEvents(db: Pool, owner: string, id: string, cursor: number) {
-  const { rows } = await db.query<{ cursor: number; event: Event }>(
-    `SELECT e.cursor,e.event FROM birbcrew_ts.public_events e JOIN birbcrew_ts.conversations c USING (conversation_id)
-     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT 32`, [owner, id, cursor]);
-  return rows;
+/** The most rows one readEvents call returns. */
+export const readEventsLimit = 32;
+
+/** How long a reader of the ledger waits after a read that returned no rows. */
+export const readEventsIdleMs = 75;
+
+/** A committed public event and its cursor in the conversation's ledger. */
+export interface ObservedRow { cursor: number; event: Event }
+
+const eventStatementTimeoutMs = 2_000;
+const eventReplyTimeoutMs = 3_000;
+
+export async function readEvents(db: Pool, owner: string, id: string, cursor: number): Promise<ObservedRow[]> {
+  const client = await db.connect();
+  let committed = false;
+  const connectionError = () => {};
+  client.on("error", connectionError);
+  try {
+    const setup = { text: `BEGIN READ ONLY; SET LOCAL statement_timeout = '${eventStatementTimeoutMs}ms'`, query_timeout: eventReplyTimeoutMs };
+    await client.query(setup);
+    const query = {
+      text: `SELECT e.cursor,e.event FROM birbcrew_ts.public_events e JOIN birbcrew_ts.conversations c USING (conversation_id)
+     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT $4`,
+      values: [owner, id, cursor, readEventsLimit], query_timeout: eventReplyTimeoutMs,
+    };
+    const { rows } = await client.query<ObservedRow>(query);
+    const commit = { text: "COMMIT", query_timeout: eventReplyTimeoutMs };
+    await client.query(commit);
+    committed = true;
+    return rows;
+  } finally {
+    client.release(!committed);
+    client.off("error", connectionError);
+  }
 }

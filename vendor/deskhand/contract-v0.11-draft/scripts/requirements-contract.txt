@@ -1,0 +1,8 @@
+# For scripts/check-contract.py. referencing ships with jsonschema; it is pinned
+# too because the script imports it directly. rfc3339-validator makes jsonschema
+# assert the date-time format (without it the format is silently skipped), and
+# six is its only dependency.
+jsonschema==4.26.0
+referencing==0.37.0
+rfc3339-validator==0.1.4
+six==1.17.0

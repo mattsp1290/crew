@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -481,7 +482,46 @@ def test_interrupted_provider_turn_is_not_reissued(project_config, isolated_post
     asyncio.run(exercise())
 
 
-def test_project_provider_sdk_does_not_retry_timeout(monkeypatch, tmp_path):
+def test_project_worker_selects_its_model_from_the_mode_alone(project_config, monkeypatch):
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    from birbcrew import project_runtime, provider
+    from birbcrew.config import Settings
+
+    document = json.loads(Path(os.environ["BIRBCREW_CONFIG"]).read_text())
+
+    def configured(mode):
+        value = Settings.model_validate(document | {"mode": mode})
+        monkeypatch.setattr(project_runtime, "settings", lambda: value)
+
+    def missing_key():
+        raise ValueError("No literal OPENCODE_GO_API_KEY assignment in ~/.profile")
+
+    # Live with no credential fails at startup and before every turn.
+    # It never becomes the injected model.
+    configured("project-live")
+    monkeypatch.setattr(provider, "read_go_key", missing_key)
+    with pytest.raises(ValueError, match="OPENCODE_GO_API_KEY"):
+        project_runtime.make_agent()
+    with pytest.raises(ValueError, match="OPENCODE_GO_API_KEY"):
+        asyncio.run(project_runtime.validate_project_provider())
+    # Live with the credential needs nothing else: there is no attestation path to configure.
+    monkeypatch.setattr(provider, "read_go_key", lambda: "synthetic-not-a-credential")
+    live = project_runtime.make_agent().model
+    assert isinstance(live, OpenAIChatModel) and live.model_name == provider.MODEL
+    asyncio.run(project_runtime.validate_project_provider())
+    for mode in ("test", "live", "approved-goal"):
+        configured(mode)
+        with pytest.raises(ValueError, match="requires project-live or project-test"):
+            project_runtime.make_agent()
+    configured("project-test")
+    monkeypatch.setattr(provider, "read_go_key", lambda: pytest.fail("test mode read a credential"))
+    assert isinstance(project_runtime.make_agent().model, FunctionModel)
+    asyncio.run(project_runtime.validate_project_provider())
+
+
+def test_project_provider_sdk_does_not_retry_timeout(monkeypatch):
     from openai import APITimeoutError
 
     from birbcrew import provider
@@ -492,11 +532,10 @@ def test_project_provider_sdk_does_not_retry_timeout(monkeypatch, tmp_path):
         calls.append(request)
         raise httpx.ReadTimeout("injected uncertain acknowledgement", request=request)
 
-    monkeypatch.setattr(provider, "check_evidence", lambda path: None)
     monkeypatch.setattr(provider, "read_go_key", lambda: "synthetic-not-a-credential")
 
     async def exercise():
-        model = provider.model(tmp_path / "unused")
+        model = provider.model()
         client = model._provider.client
         assert client.max_retries == 0
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(timeout))
@@ -531,7 +570,7 @@ def test_provider_preflight_rejects_without_dispatch_and_allows_fresh_input(  # 
     async def preflight():
         validations.append(1)
         if len(validations) <= 3:
-            raise ValueError("injected_expired_owner_attestation")
+            raise ValueError("injected_unreadable_provider_credential")
 
     async def exercise():
         await store.migrate()

@@ -26,10 +26,11 @@ export async function grantable(db: Pick<PoolClient, "query">, call: Call) {
 }
 
 // A conversation grant ends when its conversation stops accepting requests: its turns reach the
-// limit, or a cancellation, an uncertain turn or a rejected admission has closed it.
+// limit, a handoff sealed it, or a cancellation, an uncertain turn or a rejected admission has closed it.
 const conversationOpen = `(g.conversation_id IS NULL OR (
   (SELECT count(*) FROM birbcrew_ts.turns t WHERE t.conversation_id=g.conversation_id AND t.phase='committed')
     < (SELECT c.turn_limit FROM birbcrew_ts.conversations c WHERE c.conversation_id=g.conversation_id)
+  AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.conversation_handoffs h WHERE h.source_conversation_id=g.conversation_id)
   AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.turns t WHERE t.conversation_id=g.conversation_id AND t.phase='uncertain')
   AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.tool_cancellations x WHERE x.conversation_id=g.conversation_id)
   AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.request_admissions a WHERE a.conversation_id=g.conversation_id AND a.phase='rejected')))`;

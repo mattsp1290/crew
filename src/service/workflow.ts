@@ -4,10 +4,11 @@ import {
 } from "@temporalio/workflow";
 import { workflowGenerationTurnLimit, historyRequiresRollover } from "./limits.ts";
 import { acceptsChoice } from "./deferral.ts";
-import { submitSchema, type Conversation, type TurnRequest } from "./domain.ts";
+import { turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
 import type { Approval, Decision, Choice } from "./approvals.ts";
 import type { ChildKey, ChildStore } from "./children.ts";
-import type { MemberActivities, Resume } from "./activities.ts";
+import { childTarget } from "./child-target.ts";
+import type { expiryActivity, MemberActivities, Resume } from "./activities.ts";
 
 import type { MemberStore, ownerAdmissionActivity } from "./store.ts";
 import { activityQueue, memberTaskQueue } from "./queues.ts";
@@ -25,7 +26,10 @@ function actions(queue: string) {
 }
 
 export async function piChildWorkflow(key: ChildKey, profile: string): Promise<void> {
-  const { executeChildSegment, settleApproval } = actions(activityQueue("pi", profile));
+  // A child runs on its target's queue. A key without one, as every key recorded before targets,
+  // runs on its parent's Pi profile. Replay compares activity type and ID, not the queue.
+  const runner = childTarget(key.target, profile);
+  const { executeChildSegment, settleApproval } = actions(activityQueue(runner.engine, runner.profile));
   const {reconcileChild, closeExitedChild} = proxyActivities<{reconcileChild:ChildStore["reconcile"]; closeExitedChild:ChildStore["closeExitedChild"]}>({
     taskQueue:memberTaskQueue,startToCloseTimeout:"20 seconds",scheduleToCloseTimeout:"2 minutes",
   });
@@ -63,6 +67,11 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     taskQueue: memberTaskQueue, startToCloseTimeout: "20 seconds", scheduleToCloseTimeout: "60 seconds",
   });
   const { executeTurn, decideApproval, settleApproval, cancelPending } = actions(activityQueue(conversation.engine, conversation.profile));
+  // Past its deadline a card refuses every decision, so a failed expiry would strand it: retry
+  // the idempotent database call until the database answers instead of failing the conversation.
+  const { expireApproval } = proxyActivities<{ expireApproval: ReturnType<typeof expiryActivity> }>({
+    taskQueue: memberTaskQueue, startToCloseTimeout: "20 seconds", retry: { initialInterval: "1 second", maximumInterval: "1 minute" },
+  });
   const { reconcileTurn } = proxyActivities<Pick<MemberStore, "reconcileTurn">>({
     taskQueue: memberTaskQueue, startToCloseTimeout: "20 seconds",
   });
@@ -76,7 +85,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   const { quarantineDelegation } = proxyActivities<Pick<ChildStore, "quarantineDelegation">>({
     taskQueue: memberTaskQueue, startToCloseTimeout: "15 seconds",
   });
-  const turns = new Map<string, { text: string; durable: boolean; admission: Promise<void>; result: Promise<string> }>();
+  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string> }>();
   let previous = Promise.resolve();
   let failed = false;
   let cancelled = false;
@@ -191,6 +200,24 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     }
   }
 
+  /** Waits for the card's answer. A card with a deadline waits until then, and SQL settles a
+   * decision racing it (ApprovalStore.expireTurn). Testing the field first keeps the patch marker
+   * out of every history whose card has none, including every history recorded before it. */
+  async function answer(approval: Approval) {
+    if (!approval.expiresAt || !patched("approval-expiry-v1")) return condition(() => answered);
+    // Workflow time is not the database clock: a timer that fires early waits out the rest.
+    let wait = Date.parse(approval.expiresAt) - Date.now();
+    while (!await condition(() => answered, Math.max(wait, 1000))) {
+      const expiry = await expireApproval(approval);
+      if (expiry.kind !== "early") {
+        // An expired card cancelled its request, which closes the conversation like a cancel.
+        if (expiry.kind === "expired") cancelled = true;
+        return;
+      }
+      wait = expiry.remainingMs;
+    }
+  }
+
   async function run(request: TurnRequest) {
     const first = await segment(request);
     liveCalls.delete(request.requestId);
@@ -225,7 +252,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     answered = false;
     // A standing grant approved the call when it was proposed, so no answer will come. Testing
     // the field first keeps the patch marker out of every history without such a call.
-    if (!first.approval.grantId || !patched("standing-grants-v1")) await condition(() => answered);
+    if (!first.approval.grantId || !patched("standing-grants-v1")) await answer(first.approval);
     const outcome = await settleApproval(first.approval);
     const resumed = await segment(request, { approval: first.approval, outcome });
     pending = undefined;
@@ -234,7 +261,10 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   }
 
   function validate(value: TurnRequest): TurnRequest {
-    const parsed = submitSchema.safeParse(value);
+    // The bound every internal path shares; admission, outside workflow code, decides which request
+    // may use more than the public prompt bound. enqueue repeats this check on replay, so it may only
+    // widen: every request a recorded history holds passed the narrower bound.
+    const parsed = turnRequestSchema.safeParse(value);
     if (!parsed.success) throw ApplicationFailure.nonRetryable("Invalid turn request");
     const request = parsed.data;
     if (request.ownerId !== conversation.ownerId || request.conversationId !== conversation.conversationId) {
@@ -245,7 +275,9 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     if (historyBoundary()) throw ApplicationFailure.nonRetryable("Conversation history is rolling over", "RolloverInProgress");
     const existing = turns.get(request.requestId);
     if (existing) {
-      if (existing.text !== request.text) throw ApplicationFailure.nonRetryable("Request payload conflict");
+      if (existing.text !== request.text || existing.deadline !== request.approvalDeadlineSeconds) {
+        throw ApplicationFailure.nonRetryable("Request payload conflict");
+      }
       return request;
     }
     if (failed || cancelled) throw ApplicationFailure.nonRetryable("Conversation closed to new turns");
@@ -275,7 +307,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     // execution; if an earlier turn prevents it from running, persist that outcome too.
     const admission = durable ? persistAdmission(request) : Promise.resolve();
     void admission.catch(() => {}); // Also observed by the queued runner and admission handler.
-    const entry = { text: request.text, durable, admission, result: undefined! as Promise<string> };
+    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string> };
     inFlight++;
     const result = previous.then(async () => {
       try { await entry.admission; }

@@ -1,0 +1,9 @@
+{
+  "lease_result": {
+    "op": "acquire",
+    "outcome": "acquired"
+  },
+  "lease": {
+    "held_by_caller": false
+  }
+}

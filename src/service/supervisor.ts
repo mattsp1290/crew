@@ -3,9 +3,26 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { z } from "zod";
 import { approvalSchema } from "./approvals.ts";
-import { commitSchema, executionSchema, submitSchema, openSchema } from "./domain.ts";
+import { childTargetSchema } from "./child-target.ts";
+import { nativeProposal } from "./deferral.ts";
+import { commitSchema, executionSchema, turnRequestSchema, openSchema } from "./domain.ts";
+import { segmentUsage } from "./usage-capture.ts";
 
-export const launchSchema = submitSchema.extend({ token: z.uuid(), execution: executionSchema, childId: z.uuid().optional() });
+/** What a turn runner may reply to the supervisor host. A delegated child's profile is strict, so
+ * nothing a runner returns can set a child target (docs/architecture.md). */
+export const runnerResultSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("complete"), text: commitSchema.shape.reply, checkpoint: commitSchema.shape.checkpoint,
+    usage: segmentUsage.optional() }),
+  z.strictObject({ kind:z.literal("delegated"),checkpoint:commitSchema.shape.checkpoint,proposals:z.array(z.strictObject({
+    nativeCallId:z.string().min(1).max(256),task:z.string().min(1).max(4096),
+    profile:z.strictObject({role:z.enum(["analyst","recorder"]),version:z.literal(1),instructions:z.string().min(1),
+      model:z.string().min(1),tools:z.array(z.literal("record_work_item")).max(1)}),
+  })).min(1).max(2), usage: segmentUsage.optional() }),
+  z.strictObject({ kind: z.literal("pending"), checkpoint: commitSchema.shape.checkpoint,
+    proposal: nativeProposal, usage: segmentUsage.optional() }),
+]);
+
+export const launchSchema = turnRequestSchema.extend({ token: z.uuid(), execution: executionSchema, childId: z.uuid().optional() });
 export type Launch = z.infer<typeof launchSchema>;
 export const commandSchema = z.strictObject({
   id: z.uuid(), action: z.enum(["start", "stop"]), launch: launchSchema,
@@ -13,7 +30,8 @@ export const commandSchema = z.strictObject({
 const segmentSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("complete"), text: commitSchema.shape.reply }),
   z.strictObject({ kind: z.literal("pending"), approval: approvalSchema }),
-  z.strictObject({ kind: z.literal("delegated"), children: z.array(openSchema.extend({requestId:z.uuid(),childId:z.uuid()})).min(1).max(2) }),
+  z.strictObject({ kind: z.literal("delegated"), children: z.array(openSchema.extend({requestId:z.uuid(),childId:z.uuid(),
+    target:childTargetSchema.optional()})).min(1).max(2) }),
   z.strictObject({ kind: z.literal("childDone") }),
 ]);
 type Segment = z.infer<typeof segmentSchema>;

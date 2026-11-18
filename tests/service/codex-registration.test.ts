@@ -1,3 +1,4 @@
+import { testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -13,7 +14,7 @@ test("migration 011 preserves existing members, admits native Codex volumes, and
   t.after(() => rm(directory, { recursive: true, force: true }));
   const source = new URL(process.env.BIRBCREW_TEST_DATABASE_URL!);
   const admin = new Pool({ connectionString: source.href });
-  const database = "upgrade_" + randomUUID().replaceAll("-", "");
+  const database = testDatabaseName("upgrade_");
   await admin.query("CREATE DATABASE " + database);
   source.pathname = "/" + database;
   const pool = new Pool({ connectionString: source.href });
@@ -43,7 +44,7 @@ test("migration 011 preserves existing members, admits native Codex volumes, and
     await assert.rejects(insert("codex", randomUUID()), { code: "23514" });
 
     await Promise.all([store.migrate(), store.migrate()]);
-    assert.deepEqual(await store.spawn(old), member);
+    assert.deepEqual(await store.spawn(old), { ...member, subagents: { mode: "legacy", targets: [] } });
     assert.equal((await pool.query("SELECT volume FROM birbcrew_ts.profiles WHERE engine='claude'")).rows[0].volume, volume);
     await assert.rejects(store.spawn({ ...old, engine: "codex" }), { code: "conflict" });
     await assert.rejects(insert("codex", null), { code: "23514" });

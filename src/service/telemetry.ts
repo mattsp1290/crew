@@ -7,16 +7,26 @@ import {
   BasicTracerProvider, BatchSpanProcessor, SimpleSpanProcessor, type SpanExporter, type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { z } from "zod";
+import { createGenAiObserver, instrumentationScope, type AgentHandle } from "@birbcrew/switchboard-observability";
+import { datadogExporter } from "./telemetry-datadog.ts";
 import { engineSchema, type Engine } from "./domain.ts";
 
 const names = ["workflow.segment", "model.invoke", "tool.settle", "native.restore"] as const;
 type Operation = (typeof names)[number];
 type Scope = { engine: Engine; conversationId: string; requestId: string; workflowRunId: string; childId?: string };
+type AgentScope = Scope & { provider: string };
 
 const active = new AsyncLocalStorage<{ traceId: string; context: Context }>();
 const uuid = z.uuid();
 const output = process.env.BIRBCREW_TRACE_FILE;
 const endpoint = otlpEndpoint(process.env);
+const ddFlag = process.env.BIRBCREW_DATADOG_LLMOBS ?? "false";
+if (!/^(true|false)$/.test(ddFlag)) throw new Error("BIRBCREW_DATADOG_LLMOBS must be true or false");
+const datadog = ddFlag === "true";
+if (datadog && !endpoint) throw new Error("BIRBCREW_DATADOG_LLMOBS requires an OTLP traces endpoint");
+if (datadog && (process.env.OTEL_EXPORTER_OTLP_HEADERS?.trim() || process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS?.trim())) {
+  throw new Error("BIRBCREW_DATADOG_LLMOBS requires OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS to be unset");
+}
 
 // A typo must stop startup, not silently send spans elsewhere or drop them. Errors name the variable and never
 // repeat its value, because a rejected URL may contain credentials. Plain http is allowed to 127.0.0.1, or to any
@@ -26,16 +36,19 @@ const endpoint = otlpEndpoint(process.env);
 // bracketed host to node:http, which cannot resolve it, so every export would fail unnoticed.
 // The exporter sends only the path, so a query or fragment (often an ingest key) would be dropped silently.
 function otlpEndpoint(env: NodeJS.ProcessEnv) {
-  const value = env.BIRBCREW_OTLP_TRACES_ENDPOINT;
-  if (!value) return undefined;
+  const selected = ["BIRBCREW_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"]
+    .find((name) => env[name] !== undefined && env[name] !== "");
+  if (!selected) return undefined;
+  const value = env[selected];
   const allowHttp = env.BIRBCREW_OTLP_TRACES_ALLOW_HTTP ?? "";
   if (!/^(true|false|)$/i.test(allowHttp)) throw new Error("BIRBCREW_OTLP_TRACES_ALLOW_HTTP must be true or false");
-  const url = URL.parse(value);
+  const url = typeof value === "string" ? URL.parse(value) : null;
+  if (url && selected === "OTEL_EXPORTER_OTLP_ENDPOINT") url.pathname = url.pathname.replace(/\/$/, "") + "/v1/traces";
   const plaintext = url?.protocol === "http:" && url.hostname !== "127.0.0.1";
   if (!url || url.username || url.password || url.search || url.hash || url.pathname === "/" ||
       url.hostname.startsWith("[") || !(url.protocol === "https:" || url.protocol === "http:") ||
       (plaintext && allowHttp.toLowerCase() !== "true")) {
-    throw new Error("BIRBCREW_OTLP_TRACES_ENDPOINT must be an https OTLP traces URL with a path (plain http only to "
+    throw new Error(selected + " must be an https OTLP traces URL with a path (plain http only to "
       + "127.0.0.1, or to any host with BIRBCREW_OTLP_TRACES_ALLOW_HTTP=true), such as https://collector.example/v1/traces, "
       + "with no IPv6 literal, credentials, query or fragment");
   }
@@ -105,14 +118,16 @@ const exporter: SpanExporter = {
 };
 const exportTimeoutMs = 2_000;
 // The OTEL_* resource variables are read only when OTLP export is on, so they cannot stop any other process.
-const resource = endpoint ? otlpResource(process.env) : { "service.name": "birbcrew" };
+const resource = { ...(endpoint ? otlpResource(process.env) : { "service.name": "birbcrew" }),
+  ...(datadog && { dd_llmobs_enabled: true }) };
 const processors: SpanProcessor[] = [];
 if (output) processors.push(new SimpleSpanProcessor(exporter));
 if (endpoint) {
   // Loaded only when configured: every native turn forks a runner that imports this module.
   const [{ OTLPTraceExporter }, { exportWarning }] = await Promise.all([
     import("@opentelemetry/exporter-trace-otlp-http"), import("./telemetry-warning.ts")]);
-  const otlp = new OTLPTraceExporter({ url: endpoint, timeoutMillis: exportTimeoutMs });
+  const transport = new OTLPTraceExporter({ url: endpoint, timeoutMillis: exportTimeoutMs, ...(datadog && { headers: {} }) });
+  const otlp = datadog ? datadogExporter(transport) : transport;
   // Synchronous, so a closed stderr fails here instead of emitting an unhandled EPIPE error event, and a throw
   // cannot reach the exporter's promise chain as an unhandled rejection.
   const warn = exportWarning((line) => { try { writeSync(2, line); } catch {} });
@@ -120,9 +135,7 @@ if (endpoint) {
   // rate-limited warning.
   processors.push(new BatchSpanProcessor({
     export: (spans, done) => {
-      // node:http starts the request timeout only once connected, so a dropped connection attempt would report
-      // nothing until the operating system gives up, minutes later. The batch processor abandons the export at
-      // exportTimeoutMs; report it then. Unreferenced, so it never holds a process open.
+      // The exporter owns the total deadline, including connection setup and response-body consumption.
       let reported = false;
       const report = (error: unknown) => { if (!reported) { reported = true; warn(error); } };
       const timer = setTimeout(() => report(new Error("Request Timeout")), exportTimeoutMs).unref();
@@ -133,7 +146,7 @@ if (endpoint) {
       });
     },
     shutdown: () => otlp.shutdown(),
-    forceFlush: () => otlp.forceFlush(),
+    forceFlush: () => otlp.forceFlush?.() ?? Promise.resolve(),
   }, {
     maxQueueSize: 1_024, maxExportBatchSize: 256, scheduledDelayMillis: 1_000, exportTimeoutMillis: exportTimeoutMs,
   }));
@@ -141,9 +154,8 @@ if (endpoint) {
 const provider = processors.length ? new BasicTracerProvider({
   resource: resourceFromAttributes(resource),
   spanProcessors: processors,
-  // Bounds only the flush wait. An export it abandons can still hold a returning process (the worker) open: for
-  // about exportTimeoutMs once connected, but until the operating system gives up when a connection attempt is
-  // never answered, because node:http starts its timeout only on connect. The turn runner ends it with process.exit.
+  // Bounds the provider's flush wait. An export can outlive that wait, but the exporter's total deadline
+  // still cancels it at exportTimeoutMs.
   forceFlushTimeoutMillis: 1_000,
   idGenerator: {
     generateTraceId: () => active.getStore()?.traceId ?? randomBytes(16).toString("hex"),
@@ -151,6 +163,46 @@ const provider = processors.length ? new BasicTracerProvider({
   },
 }) : undefined;
 const tracer = provider?.getTracer("birbcrew");
+const observer = provider && createGenAiObserver({
+  tracer: provider.getTracer(instrumentationScope.name, instrumentationScope.version),
+  contentPolicy: { kind: "none" }, allowedToolNames: [], includeConversationId: true,
+  bounds: { maxActiveSpans: 128 },
+});
+const scopeSchema = z.object({ engine: engineSchema, conversationId: uuid, requestId: uuid,
+  workflowRunId: uuid, childId: uuid.optional() });
+
+function correlation(scope: Scope) {
+  const parsed = scopeSchema.safeParse(scope);
+  if (!parsed.success) return;
+  const attributes = parsed.data;
+  const traceId = createHash("sha256").update(attributes.conversationId + "/" + attributes.requestId).digest("hex").slice(0, 32);
+  const current = active.getStore();
+  return { attributes, traceId, context: current?.traceId === traceId ? current.context : ROOT_CONTEXT };
+}
+
+export function observedAgent<T>(scope: AgentScope, work: () => Promise<T>): Promise<T> {
+  if (!observer) return work();
+  const linked = correlation(scope);
+  if (!linked || typeof scope.provider !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(scope.provider)) return work();
+  const { attributes, traceId, context } = linked;
+  return active.run({ traceId, context }, async () => {
+    let handle: AgentHandle | undefined;
+    try {
+      const started = observer.start({ kind: "agent", provider: scope.provider, name: attributes.engine }, context,
+        { runId: attributes.workflowRunId, requestId: attributes.requestId, conversationId: attributes.conversationId });
+      if (started.kind === "ok") handle = started.value;
+    } catch {}
+    let result: T;
+    try {
+      result = await active.run({ traceId, context: handle?.context ?? context }, work);
+    } catch (error) {
+      try { await handle?.finish({ kind: "error", category: "unknown-error" }); } catch {}
+      throw error;
+    }
+    try { await handle?.finish({ kind: "success" }); } catch {}
+    return result;
+  });
+}
 
 // The host confirms a native turn only after its runner process closes, so the runner's flush is on
 // every turn's critical path and gets a much smaller budget than a worker's exit flush.
@@ -166,20 +218,18 @@ export async function flushTelemetry(budgetMs = 1_000) {
   clearTimeout(timer);
 }
 
-export function traced<T>(name: Operation, scope: Scope, work: () => Promise<T>): Promise<T> {
+/** `outcome` adds attributes from a successful result; callers pass only counts and closed enums. */
+export function traced<T>(name: Operation, scope: Scope, work: () => Promise<T>,
+  outcome?: (result: T) => Record<string, string | number>): Promise<T> {
   if (!tracer) return work();
-  // An activity can receive additional fields at runtime. Only validated correlation IDs enter the exporter.
-  const { engine, conversationId, requestId, workflowRunId, childId } = scope;
-  if (![conversationId, requestId, workflowRunId, ...(childId ? [childId] : [])].every((id) => uuid.safeParse(id).success)
-      || !engineSchema.safeParse(engine).success) return work();
-  const attributes = { engine, conversationId, requestId, workflowRunId, ...(childId && { childId }) };
-  const traceId = createHash("sha256").update(conversationId + "/" + requestId).digest("hex").slice(0, 32);
-  const current = active.getStore();
-  const context = current?.traceId === traceId ? current.context : ROOT_CONTEXT;
+  const linked = correlation(scope);
+  if (!linked) return work();
+  const { attributes, traceId, context } = linked;
   return active.run({ traceId, context }, async () => {
     const span = tracer.startSpan(name, { attributes }, context);
     try {
       const result = await active.run({ traceId, context: trace.setSpan(context, span) }, work);
+      if (outcome) span.setAttributes(outcome(result));
       span.setStatus({ code: SpanStatusCode.OK });
       return result;
     } catch (error) {

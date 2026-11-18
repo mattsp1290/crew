@@ -1,3 +1,4 @@
+import { handoffAcknowledgement } from "../handoff.mts";
 import { holdResumedReceipt, streamGate, waitForGate } from "../stream-gate.mts";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -80,6 +81,7 @@ async function respond(
   } else if (prompt?.startsWith("record ") && tools.some((t) => t.name === "mcp__ag_ui__record_work_item")) {
     tool = { id: "toolu_" + randomUUID(), name: "mcp__ag_ui__record_work_item", input: { operation_id: prompt.replace(/^record (?:stream )?/, ""), note: "private fixture note" } };
   } else if (streamGate(prompt)) reply = "first";
+  else if (handoffAcknowledgement(prompt)) reply = handoffAcknowledgement(prompt)!;
   else if (prompt?.startsWith("remember ")) reply = `stored ${remembered}`;
   else if (prompt === "recall") reply = `recalled ${remembered ?? "none"}`;
   else if (prompt === "wait") reply = "waiting";

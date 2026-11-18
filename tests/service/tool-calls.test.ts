@@ -486,8 +486,8 @@ async function databaseAt(t: TestContext, version: number) {
   return separate;
 }
 
-test("migration 33 adds the ledger to a v32 database without touching a table or waiting for a native turn", async (t) => {
-  const upgraded = await databaseAt(t, 32);
+test("migration 41 adds the ledger to a v40 database without touching a table or waiting for a native turn", async (t) => {
+  const upgraded = await databaseAt(t, 40);
   const current = new MemberStore(upgraded);
   const ownerId = "owner-" + randomUUID(), conversationId = randomUUID();
   const { memberId } = await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: "tool-calls-fixture" });
@@ -504,7 +504,7 @@ test("migration 33 adds the ledger to a v32 database without touching a table or
   const db = await upgraded.connect();
   try {
     await db.query("BEGIN");
-    await db.query(await readFile(new URL("033-tool-calls.sql", sql), "utf8"));
+    await db.query(await readFile(new URL("041-tool-calls.sql", sql), "utf8"));
     const { rows } = await db.query(`SELECT c.relname AS relation, l.mode FROM pg_locks l JOIN pg_class c ON c.oid=l.relation
       WHERE l.pid=pg_backend_pid() AND c.relkind='r' AND c.relnamespace='birbcrew_ts'::regnamespace AND c.relname<>'tool_calls' ORDER BY 1,2`);
     assert.deepEqual(rows, [
@@ -518,7 +518,7 @@ test("migration 33 adds the ledger to a v32 database without touching a table or
   }
   await withNativeAdmission(upgraded, { ...request, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
     const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
-    assert.equal(migrated, true, "migration 33 must not wait for a running native turn");
+    assert.equal(migrated, true, "migration 41 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: request.requestId, token: start.token }, request.requestId + "/assistant", 0, "still running");
   });
   // The turn that was running at the upgrade can record a call.

@@ -116,6 +116,9 @@ export class TrustedContextStore {
       const c = await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 AND owner_id=$2 FOR UPDATE", [key.conversationId,key.ownerId]);
       if (!c.rowCount) throw new TrustedContextError("not_found");
       if ((await db.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1",[key.conversationId])).rowCount) throw new TrustedContextError("conflict");
+      // A handoff's source is sealed and its target awaits its reserved first request on the member lane.
+      if ((await db.query("SELECT 1 FROM birbcrew_ts.conversation_handoffs WHERE source_conversation_id=$1 OR target_conversation_id=$1",
+        [key.conversationId])).rowCount) throw new TrustedContextError("conflict");
       await db.query(`INSERT INTO birbcrew_ts.trusted_sessions (conversation_id,owner_id,scope,context_version,context_text,application_digest)
         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, [key.conversationId,key.ownerId,snapshot.scope,snapshot.version,snapshot.text,this.applicationDigest]);
       const s = await this.session(db,key,true);

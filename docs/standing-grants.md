@@ -38,10 +38,11 @@ grant, and answer `409` to a standing choice:
 - Pi child calls, whose invocation is a child rather than the request;
 - requests with no admission row, such as those admitted by workflow histories
   older than durable admission: a missing admission is not the owner;
-- requests admitted for any other initiator. This release knows no other kind. A
-  kind it cannot read fails the proposal instead of matching a grant, and a
-  standing answer on a card for such a request fails as a server error (`503`)
-  rather than creating a grant.
+- requests admitted for any other initiator: a [routine](scheduled-routines.md)
+  firing or the first request a [handoff](handoffs.md) reserved. A kind this release
+  cannot read fails the proposal instead of matching a grant, and a standing answer
+  on a card for a request of such a kind fails as a server error (`503`) rather than
+  creating a grant.
 
 Trusted-context tools never reach approval cards. Their own `authorize()` decides
 them (see [trusted application context](trusted-application-context.md)).
@@ -145,7 +146,8 @@ one creation event. Both answers report `allow_always`.
 
 A conversation grant ends, with `status: "conversation_closed"`, when its
 conversation stops accepting requests: its committed turns reach the conversation's
-limit, or a cancellation, an uncertain turn or a rejected admission has closed it. A
+limit, a [handoff](handoffs.md#sealing) has sealed it, or a cancellation, an uncertain
+turn or a rejected admission has closed it. A
 conversation workflow that fails without leaving one of those facts keeps its grant
 listed as `active` until revoked, although no new call can be proposed there.
 
@@ -242,7 +244,7 @@ README).
 
 ## Validation
 
-Use Node 22.23.3 on Linux and a disposable PostgreSQL 17 database whose role may
+Use Node 24.22.3 on Linux and a disposable PostgreSQL 17 database whose role may
 create databases, with `BIRBCREW_PG_BIN` naming PostgreSQL 17 `pg_dump` and
 `pg_restore` (or `BIRBCREW_RECOVERY_POSTGRES_CONTAINER`).
 

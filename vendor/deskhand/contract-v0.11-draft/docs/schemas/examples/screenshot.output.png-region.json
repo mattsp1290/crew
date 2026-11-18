@@ -1,0 +1,33 @@
+{
+  "frame_id": "frm_p0Hq7mVd2KxE9sWb4TnJcQ",
+  "sha256": "9910444f3b25588fac08900eefe01593f9b338318464525a022d8694a090aa39",
+  "display_id": 1,
+  "display_config_generation": 3,
+  "capture_rect": {
+    "x": 200,
+    "y": 120,
+    "width": 800,
+    "height": 600
+  },
+  "source_pixel_size": {
+    "width": 1600,
+    "height": 1200
+  },
+  "output_pixel_size": {
+    "width": 1600,
+    "height": 1200
+  },
+  "point_pixel_scale": 2,
+  "downscale": 1,
+  "format": "png",
+  "mime_type": "image/png",
+  "image_bytes": 2310447,
+  "captured_at": "2026-11-14T15:02:14.019Z",
+  "max_age_ms": 60000,
+  "pointer_position": null,
+  "frontmost_app": {
+    "bundle_id": "com.apple.TextEdit",
+    "team_id": null,
+    "name": "TextEdit"
+  }
+}

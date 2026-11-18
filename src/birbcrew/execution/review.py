@@ -131,12 +131,6 @@ def preflight_reviewer(config: ExecutionSettings) -> None:
         reviewer_key(config.reviewer)
     except (OSError, ValueError) as error:
         raise ValueError(f"opencode_go_key_unusable: {failure_reason(error)}") from None
-    try:
-        provider.SubscriptionEvidence.model_validate_json(
-            config.reviewer.subscription_evidence.read_text()
-        )
-    except (OSError, ValueError) as error:
-        raise ValueError(f"subscription_evidence_unusable: {failure_reason(error)}") from None
 
 
 def failure_reason(error: Exception) -> str:
@@ -147,10 +141,6 @@ def failure_reason(error: Exception) -> str:
 async def opencode_review(
     reviewer: OpenCodeGoReviewer, prompt: str, session: str, diagnostics: list
 ) -> tuple[Verdict, str]:
-    try:
-        provider.check_evidence(reviewer.subscription_evidence)
-    except (OSError, ValueError):
-        raise ReviewerFailure("subscription_evidence_rejected") from None
     try:
         key = reviewer_key(reviewer)
     except (OSError, ValueError):

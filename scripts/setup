@@ -22,25 +22,33 @@ if [ ! -x .proof/bin/temporal ]; then
 fi
 .proof/bin/temporal --version
 postgres='postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94'
-node='node@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7'
+node='node@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496'
 for image in "$postgres" "$node"; do
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
 done
-if [ ! -x .proof/bin/node ] || [ ! -e .proof/npm/bin/npm-cli.js ]; then
+pinned="v$(cat .node-version)"
+# node is moved into place last, so a copy that reports the pinned version has the npm copied with it.
+if [ "$(.proof/bin/node --version 2>/dev/null)" != "$pinned" ] || [ ! -e .proof/npm/bin/npm-cli.js ]; then
   stage=$(mktemp -d .proof/node-install.XXXXXX)
   container=$(docker create "$node")
   trap 'docker rm "$container" >/dev/null; rm -rf "$stage"' EXIT
   docker cp "$container:/usr/local/bin/node" "$stage/node"
   docker cp "$container:/usr/local/lib/node_modules/npm" "$stage/npm"
-  mv -f "$stage/node" .proof/bin/node
   rm -rf .proof/npm
   mv "$stage/npm" .proof/npm
+  mv -f "$stage/node" .proof/bin/node
   docker rm "$container" >/dev/null
   rm -rf "$stage"
   trap - EXIT
 fi
 ln -sf ../npm/bin/npm-cli.js .proof/bin/npm
 export PATH="$PWD/.proof/bin:$PATH"
-node --version
+version=$(node --version)
+echo "$version"
+if [ "$version" != "$pinned" ]; then
+  echo "scripts/setup: $node provides Node $version, but .node-version pins ${pinned#v}" >&2
+  exit 1
+fi
 npm ci --prefix clients --ignore-scripts --no-audit --no-fund
 npm ci --include=dev --no-audit --no-fund
+npm run build:client

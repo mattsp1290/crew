@@ -47,11 +47,12 @@ function piReply(body: z.infer<typeof bodySchema>, response: ServerResponse) {
   response.end("data: [DONE]\n\n");
 }
 
-/** Local scripted protocols retained across worker/service restarts. No live model traffic. */
-export async function startRestartFixtures() {
+/** Local scripted protocols retained across worker/service restarts. No live model traffic. Claude's
+ * reports 10 input and 10 output tokens per call; Codex's reports `codexUsage`, or zeros. */
+export async function startRestartFixtures(options: { codexUsage?: (request: number) => Record<string, unknown> } = {}) {
   const claude = await startClaudeFixtureProvider();
   let codex: Awaited<ReturnType<typeof startProvider>>;
-  try { codex = await startProvider(); }
+  try { codex = await startProvider(undefined, undefined, undefined, options.codexUsage); }
   catch { await claude.close(); throw new Error("Restart fixture initialization failed"); }
   const evidence: Evidence = {
     claude: { requests: 0, credentialDigests: [] },

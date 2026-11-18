@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/list",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": 20260728
+    }
+  }
+}

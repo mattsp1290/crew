@@ -1,7 +1,7 @@
 import { goEndpoint } from "../../src/service/accounts.ts";
-import { loadLiveProfiles } from "../../src/service/providers.ts";
+import { loadLiveProfiles } from "../../src/service/live-profiles.ts";
 import { engineSchema } from "../../src/service/domain.ts";
-import { accountKey, attestationEnv } from "./live-account.ts";
+import { accountKey } from "./live-account.ts";
 
 const engine = engineSchema.parse(process.env.BIRBCREW_LIVE_ENGINE);
 const relay = new URL(process.env.BIRBCREW_LIVE_RELAY!);
@@ -10,7 +10,7 @@ if (relay.protocol !== "http:" || relay.hostname !== "127.0.0.1" || !relay.port 
 }
 const workerKey = process.env.BIRBCREW_LIVE_TOKEN;
 if (!workerKey || !/^[a-f0-9]{64}$/.test(workerKey)) throw new Error("Missing private proof relay credential");
-const selected = { [attestationEnv[engine]]: "/run/birb-account.json",
+const selected = { BIRBCREW_LIVE_PROFILES: process.env.BIRBCREW_LIVE_PROFILES,
   ...(process.env.BIRBCREW_LIVE_AUTH !== "chatgpt-subscription" && { [accountKey[engine]]: workerKey }) };
 export const profiles = await loadLiveProfiles(selected, async (input, init) => {
   const url = input.toString();

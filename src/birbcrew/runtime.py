@@ -36,9 +36,7 @@ DURABILITY = TemporalDurability[RunDeps](
 def make_agent():
     config = settings()
     if config.mode == "live":
-        if config.live_attestation is None:
-            raise ValueError("Live account evidence is missing")
-        selected_model = provider.model(config.live_attestation)
+        selected_model = provider.model()
     elif config.mode == "test":
         selected_model = test_model.model()
     else:

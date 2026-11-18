@@ -24,7 +24,10 @@ for (const choice of ["recorded", "denied"] as const) {
     assert.equal(pending.proposal.name, "record_work_item");
     assert.deepEqual(pending.proposal.arguments, { operation_id: request, note: "private fixture note" });
     assert.equal(requests.length, 1);
-    assert.deepEqual(await recoverClaudeProposal(input, profile), pending);
+    // Recovery rebuilds the same proposal without a model call, so it reports no usage.
+    const { usage, ...proposal } = pending;
+    assert.equal(usage?.state, "reported");
+    assert.deepEqual(await recoverClaudeProposal(input, profile), proposal);
     await assert.rejects(recoverClaudeProposal({ ...input, runId: randomUUID() }, profile), /intent mismatch/);
     await assert.rejects(recoverClaudeProposal({ ...input, text: "other text" }, profile), /intent mismatch/);
     assert.equal(requests.length, 1);

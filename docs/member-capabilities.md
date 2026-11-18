@@ -7,7 +7,7 @@ member. This page describes the foundation that later work builds on.
 
 Members are meant to get the tools of a coding agent: files in a workspace, a
 shell, web fetch and web search. Crew will run every such tool itself, outside the
-model's sandbox, behind one approval gate. Migrations 32 and 33 add the three
+model's sandbox, behind one approval gate. Migrations 40 and 41 add the three
 things that gate needs before it can exist:
 
 - a **capability set**: which tools a member may be offered at all, fixed at spawn
@@ -134,7 +134,7 @@ different sets, even when the patterns cover the same hosts.
 
 ### Storage
 
-Migration 32 adds a nullable `capabilities` column to `profiles` and a table
+Migration 40 adds a nullable `capabilities` column to `profiles` and a table
 `member_capabilities` with one row for each member that has capabilities. NULL and
 no row mean none. A CHECK on both requires an object at version 1 that holds at
 least one capability and no unknown key at any level, a workspace that says `read`
@@ -350,7 +350,7 @@ selector in this version.
 
 ## The tool-call ledger
 
-`tool_calls` (migration 33) has one row for each call the gate decided. Its
+`tool_calls` (migration 41) has one row for each call the gate decided. Its
 arguments and result are private: they are never audited, published or logged.
 
 ### Verdict
@@ -477,20 +477,20 @@ workers were stopped are classified as after any lost worker.
 
 ## Upgrade
 
-Migration 32 takes `ACCESS EXCLUSIVE` on `profiles` (a nullable column and a
+Migration 40 takes `ACCESS EXCLUSIVE` on `profiles` (a nullable column and a
 `NOT VALID` CHECK: no rewrite, no scan) and `SHARE ROW EXCLUSIVE` on `members`.
-Migration 33 takes `SHARE ROW EXCLUSIVE` on `members`, `turns` and `tool_grants`
+Migration 41 takes `SHARE ROW EXCLUSIVE` on `members`, `turns` and `tool_grants`
 for its foreign keys and alters no table. Both take their locks together with
 `NOWAIT` and retry for up to 60 seconds, as migrations 25 and 26 do, so neither
 waits in a lock queue. A running native turn holds no conflicting lock. The
 member's set is a table of its own because a column on `members` would need
 `ACCESS EXCLUSIVE` there and wait for every running turn.
 
-The two usually apply in one transaction. Migration 32 therefore takes migration
-33's locks with its own, so that 33 never retries while 32 holds `profiles`
+The two usually apply in one transaction. Migration 40 therefore takes migration
+41's locks with its own, so that 41 never retries while 40 holds `profiles`
 exclusively. While that lock is held, spawns, profile registrations and anything
 else that reads `profiles` wait until `migrate()` commits. Applied after other
-pending migrations in one transaction, 32 retries while it holds their locks, as
+pending migrations in one transaction, 40 retries while it holds their locks, as
 migration 26 describes for 25. If the locks cannot be had within 60 seconds,
 `migrate()` fails with `55P03` and applies nothing.
 
@@ -498,7 +498,7 @@ Stop every process of the previous release first, as for the earlier migrations.
 worker of the previous release registers profiles without the ceiling column and
 would accept a registration this release made with one.
 
-A database from before migration 32 upgrades with no capabilities anywhere. Its
+A database from before migration 40 upgrades with no capabilities anywhere. Its
 members replay their spawn requests unchanged.
 
 ## Not built
@@ -625,7 +625,7 @@ npm run test:api && npm run test:audit && npm run test:memories
   retried, raced, and retried behind an attempt that rolled back), the database's
   own refusals, including the shapes inside a capability that the reader refuses
   and a registration that cannot be deleted or renamed, registration and the
-  relay rule, migration 32 on a version-26 database with a running native turn,
+  relay rule, migration 40 on a version-39 database with a running native turn,
   and capture, hold and restore.
 - `tool-catalog.test.ts`: the command splitter against every ASCII character
   outside its alphabet and a list of shell constructs, generated simple commands
@@ -639,7 +639,7 @@ npm run test:api && npm run test:audit && npm run test:memories
   or scope it does not have, results PostgreSQL cannot store or that are too deep
   to read, the answers after a lost worker, owner isolation, about a hundred
   illegal updates written directly in SQL, the 256-call limit under a race,
-  migration 33 with a running native turn, and a held, resumed and restored
+  migration 41 with a running native turn, and a held, resumed and restored
   installation.
 
 `recovery.test.ts` restores a real `pg_dump` archive holding member capabilities

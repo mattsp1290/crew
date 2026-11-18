@@ -1,3 +1,5 @@
+import { publishObservation } from "../../src/service/observation.ts";
+import { migrateThrough, spawnHistoricalMember, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -7,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { z } from "zod";
 import { ApprovalStore } from "../../src/service/approvals.ts";
-import { appendAudit, auditCsv, auditEventTypes, auditQuerySchema, auditSettleWindowMs,
+import { actorKinds, appendAudit, auditCsv, auditEvents, auditEventTypes, auditFilterNames, auditQuerySchema, auditSettleWindowMs, readAudit,
   type AuditEvent, type AuditEventType, type AuditFact } from "../../src/service/audit.ts";
 import { ChildStore } from "../../src/service/children.ts";
 import type { MemberClient } from "../../src/service/client.ts";
@@ -15,7 +17,10 @@ import { initiatorKinds, ownerInitiator, type TurnRequest } from "../../src/serv
 import { createGateway } from "../../src/service/gateway.ts";
 import { IntegrationApi } from "../../src/service/integration-api.ts";
 import { withNativeAdmission } from "../../src/service/native-admission.ts";
+import { RoutineApi, RoutineDispatcher } from "../../src/service/routines.ts";
 import { admittedInitiator, MemberStore } from "../../src/service/store.ts";
+import { recordSegmentUsage } from "../../src/service/usage.ts";
+import { WebhookApi } from "../../src/service/webhooks.ts";
 
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
 if (!url) throw new Error("Set BIRBCREW_TEST_DATABASE_URL to a disposable PostgreSQL database.");
@@ -31,7 +36,7 @@ before(async () => {
 after(() => pool.end());
 
 type Event = { eventId: string; occurredAt: string; type: string; actor: { kind: string; id: string | null };
-  initiator: { kind: string; id: string }; memberId: string; conversationId: string | null; requestId: string | null;
+  initiator: { kind: string; id: string }; memberId: string | null; conversationId: string | null; requestId: string | null;
   payload: Record<string, string> };
 type Page = { apiVersion: string; events: Event[]; nextAfter: string; hasMore: boolean };
 
@@ -114,6 +119,12 @@ test("each owner action appears once, attributed and in order, and never to anot
   const scope = { ownerId: f.ownerId, memberId, conversationId, requestId };
   const approval = await approvals.propose({ ...scope, token: turn.token, invocationId: requestId, nativeCallId: "audit-call",
     toolName: "record_work_item", arguments: { operation_id: requestId, note: "private-fixture-note" } });
+  const [requested] = await f.appended("approval.requested");
+  assert.deepEqual({ actor: requested.actor, initiator: requested.initiator, payload: requested.payload }, { actor: system, initiator: owner,
+    payload: { approvalId: approval.approvalId, invocationId: requestId, toolName: "record_work_item", argumentDigest: approval.argumentDigest } });
+  // A retried proposal of the same call records nothing new.
+  await approvals.propose({ ...scope, token: turn.token, invocationId: requestId, nativeCallId: "audit-call",
+    toolName: "record_work_item", arguments: { operation_id: requestId, note: "private-fixture-note" } });
   await f.appended();
   const decided = await f.api(`/v1/conversations/${conversationId}/human`, { memberId, requestId, invocationId: requestId,
     approvalId: approval.approvalId, version: approval.version, choice: "approve" });
@@ -147,7 +158,7 @@ test("each owner action appears once, attributed and in order, and never to anot
   assert.deepEqual(rejected.payload, { status: "cancelled", reason: "predecessor_cancelled" });
 
   const all = await f.audit();
-  assert.deepEqual(all.events.map(event => event.type), ["member.spawned", "conversation.opened", "request.accepted",
+  assert.deepEqual(all.events.map(event => event.type), ["member.spawned", "conversation.opened", "request.accepted", "approval.requested",
     "approval.decided", "work_item.committed", "request.finished", "request.accepted", "request.cancellation_requested", "request.finished"]);
   assert.ok(all.events.every((event, i) => i === 0 || BigInt(event.eventId) > BigInt(all.events[i - 1].eventId)));
   assert.ok(all.events.every((event, i) => i === 0 || event.occurredAt >= all.events[i - 1].occurredAt));
@@ -220,7 +231,7 @@ test("retries, replays and repeated deliveries never duplicate a fact", async ()
   await new ChildStore(pool).quarantineDelegation(conversation, delegated, execution.workflowRunId);
 
   assert.deepEqual(await counts(ownerId), {
-    "approval.decided": 1, "conversation.opened": 2, "member.spawned": 1, "request.accepted": 4,
+    "approval.decided": 1, "approval.requested": 1, "conversation.opened": 2, "member.spawned": 1, "request.accepted": 4,
     "request.cancellation_requested": 2, "request.finished": 4, "work_item.committed": 1,
   });
   const { rows } = await pool.query("SELECT payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type='request.finished' ORDER BY event_id", [ownerId]);
@@ -373,16 +384,19 @@ test("a page never skips an event that an earlier transaction commits late, and 
     await writer.query(`INSERT INTO birbcrew_ts.audit_events (owner_id,actor_kind,actor_id,initiator_kind,initiator_id,event_type,member_id,payload)
       VALUES ($1,'owner',$1,'owner',$1,'member.spawned',$2,$3)`, [f.ownerId, inserted.member_id,
       JSON.stringify({ spawnRequestId: early, engine: "pi", profile })]);
-    await store.spawn({ ownerId: f.ownerId, requestId: late, engine: "pi", profile }); // higher ID, committed first
+    await store.spawn({ ownerId: f.ownerId, requestId: late, engine: "pi", profile: profile + "-late" });
     let settled = false;
     const reading = f.audit().then(page => { settled = true; return page; });
+    // A filtered read keeps the same horizon.
+    const filtered = f.audit("?eventType=member.spawned&actorKind=owner").then(page => { settled = true; return page; });
     await delay(100);
-    await store.spawn({ ownerId: f.ownerId, requestId: during, engine: "pi", profile }); // not queued behind the reader
+    await store.spawn({ ownerId: f.ownerId, requestId: during, engine: "pi", profile: profile + "-during" });
     await delay(100);
     assert.equal(settled, false, "the reader waits for the open writer instead of paging past its ID");
     await writer.query("COMMIT");
     const page = await reading;
     assert.deepEqual(page.events.map(event => event.payload.spawnRequestId), [early, late, during]);
+    assert.deepEqual((await filtered).events.map(event => event.payload.spawnRequestId), [early, late, during]);
   } finally { writer.release(); }
 });
 
@@ -398,7 +412,7 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
   try {
     await db.query("BEGIN");
     const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID(), digest = "0".repeat(64);
-    const routineId = randomUUID(), memoryId = randomUUID();
+    const routineId = randomUUID(), memoryId = randomUUID(), webhookId = randomUUID(), packId = randomUUID();
     const { rows: [{ member_id: memberId }] } = await db.query<{ member_id: string }>(`INSERT INTO birbcrew_ts.members
       (owner_id,spawn_request_id,engine,profile) VALUES ($1,$2,'pi',$3) RETURNING member_id`, [ownerId, randomUUID(), profile]);
     await db.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)",
@@ -413,6 +427,8 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
       "work_item.committed": { conversationId, requestId, payload: { receiptId: randomUUID(), approvalId: randomUUID() } },
       "request.cancellation_requested": { conversationId, requestId, payload: {} },
       "request.finished": { conversationId, requestId, payload: { status: "completed" } },
+      "delegation.started": { conversationId, requestId, payload: { childId: randomUUID(), role: "analyst", engine: "pi", profile } },
+      "delegation.finished": { conversationId, requestId, payload: { childId: randomUUID(), outcome: "failed", code: "budget_exhausted" } },
       "trusted_effect.completed": { conversationId, requestId, payload: { operationId: randomUUID(), toolName: "fixture_effect" } },
       "routine.created": { payload: { routineId, revision: 1, schedule: "*/15 * * * *", approvalPolicy: "wait", promptDigest: digest } },
       "routine.enabled": { payload: { routineId, revision: 3 } },
@@ -426,9 +442,28 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
       "memory.created": { payload: { memoryId } },
       "memory.deleted": { payload: { memoryId } },
       "memory.suspended": { payload: { memoryId, reason: "recovery_restore" } },
+      "approval.expired": { conversationId, requestId, payload: { approvalId: randomUUID(), invocationId: requestId,
+        toolName: "choose_next_step", expiresAt: "2031-01-01T00:01:00.000Z" } },
+      "conversation.handed_off": { conversationId, payload: { handoffId: randomUUID(), targetConversationId: randomUUID(),
+        targetMemberId: randomUUID(), firstRequestId: randomUUID(), carriedTurns: 1, omittedTurns: 0, uncertainTurns: 0, transcriptDigest: digest } },
+      "member.instructions_set": { payload: { digest, bytes: 1 } },
+      "usage.budget_set": { payload: { revision: 1, tokenLimit: 1000, period: "utc_day" } },
+      "usage.budget_cleared": { payload: { revision: 2 } },
+      "usage.request_refused": { conversationId, requestId, payload: { tokenLimit: 1000, usedTokens: 1000, period: "utc_day",
+        windowStart: "2031-01-01T00:00:00.000Z", budgetRevision: 1 } },
+      "approval.requested": { conversationId, requestId, payload: { approvalId: randomUUID(), invocationId: requestId,
+        toolName: "choose_next_step", argumentDigest: digest } },
+      "webhook.created": { payload: { webhookId, revision: 1, host: "hooks.example.com", kinds: ["request.finished"], format: "crew" } },
+      "webhook.enabled": { payload: { webhookId, revision: 3, host: "hooks.example.com" } },
+      "webhook.disabled": { payload: { webhookId, revision: 2, host: "hooks.example.com", reason: "consecutive_failures" } },
+      "webhook.deleted": { payload: { webhookId, revision: 4, host: "hooks.example.com" } },
+      "instruction_pack.created": { payload: { packId } },
+      "instruction_pack.deleted": { payload: { packId } },
+      "member.instruction_packs_attached": { payload: { packIds: [packId, randomUUID()] } },
     };
     for (const type of auditEventTypes) {
-      const fact = { type, ownerId, memberId, ...samples[type] } as AuditFact<typeof type>;
+      // A type that belongs to no member names none.
+      const fact = { type, ownerId, memberId: "member" in auditEvents[type] ? null : memberId, ...samples[type] } as AuditFact<typeof type>;
       await appendAudit(db, fact);
       await appendAudit(db, fact);
     }
@@ -497,6 +532,13 @@ test("a writer left open past the read window yields a retryable 503 audit_unset
     assert.deepEqual(await response.json(), { error: "audit_unsettled" });
     // Backoff from 10 ms to 200 ms: about 30 polls in the window, not about 500.
     assert.ok(polls > 0 && polls <= 40, `polls: ${polls}`);
+    // Filters change which rows return, never when a page is safe to return.
+    polls = 0;
+    const filtered = await f.api(`/v1/audit?memberId=${inserted.member_id}&eventType=member.spawned&from=2000-01-01T00:00:00Z`);
+    assert.equal(filtered.status, 503);
+    assert.equal(filtered.headers.get("retry-after"), "1");
+    assert.deepEqual(await filtered.json(), { error: "audit_unsettled" });
+    assert.ok(polls > 0 && polls <= 40, `polls: ${polls}`);
   } finally {
     await writer.query("ROLLBACK");
     writer.release();
@@ -541,7 +583,7 @@ test("a Claude turn recovered to a pending decision is finished once, by its com
 
   const { rows } = await pool.query("SELECT payload->>'status' AS status FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type='request.finished'", [ownerId]);
   assert.deepEqual(rows.map(row => row.status), ["completed"]);
-  assert.deepEqual(await counts(ownerId), { "approval.decided": 1, "conversation.opened": 1, "member.spawned": 1,
+  assert.deepEqual(await counts(ownerId), { "approval.decided": 1, "approval.requested": 1, "conversation.opened": 1, "member.spawned": 1,
     "request.accepted": 1, "request.finished": 1, "work_item.committed": 1 });
 });
 
@@ -550,7 +592,7 @@ const sql = new URL("../../src/service/sql/", import.meta.url);
 async function databaseAt(t: TestContext, version: number) {
   const source = new URL(url!);
   const admin = new Pool({ connectionString: source.href });
-  const database = "audit_upgrade_" + randomUUID().replaceAll("-", "");
+  const database = testDatabaseName("audit_upgrade_");
   await admin.query("CREATE DATABASE " + database);
   source.pathname = "/" + database;
   const upgraded = new Pool({ connectionString: source.href });
@@ -608,11 +650,12 @@ test("migration 21 upgrades a v20 database with rows while a native turn holds i
     VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
   const launch = { ownerId, conversationId, requestId, text, token: start.token, execution };
   await withNativeAdmission(upgraded, launch, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 21).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 21 must not wait for a running native turn");
     // The turn's own conversation writes are not queued behind the upgrade either.
     await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   // Pre-existing conversations bind audit rows like new ones.
   await current.recordAcceptance({ ownerId, conversationId, requestId: randomUUID(), text: "after upgrade" }, ownerInitiator);
@@ -680,11 +723,12 @@ test("migration 23 records a v21 database's admissions as owner-initiated withou
       { relation: "native_launches", mode: "AccessShareLock" }, { relation: "native_stop_requests", mode: "AccessShareLock" },
       { relation: "recovery_control", mode: "AccessShareLock" }, { relation: "turns", mode: "RowShareLock" },
     ]);
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 23).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 23 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: running.requestId, token: start.token },
       running.requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   const { rows: admissions } = await upgraded.query(`SELECT initiator_kind AS kind, initiator_id AS id, count(*)::integer AS n
     FROM birbcrew_ts.request_admissions GROUP BY 1,2`);
@@ -729,7 +773,7 @@ test("migration 24 adds standing grants to a v23 database without rewriting or s
   const upgraded = await databaseAt(t, 23);
   const current = new MemberStore(upgraded);
   const ownerId = "owner-" + randomUUID(), conversationId = randomUUID();
-  const { memberId } = await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  const { memberId } = await spawnHistoricalMember(current, { ownerId, requestId: randomUUID(), engine: "pi", profile });
   // Seeded in SQL: this release's open and admission read tables a later migration adds.
   await upgraded.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)", [ownerId, memberId, conversationId]);
   const running = { ownerId, conversationId, requestId: randomUUID(), text: "running at upgrade" };
@@ -772,11 +816,12 @@ test("migration 24 adds standing grants to a v23 database without rewriting or s
   }
 
   await withNativeAdmission(upgraded, { ...running, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    const migrated = await Promise.race([migrateThrough(current, 24).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 24 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: running.requestId, token: start.token },
       running.requestId + "/assistant", 0, "still running");
   });
+  await current.migrate();
 
   const { rows: constraints } = await upgraded.query(`SELECT conrelid::regclass::text AS "table", conname AS name, convalidated AS validated
     FROM pg_constraint WHERE conname IN ('deferred_calls_grant_scope_check','deferred_calls_grant_id_check','deferred_calls_grant_id_fkey',
@@ -849,4 +894,580 @@ test("the initiator CHECKs and the TypeScript initiator type name the same kinds
   for (const { definition } of rows) {
     assert.deepEqual([...new Set([...definition.matchAll(/'([a-z_]+)'/g)].map(match => match[1]))].sort(), [...initiatorKinds].sort(), definition);
   }
+});
+
+test("the actor CHECK and the TypeScript actor kinds name the same kinds", async () => {
+  const { rows: [{ definition }] } = await pool.query<{ definition: string }>(`SELECT pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint WHERE conrelid='birbcrew_ts.audit_events'::regclass AND conname='audit_events_actor_check'`);
+  assert.deepEqual([...new Set([...definition.matchAll(/'([a-z_]+)'/g)].map(match => match[1]))].sort(), [...actorKinds].sort(), definition);
+});
+
+/** The same instant written with a +05:30 offset, keeping its microseconds. */
+function atOffset(occurredAt: string) {
+  const [, seconds, fraction] = /^(.*:\d{2})(\.\d{6})Z$/.exec(occurredAt)!;
+  return new Date(Date.parse(seconds + "Z") + 330 * 60_000).toISOString().slice(0, 19) + fraction + "+05:30";
+}
+
+test("filters select the owner's rows with AND in JSON and CSV, page with the unchanged cursor and never reach another owner", async (t) => {
+  const f = await fixture(); t.after(f.stop);
+  const spawn = async (requestId = randomUUID()) => {
+    const response = await f.api("/v1/members", { requestId, engine: "pi", profile });
+    assert.equal(response.status, 201);
+    return (await response.json()).memberId as string;
+  };
+  const spawnRequestId = randomUUID();
+  const handled = await spawn(spawnRequestId), scheduled = await spawn();
+  assert.equal(await spawn(spawnRequestId), handled, "a replayed spawn");
+
+  // The owner denies a call on the first member.
+  const conversationId = randomUUID();
+  assert.equal((await f.api("/v1/conversations", { conversationId, memberId: handled })).status, 201);
+  const request = { ownerId: f.ownerId, conversationId, requestId: randomUUID(), text: "filtered prompt" };
+  assert.equal((await f.api(`/v1/conversations/${conversationId}/requests`, { requestId: request.requestId, text: request.text })).status, 202);
+  const turn = await store.beginTurn(request);
+  assert.equal(turn.kind, "start"); if (turn.kind !== "start") return;
+  const approval = await approvals.propose({ ownerId: f.ownerId, memberId: handled, conversationId, requestId: request.requestId,
+    token: turn.token, invocationId: request.requestId, nativeCallId: "filter-call", toolName: "record_work_item",
+    arguments: { operation_id: request.requestId } });
+  assert.equal((await f.api(`/v1/conversations/${conversationId}/human`, { memberId: handled, requestId: request.requestId,
+    invocationId: request.requestId, approvalId: approval.approvalId, version: approval.version, choice: "deny" })).status, 200);
+
+  // A routine on the second member fires once and its turn completes. Its windows are in 2099, so the
+  // gateway's own dispatcher, on the real clock, never fires it.
+  let now = new Date("2099-01-05T10:00:00.000Z");
+  const clock = () => new Date(now);
+  const { routineId } = await new RoutineApi(store, clock).create(f.ownerId, { requestId: randomUUID(), memberId: scheduled,
+    schedule: "*/15 * * * *", prompt: "scheduled prompt", approvalPolicy: "wait" });
+  const members = {
+    open: (input: Parameters<MemberStore["openConversation"]>[0]) => store.openConversation(input),
+    async accept(input: TurnRequest) { await store.recordAcceptance(input, ownerInitiator); return { requestId: input.requestId }; },
+    requestStatus: (input: Parameters<MemberStore["requestStatus"]>[0]) => store.requestStatus(input),
+  } as unknown as MemberClient;
+  const dispatcher = new RoutineDispatcher({ store, members, integration: new IntegrationApi(store, members), owners: [f.ownerId], clock });
+  t.after(() => dispatcher.stop());
+  await dispatcher.tick();
+  now = new Date(now.getTime() + 15 * 60_000);
+  await dispatcher.tick();
+  const { rows: [firing] } = await pool.query<{ conversationId: string; requestId: string }>(`SELECT conversation_id AS "conversationId",
+    request_id AS "requestId" FROM birbcrew_ts.routine_firings WHERE routine_id=$1`, [routineId]);
+  const firedTurn = await store.beginTurn({ ownerId: f.ownerId, ...firing, text: "scheduled prompt" });
+  assert.equal(firedTurn.kind, "start"); if (firedTurn.kind !== "start") return;
+  await store.commitTurn({ ownerId: f.ownerId, ...firing, token: firedTurn.token, reply: "done", checkpoint: { version: 1, engine: "pi", state: {} } });
+  now = new Date(now.getTime() + 60_000);
+  await dispatcher.tick();
+  const strangerMember = (await store.spawn({ ownerId: f.strangerId, requestId: randomUUID(), engine: "pi", profile })).memberId;
+
+  const all = (await f.audit()).events;
+  assert.deepEqual(all.map(event => event.type), ["member.spawned", "member.spawned", "conversation.opened", "request.accepted",
+    "approval.requested", "approval.decided", "routine.created", "conversation.opened", "request.accepted", "request.finished",
+    "routine.firing_settled"]);
+  assert.deepEqual(all.filter(event => event.initiator.kind === "routine").map(event => [event.type, event.initiator.id]),
+    [["request.accepted", routineId], ["request.finished", routineId]]);
+  const ids = async (query: string, credential?: string) => (await f.audit("?" + query, credential)).events.map(event => event.eventId);
+  const [split, start, end] = [all[6], all[2], all[9]].map(event => event.occurredAt);
+  const cases: [string, (event: Event) => boolean][] = [
+    ["memberId=" + handled, event => event.memberId === handled],
+    ["memberId=" + scheduled.toUpperCase(), event => event.memberId === scheduled],
+    [`memberId=${handled}&eventType=approval.decided`, event => event.memberId === handled && event.type === "approval.decided"],
+    ["eventType=request.finished,request.accepted", event => event.type === "request.accepted" || event.type === "request.finished"],
+    ["eventType=routine.created", event => event.type === "routine.created"],
+    ["actorKind=system", event => event.actor.kind === "system"],
+    ["actorKind=owner&memberId=" + scheduled, event => event.actor.kind === "owner" && event.memberId === scheduled],
+    ["initiatorKind=routine", event => event.initiator.kind === "routine"],
+    ["initiatorKind=owner&memberId=" + scheduled, event => event.initiator.kind === "owner" && event.memberId === scheduled],
+    ["initiatorId=" + routineId.toUpperCase(), event => event.initiator.kind === "routine"],
+    ["initiatorKind=owner&initiatorId=" + routineId, () => false],
+    ["initiatorId=" + randomUUID(), () => false],
+    ["from=" + split, event => event.occurredAt >= split],
+    ["to=" + split, event => event.occurredAt < split],
+    [`from=${encodeURIComponent(atOffset(start))}&to=${encodeURIComponent(atOffset(end))}`,
+      event => event.occurredAt >= start && event.occurredAt < end],
+    [`from=${split.toLowerCase()}&memberId=${scheduled}&actorKind=system&eventType=request.finished,routine.firing_settled`,
+      event => event.occurredAt >= split && event.memberId === scheduled && event.actor.kind === "system"
+        && (event.type === "request.finished" || event.type === "routine.firing_settled")],
+    ["from=0001-01-01T00:00:00%2B15:59&to=9999-12-31T23:59:59.999999-15:59", () => true],
+    [`from=${split}&to=${split}`, () => false],
+    [`from=${end}&to=${start}`, () => false],
+  ];
+  for (const [query, keep] of cases) assert.deepEqual(await ids(query), all.filter(keep).map(event => event.eventId), query);
+  const [denial] = (await f.audit(`?memberId=${handled}&eventType=approval.decided`)).events;
+  assert.equal(denial.payload.choice, "deny");
+  // The replayed spawn appended nothing: one row through a filter, in either format.
+  const spawned = `eventType=member.spawned&memberId=${handled}`;
+  assert.deepEqual((await f.audit("?" + spawned)).events.map(event => event.payload.spawnRequestId), [spawnRequestId]);
+  assert.equal((await (await f.api("/v1/audit?format=csv&" + spawned)).text()).split("\r\n").length, 3);
+
+  // CSV returns the same rows and cursor as JSON for the same filters.
+  for (const query of [`memberId=${scheduled}&limit=2`, `initiatorId=${routineId}&limit=1`, "actorKind=system&limit=1000"]) {
+    const page = await f.audit("?" + query);
+    const csv = await f.api("/v1/audit?format=csv&" + query);
+    assert.equal(csv.status, 200);
+    assert.equal(csv.headers.get("audit-next-after"), page.nextAfter, query);
+    assert.equal(csv.headers.get("audit-has-more"), String(page.hasMore), query);
+    assert.deepEqual((await csv.text()).split("\r\n").slice(1, -1).map(line => line.split(",")[0]), page.events.map(event => event.eventId));
+  }
+
+  // Keyset pages over a filter: nextAfter is the last returned ID, or the given after for an empty page.
+  const paged: string[] = [];
+  let after = "0", pages = 0;
+  for (;;) {
+    const page = await f.audit(`?memberId=${scheduled}&limit=1&after=${after}`);
+    paged.push(...page.events.map(event => event.eventId)); pages++;
+    after = page.nextAfter;
+    if (!page.hasMore) break;
+  }
+  const own = all.filter(event => event.memberId === scheduled).map(event => event.eventId);
+  assert.deepEqual([paged, pages], [own, own.length]);
+  assert.deepEqual(await f.audit(`?memberId=${scheduled}&after=${after}`), { apiVersion: "1", events: [], nextAfter: after, hasMore: false });
+  assert.deepEqual(await f.audit(`?memberId=${handled}&after=${after}`), { apiVersion: "1", events: [], nextAfter: after, hasMore: false });
+  // A retried read returns the same page.
+  const query = "?eventType=request.accepted,request.finished&initiatorKind=routine&limit=1";
+  assert.deepEqual(await f.audit(query), await f.audit(query));
+  assert.equal((await f.api("/v1/audit?format=csv&limit=10000&memberId=" + handled)).status, 200);
+  assert.equal((await f.api("/v1/audit?limit=1001&memberId=" + handled)).status, 400);
+
+  // Owner scoping comes first: another owner's member, routine or conversation is an empty page, never 404.
+  assert.deepEqual(await f.audit("?memberId=" + strangerMember), { apiVersion: "1", events: [], nextAfter: "0", hasMore: false });
+  for (const query of ["memberId=" + handled, "initiatorId=" + routineId, "conversationId=" + conversationId,
+    "eventType=approval.decided", "initiatorKind=routine"]) {
+    assert.deepEqual((await f.audit("?" + query, f.stranger)).events, [], query);
+  }
+  assert.deepEqual((await f.audit("?eventType=member.spawned&actorKind=owner&from=2000-01-01T00:00:00Z", f.stranger)).events
+    .map(event => event.memberId), [strangerMember]);
+
+  const capabilities = await (await f.api("/v1/capabilities")).json();
+  assert.deepEqual(capabilities.audit.filters, ["conversationId", "memberId", "eventType", "actorKind", "initiatorKind", "initiatorId", "from", "to"]);
+  assert.deepEqual(capabilities.audit.filters, auditFilterNames);
+  assert.deepEqual(capabilities.audit.actorKinds, ["owner", "system"]);
+});
+
+test("filter values are validated at the gateway: unknown types and kinds and malformed IDs or timestamps are 400", async (t) => {
+  const f = await fixture(); t.after(f.stop);
+  for (const query of ["memberId=not-a-uuid", "memberId=", "memberId=" + randomUUID() + "&memberId=" + randomUUID(),
+    "eventType=", "eventType=request.deleted", "eventType=request.accepted,", "eventType=,request.accepted",
+    "eventType=request.accepted,request.accepted", "eventType=Request.Accepted", "eventType=request.accepted%20",
+    "eventType=request.accepted&eventType=request.finished", "eventType=__proto__",
+    "actorKind=routine", "actorKind=OWNER", "actorKind=", "initiatorKind=system", "initiatorKind=operator", "initiatorKind=",
+    "initiatorId=routine-7", "initiatorId=", "initiatorId=" + f.ownerId,
+    "from=2026-11-12", "from=2026-11-12T08:15:30", "from=2026-11-12%2008:15:30Z", "from=2026-11-12T08:15Z",
+    "from=2026-02-29T00:00:00Z", "from=2026-13-01T00:00:00Z", "from=2026-04-31T00:00:00Z", "from=2026-11-12T24:00:00Z",
+    "from=2016-12-31T23:59:60Z", "from=2026-11-12T08:15:30.Z", "from=2026-11-12T08:15:30.1234567Z",
+    "from=0000-01-01T00:00:00Z", "from=2026-11-12T08:15:30%2B16:00", "from=2026-11-12T08:15:30-00:60",
+    // An unencoded + is a space in a query string.
+    "from=2026-11-12T08:15:30+05:30", "from=%2B2026-11-12T08:15:30Z", "from=1700000000", "to=yesterday", "to=now()",
+    "to=" + encodeURIComponent("2026-11-12T08:15:30Z' OR '1'='1")]) {
+    const response = await f.api("/v1/audit?" + query);
+    assert.equal(response.status, 400, query);
+    assert.deepEqual(await response.json(), { error: "invalid_input" }, query);
+  }
+  for (const query of ["from=2024-02-29T00:00:00Z", "from=2000-02-29T23:59:59.5-15:59", "to=2026-11-12t08:15:30.123456z",
+    "from=2026-11-12T08:15:30-00:00", "eventType=" + auditEventTypes.join(",")]) {
+    assert.equal((await f.api("/v1/audit?" + query)).status, 200, query);
+  }
+});
+
+test("handoff, expiry and instructions rows answer every filter alike in JSON and CSV, and only to their owner", async (t) => {
+  const f = await fixture(); t.after(f.stop);
+  const checkpoint = { version: 1 as const, engine: "pi" as const, state: {} };
+  async function created(response: Response, status: number) {
+    assert.equal(response.status, status, await response.clone().text());
+    return response.json();
+  }
+  /** A new conversation of the member with one request, submitted through the gateway and started. */
+  async function started(ownerId: string, credential: string, memberId: string, terms: { approvalDeadlineSeconds?: number } = {}) {
+    const conversationId = randomUUID(), request = { ownerId, conversationId, requestId: randomUUID(), text: "audited prompt", ...terms };
+    await created(await f.api("/v1/conversations", { conversationId, memberId }, credential), 201);
+    await created(await f.api(`/v1/conversations/${conversationId}/requests`, { requestId: request.requestId, text: request.text, ...terms },
+      credential), 202);
+    const turn = await store.beginTurn(request);
+    assert.equal(turn.kind, "start"); if (turn.kind !== "start") throw new Error("unreachable");
+    return { ownerId, conversationId, requestId: request.requestId, token: turn.token };
+  }
+  /** One owner's trail: a member spawned with instructions, a card on it that expires, and a handoff of
+   * another of its conversations to a second member, whose reserved request then completes. */
+  async function trail(ownerId: string, credential: string) {
+    const spawn = async (instructions?: string) => (await created(await f.api("/v1/members",
+      { requestId: randomUUID(), engine: "pi", profile, ...(instructions ? { instructions } : {}) }, credential), 201)).memberId as string;
+    const instructed = await spawn("Answer in one sentence."), target = await spawn();
+    const expiring = await started(ownerId, credential, instructed, { approvalDeadlineSeconds: 60 });
+    const card = await approvals.propose({ ...expiring, memberId: instructed, invocationId: expiring.requestId,
+      nativeCallId: "expiring-call", toolName: "record_work_item", arguments: { operation_id: expiring.requestId } });
+    await pool.query("UPDATE birbcrew_ts.deferred_calls SET expires_at=clock_timestamp() WHERE approval_id=$1", [card.approvalId]);
+    assert.deepEqual(await approvals.expireTurn(card), { kind: "expired" });
+    const source = await started(ownerId, credential, instructed);
+    await store.commitTurn({ ...source, reply: "done", checkpoint });
+    const handoff = await created(await f.api(`/v1/conversations/${source.conversationId}/handoffs`,
+      { requestId: randomUUID(), memberId: target }, credential), 201);
+    assert.equal(handoff.firstRequestAdmitted, true);
+    const { rows: [{ transcript }] } = await pool.query<{ transcript: string }>(
+      "SELECT transcript FROM birbcrew_ts.conversation_handoffs WHERE handoff_id=$1", [handoff.handoffId]);
+    const reserved = { ownerId, conversationId: handoff.target.conversationId as string, requestId: handoff.firstRequestId as string };
+    const delivered = await store.beginTurn({ ...reserved, text: transcript });
+    assert.equal(delivered.kind, "start"); if (delivered.kind !== "start") throw new Error("unreachable");
+    await store.commitTurn({ ...reserved, token: delivered.token, reply: "acknowledged", checkpoint });
+    return { ownerId, credential, instructed, target, expiring: expiring.conversationId, source: source.conversationId,
+      handoffId: handoff.handoffId as string, targetConversation: reserved.conversationId };
+  }
+  const owners = [await trail(f.ownerId, f.token), await trail(f.strangerId, f.stranger)];
+
+  for (const [mine, theirs] of [owners, [...owners].reverse()]) {
+    const all = (await f.audit("", mine.credential)).events;
+    // Who each row names. The handoff row is on the source's member and conversation and names the
+    // owner as its initiator; only the reserved request's rows name the handoff.
+    const owner = { kind: "owner", id: mine.ownerId }, handoff = { kind: "handoff", id: mine.handoffId };
+    assert.deepEqual(all.map(event => [event.type, event.memberId, event.conversationId, event.actor.kind, event.initiator]), [
+      ["member.spawned", mine.instructed, null, "owner", owner],
+      ["member.instructions_set", mine.instructed, null, "owner", owner],
+      ["member.spawned", mine.target, null, "owner", owner],
+      ["conversation.opened", mine.instructed, mine.expiring, "owner", owner],
+      ["request.accepted", mine.instructed, mine.expiring, "owner", owner],
+      ["approval.requested", mine.instructed, mine.expiring, "system", owner],
+      ["approval.expired", mine.instructed, mine.expiring, "system", owner],
+      ["conversation.opened", mine.instructed, mine.source, "owner", owner],
+      ["request.accepted", mine.instructed, mine.source, "owner", owner],
+      ["request.finished", mine.instructed, mine.source, "system", owner],
+      ["conversation.opened", mine.target, mine.targetConversation, "owner", owner],
+      ["conversation.handed_off", mine.instructed, mine.source, "owner", owner],
+      ["request.accepted", mine.target, mine.targetConversation, "owner", handoff],
+      ["request.finished", mine.target, mine.targetConversation, "system", handoff],
+    ], mine.ownerId);
+    const cases: [string, (event: Event) => boolean][] = [
+      ["eventType=member.instructions_set", event => event.type === "member.instructions_set"],
+      ["eventType=approval.expired", event => event.type === "approval.expired"],
+      ["eventType=conversation.handed_off", event => event.type === "conversation.handed_off"],
+      ["eventType=conversation.handed_off,approval.expired,member.instructions_set",
+        event => ["conversation.handed_off", "approval.expired", "member.instructions_set"].includes(event.type)],
+      ["actorKind=system", event => event.actor.kind === "system"],
+      ["actorKind=system&eventType=approval.expired", event => event.type === "approval.expired"],
+      ["actorKind=owner&eventType=approval.expired", () => false],
+      ["initiatorKind=handoff", event => event.initiator.kind === "handoff"],
+      ["initiatorId=" + mine.handoffId.toUpperCase(), event => event.initiator.kind === "handoff"],
+      [`initiatorKind=handoff&initiatorId=${mine.handoffId}`, event => event.initiator.kind === "handoff"],
+      [`initiatorKind=routine&initiatorId=${mine.handoffId}`, () => false],
+      ["initiatorKind=owner&eventType=conversation.handed_off", event => event.type === "conversation.handed_off"],
+      ["memberId=" + mine.instructed, event => event.memberId === mine.instructed],
+      ["memberId=" + mine.target, event => event.memberId === mine.target],
+      [`memberId=${mine.target}&eventType=conversation.handed_off`, () => false],
+      [`memberId=${mine.instructed}&eventType=member.instructions_set`, event => event.type === "member.instructions_set"],
+      [`memberId=${mine.target}&eventType=member.instructions_set`, () => false],
+      [`conversationId=${mine.source}&eventType=conversation.handed_off`, event => event.type === "conversation.handed_off"],
+      [`conversationId=${mine.targetConversation}&initiatorKind=handoff`, event => event.initiator.kind === "handoff"],
+      // The other owner's members, handoff and conversations are empty pages.
+      ["memberId=" + theirs.instructed, () => false],
+      ["memberId=" + theirs.target, () => false],
+      ["initiatorId=" + theirs.handoffId, () => false],
+      [`initiatorKind=handoff&initiatorId=${theirs.handoffId}`, () => false],
+      ["conversationId=" + theirs.expiring, () => false],
+      ["conversationId=" + theirs.source, () => false],
+      ["conversationId=" + theirs.targetConversation, () => false],
+      ...auditEventTypes.map((type): [string, (event: Event) => boolean] => ["eventType=" + type, event => event.type === type]),
+    ];
+    for (const [query, keep] of cases) {
+      const page = await f.audit("?" + query, mine.credential);
+      assert.deepEqual(page.events.map(event => event.eventId), all.filter(keep).map(event => event.eventId), query);
+      // CSV carries the same rows, cell for cell, and the same cursor.
+      const csv = await f.api("/v1/audit?format=csv&" + query, undefined, mine.credential);
+      assert.equal(csv.status, 200, query);
+      assert.equal(csv.headers.get("audit-next-after"), page.nextAfter, query);
+      assert.equal(await csv.text(), auditCsv(page.events as unknown as AuditEvent[]), query);
+    }
+  }
+
+  // A handoff to the source's own member is recorded on that member, so the target's memberId returns it.
+  const [first] = owners;
+  const own = await started(first.ownerId, first.credential, first.instructed);
+  await store.commitTurn({ ...own, reply: "done", checkpoint });
+  await created(await f.api(`/v1/conversations/${own.conversationId}/handoffs`, { requestId: randomUUID(), memberId: first.instructed },
+    first.credential), 201);
+  assert.deepEqual((await f.audit(`?memberId=${first.instructed}&eventType=conversation.handed_off`, first.credential)).events
+    .map(event => [event.conversationId, event.payload.targetMemberId]), [[first.source, first.target], [own.conversationId, first.instructed]]);
+
+  // An owner ID may itself be a UUID. Its own rows store it as initiator_id, and initiatorId still skips them.
+  const uuidOwner = randomUUID();
+  await store.spawn({ ownerId: uuidOwner, requestId: randomUUID(), engine: "pi", profile });
+  const types = async (filters: Record<string, string>) =>
+    (await readAudit(pool, uuidOwner, auditQuerySchema.parse(filters))).events.map(event => [event.type, event.initiator.id]);
+  assert.deepEqual(await types({ initiatorKind: "owner" }), [["member.spawned", uuidOwner]]);
+  assert.deepEqual(await types({ initiatorId: uuidOwner }), []);
+});
+
+test("usage rows answer every filter alike in JSON and CSV, and only to their owner", async (t) => {
+  const f = await fixture(); t.after(f.stop);
+  async function created(response: Response, status: number) {
+    assert.equal(response.status, status, await response.clone().text());
+    return response.json();
+  }
+  /** One owner's trail: a metered request, a budget it has used, a request the budget refuses, the budget cleared. */
+  async function trail(ownerId: string, credential: string) {
+    const memberId = (await created(await f.api("/v1/members", { requestId: randomUUID(), engine: "pi", profile }, credential), 201)).memberId as string;
+    const spent = randomUUID(), refused = randomUUID(), request = { ownerId, conversationId: spent, requestId: randomUUID(), text: "metered prompt" };
+    await created(await f.api("/v1/conversations", { conversationId: spent, memberId }, credential), 201);
+    await created(await f.api(`/v1/conversations/${spent}/requests`, { requestId: request.requestId, text: request.text }, credential), 202);
+    const execution = { workflowRunId: randomUUID(), activityId: "turn", attempt: 1 };
+    const turn = await store.beginTurn(request, execution);
+    assert.equal(turn.kind, "start"); if (turn.kind !== "start") throw new Error("unreachable");
+    await pool.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
+      VALUES ($1,$2,$3,$4,$5,1)`, [spent, request.requestId, turn.token, execution.workflowRunId, execution.activityId]);
+    await recordSegmentUsage(pool, { ...request, token: turn.token, execution }, { state: "reported", model: "m", inputTokens: 9, outputTokens: 1,
+      cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null, costUsd: null });
+    await store.commitTurn({ ownerId, conversationId: spent, requestId: request.requestId, token: turn.token, reply: "done",
+      checkpoint: { version: 1, engine: "pi", state: {} } });
+    const budget = `/v1/usage/budgets/${memberId}`;
+    await created(await f.api(budget, { tokenLimit: 10 }, credential, "PUT"), 200);
+    await created(await f.api("/v1/conversations", { conversationId: refused, memberId }, credential), 201);
+    assert.deepEqual(await created(await f.api(`/v1/conversations/${refused}/requests`, { requestId: randomUUID(), text: "over budget" }, credential),
+      409), { error: "usage_limit" });
+    await created(await f.api(budget, undefined, credential, "DELETE"), 200);
+    return { ownerId, credential, memberId, spent, refused };
+  }
+  const owners = [await trail(f.ownerId, f.token), await trail(f.strangerId, f.stranger)];
+  const usageTypes = ["usage.budget_set", "usage.budget_cleared", "usage.request_refused"];
+
+  for (const [mine, theirs] of [owners, [...owners].reverse()]) {
+    const all = (await f.audit("", mine.credential)).events;
+    // A refused request has no admission, so its row names the owner as initiator; Crew refused it.
+    const owner = { kind: "owner", id: mine.ownerId };
+    assert.deepEqual(all.map(event => [event.type, event.memberId, event.conversationId, event.actor.kind, event.initiator]), [
+      ["member.spawned", mine.memberId, null, "owner", owner],
+      ["conversation.opened", mine.memberId, mine.spent, "owner", owner],
+      ["request.accepted", mine.memberId, mine.spent, "owner", owner],
+      ["request.finished", mine.memberId, mine.spent, "system", owner],
+      ["usage.budget_set", mine.memberId, null, "owner", owner],
+      ["conversation.opened", mine.memberId, mine.refused, "owner", owner],
+      ["usage.request_refused", mine.memberId, mine.refused, "system", owner],
+      ["usage.budget_cleared", mine.memberId, null, "owner", owner],
+    ], mine.ownerId);
+    const cases: [string, (event: Event) => boolean][] = [
+      ["eventType=usage.request_refused", event => event.type === "usage.request_refused"],
+      ["eventType=" + usageTypes.join(","), event => usageTypes.includes(event.type)],
+      ["actorKind=system&eventType=usage.request_refused", event => event.type === "usage.request_refused"],
+      ["actorKind=owner&eventType=usage.request_refused", () => false],
+      ["actorKind=owner&eventType=usage.budget_set,usage.budget_cleared", event => event.type.startsWith("usage.budget_")],
+      ["initiatorKind=owner&eventType=usage.request_refused", event => event.type === "usage.request_refused"],
+      ["initiatorKind=routine", () => false],
+      [`memberId=${mine.memberId}&eventType=${usageTypes.join(",")}`, event => usageTypes.includes(event.type)],
+      [`conversationId=${mine.refused}`, event => event.conversationId === mine.refused],
+      [`conversationId=${mine.refused}&eventType=usage.budget_set`, () => false],
+      // The other owner's member and conversations are empty pages.
+      ["memberId=" + theirs.memberId, () => false],
+      ["conversationId=" + theirs.refused, () => false],
+      [`conversationId=${theirs.refused}&eventType=usage.request_refused`, () => false],
+      ...auditEventTypes.map((type): [string, (event: Event) => boolean] => ["eventType=" + type, event => event.type === type]),
+    ];
+    for (const [query, keep] of cases) {
+      const page = await f.audit("?" + query, mine.credential);
+      assert.deepEqual(page.events.map(event => event.eventId), all.filter(keep).map(event => event.eventId), query);
+      const csv = await f.api("/v1/audit?format=csv&" + query, undefined, mine.credential);
+      assert.equal(csv.status, 200, query);
+      assert.equal(csv.headers.get("audit-next-after"), page.nextAfter, query);
+      assert.equal(await csv.text(), auditCsv(page.events as unknown as AuditEvent[]), query);
+    }
+  }
+});
+
+test("pending-card and webhook rows answer every filter alike in JSON and CSV, webhook rows match no member, and only their owner sees them", async (t) => {
+  const f = await fixture(); t.after(f.stop);
+  async function created(response: Response, status: number) {
+    assert.equal(response.status, status, await response.clone().text());
+    return response.json();
+  }
+  // Insecure targets let the endpoint name a loopback port nothing serves. The fixture's gateways allow
+  // only https, so their dispatchers refuse that URL before connecting; nothing is sent anywhere.
+  const webhooks = new WebhookApi(store, () => new Date(), { allowInsecure: true });
+  /** One owner's trail: a member's card becomes pending, then one endpoint's whole life, and Crew's own disable of another. */
+  async function trail(ownerId: string, credential: string) {
+    const memberId = (await created(await f.api("/v1/members", { requestId: randomUUID(), engine: "pi", profile }, credential), 201)).memberId as string;
+    const conversationId = randomUUID(), request = { ownerId, conversationId, requestId: randomUUID(), text: "carded prompt" };
+    await created(await f.api("/v1/conversations", { conversationId, memberId }, credential), 201);
+    await created(await f.api(`/v1/conversations/${conversationId}/requests`, { requestId: request.requestId, text: request.text }, credential), 202);
+    const turn = await store.beginTurn(request);
+    assert.equal(turn.kind, "start"); if (turn.kind !== "start") throw new Error("unreachable");
+    await approvals.propose({ ownerId, memberId, conversationId, requestId: request.requestId, token: turn.token, invocationId: request.requestId,
+      nativeCallId: "webhook-filter-call", toolName: "choose_next_step", arguments: {} });
+    const endpoint = await webhooks.create(ownerId, { requestId: randomUUID(), url: "http://127.0.0.1:9/private-path", kinds: ["approval.pending"] });
+    const { secret } = endpoint as typeof endpoint & { secret: string };
+    assert.match(secret, /^[A-Za-z0-9_-]{43}$/);
+    for (const action of ["disable", "enable", "delete"] as const) await webhooks.change(ownerId, endpoint.webhookId, action);
+    // Crew's own disable after ten failed deliveries in a row, as the dispatcher records it.
+    const exhausted = randomUUID();
+    await store.transaction(db => appendAudit(db, { type: "webhook.disabled", ownerId, memberId: null,
+      payload: { webhookId: exhausted, revision: 2, host: "127.0.0.1:9", reason: "consecutive_failures" } }));
+    return { ownerId, credential, memberId, conversationId, webhookId: endpoint.webhookId, exhausted, secret };
+  }
+  const owners = [await trail(f.ownerId, f.token), await trail(f.strangerId, f.stranger)];
+  const webhookTypes = ["webhook.created", "webhook.enabled", "webhook.disabled", "webhook.deleted"];
+
+  for (const [mine, theirs] of [owners, [...owners].reverse()]) {
+    const all = (await f.audit("", mine.credential)).events;
+    const owner = { kind: "owner", id: mine.ownerId };
+    assert.deepEqual(all.map(event => [event.type, event.memberId, event.conversationId, event.actor.kind, event.initiator]), [
+      ["member.spawned", mine.memberId, null, "owner", owner],
+      ["conversation.opened", mine.memberId, mine.conversationId, "owner", owner],
+      ["request.accepted", mine.memberId, mine.conversationId, "owner", owner],
+      ["approval.requested", mine.memberId, mine.conversationId, "system", owner],
+      ["webhook.created", null, null, "owner", owner],
+      ["webhook.disabled", null, null, "owner", owner],
+      ["webhook.enabled", null, null, "owner", owner],
+      ["webhook.deleted", null, null, "owner", owner],
+      ["webhook.disabled", null, null, "system", owner],
+    ], mine.ownerId);
+    const cases: [string, (event: Event) => boolean][] = [
+      ["eventType=" + webhookTypes.join(","), event => webhookTypes.includes(event.type)],
+      // A member filter never matches a row that names no member.
+      ["memberId=" + mine.memberId, event => event.memberId === mine.memberId],
+      [`memberId=${mine.memberId}&eventType=${webhookTypes.join(",")}`, () => false],
+      ["memberId=" + mine.memberId.toUpperCase(), event => event.memberId !== null],
+      ["actorKind=system", event => event.actor.kind === "system"],
+      ["actorKind=system&eventType=webhook.disabled", event => event.type === "webhook.disabled" && event.actor.kind === "system"],
+      ["actorKind=owner&eventType=webhook.disabled", event => event.type === "webhook.disabled" && event.actor.kind === "owner"],
+      ["actorKind=system&eventType=approval.requested", event => event.type === "approval.requested"],
+      ["initiatorKind=owner&eventType=webhook.deleted", event => event.type === "webhook.deleted"],
+      ["initiatorKind=routine", () => false],
+      ["initiatorKind=handoff", () => false],
+      // A webhook ID is no initiator.
+      ["initiatorId=" + mine.webhookId, () => false],
+      [`conversationId=${mine.conversationId}`, event => event.conversationId === mine.conversationId],
+      [`conversationId=${mine.conversationId}&eventType=${webhookTypes.join(",")}`, () => false],
+      // The other owner's member and conversation are empty pages.
+      ["memberId=" + theirs.memberId, () => false],
+      ["conversationId=" + theirs.conversationId, () => false],
+      ...auditEventTypes.map((type): [string, (event: Event) => boolean] => ["eventType=" + type, event => event.type === type]),
+    ];
+    for (const [query, keep] of cases) {
+      const page = await f.audit("?" + query, mine.credential);
+      assert.deepEqual(page.events.map(event => event.eventId), all.filter(keep).map(event => event.eventId), query);
+      const csv = await f.api("/v1/audit?format=csv&" + query, undefined, mine.credential);
+      assert.equal(csv.status, 200, query);
+      assert.equal(csv.headers.get("audit-next-after"), page.nextAfter, query);
+      const text = await csv.text();
+      assert.equal(text, auditCsv(page.events as unknown as AuditEvent[]), query);
+      for (const secret of [mine.secret, theirs.secret]) assert.ok(!text.includes(secret) && !JSON.stringify(page).includes(secret), query);
+      assert.ok(!text.includes("private-path") && !JSON.stringify(page).includes("private-path"), query);
+    }
+    // A webhook row's member, conversation and request cells are empty.
+    const lines = (await (await f.api("/v1/audit?format=csv&eventType=" + webhookTypes.join(","), undefined, mine.credential)).text())
+      .split("\r\n").slice(1, -1);
+    assert.equal(lines.length, 5);
+    for (const line of lines) assert.match(line, new RegExp(`^\\d+,[^,]+,webhook\\.[a-z]+,(owner,${mine.ownerId}|system,),owner,${mine.ownerId},,,,`), line);
+  }
+});
+
+test("migration 30 indexes a version-29 trail without queueing for an open audited write or waiting for a native turn", async (t) => {
+  const upgraded = await databaseAt(t, 29);
+  const current = new MemberStore(upgraded);
+  const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID(), text = "running at upgrade";
+  const { memberId } = await spawnHistoricalMember(current, { ownerId, requestId: randomUUID(), engine: "pi", profile });
+  // Opened and admitted by the previous release, in SQL: this release's open also reads the packs 033
+  // adds, and its admission the budgets 031 adds.
+  await current.transaction(async db => {
+    await db.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)", [ownerId, memberId, conversationId]);
+    await appendAudit(db, { type: "conversation.opened", ownerId, memberId, conversationId, payload: {} });
+  });
+  await current.transaction(async db => {
+    const digest = createHash("sha256").update(text).digest();
+    await db.query(`INSERT INTO birbcrew_ts.request_admissions (conversation_id,request_id,prompt_digest,initiator_kind)
+      VALUES ($1,$2,$3,'owner')`, [conversationId, requestId, digest]);
+    await appendAudit(db, { type: "request.accepted", ownerId, memberId, conversationId, requestId, payload: { promptDigest: digest.toString("hex") } });
+  });
+
+  // It locks only audit_events, in SHARE mode, and rewrites nothing.
+  const db = await upgraded.connect();
+  try {
+    await db.query("BEGIN");
+    const file = "SELECT pg_relation_filenode('birbcrew_ts.audit_events') AS audit";
+    const { rows: [before] } = await db.query(file);
+    await db.query(await readFile(new URL("030-audit-filters.sql", sql), "utf8"));
+    assert.deepEqual((await db.query(file)).rows[0], before);
+    const { rows } = await db.query(`SELECT c.relname AS relation, l.mode FROM pg_locks l JOIN pg_class c ON c.oid=l.relation
+      WHERE l.pid=pg_backend_pid() AND c.relkind='r' AND c.relnamespace='birbcrew_ts'::regnamespace ORDER BY 1,2`);
+    assert.deepEqual(rows, [{ relation: "audit_events", mode: "ShareLock" }]);
+  } finally {
+    await db.query("ROLLBACK");
+    db.release();
+  }
+
+  const execution = { workflowRunId: randomUUID(), activityId: "turn", attempt: 1 };
+  const start = await current.beginTurn({ ownerId, conversationId, requestId, text }, execution);
+  assert.equal(start.kind, "start"); if (start.kind !== "start") return;
+  await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
+    VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
+  const [opening, second] = [randomUUID(), randomUUID()];
+  await withNativeAdmission(upgraded, { ownerId, conversationId, requestId, text, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
+    // An open audited write: the migration retries rather than queue, so the write's next append is not held up.
+    const holder = await upgraded.connect();
+    try {
+      await holder.query("BEGIN");
+      for (const opened of [opening, second]) {
+        await holder.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)", [ownerId, memberId, opened]);
+      }
+      await appendAudit(holder, { type: "conversation.opened", ownerId, memberId, conversationId: opening, payload: {} });
+      let migrated = false;
+      const migrating = migrateThrough(current, 30).then(() => { migrated = true; });
+      for (let i = 0; i < 10; i++) {
+        await delay(30);
+        const { rows: waiting } = await upgraded.query(`SELECT pid FROM pg_locks WHERE NOT granted
+          AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`);
+        assert.deepEqual(waiting, [], "the migration retries instead of queueing");
+      }
+      assert.equal(migrated, false);
+      const appended = Date.now();
+      await appendAudit(holder, { type: "conversation.opened", ownerId, memberId, conversationId: second, payload: {} });
+      assert.ok(Date.now() - appended < 1_000, "the open write's next append is not held up");
+      await holder.query("COMMIT");
+      const finished = await Promise.race([migrating.then(() => true), delay(5_000, false)]);
+      assert.equal(finished, true, "migration 30 must not wait for a running native turn");
+    } finally { holder.release(); }
+    await current.appendText({ ownerId, conversationId, requestId, token: start.token }, requestId + "/assistant", 0, "still running");
+  });
+  await current.migrate();
+
+  const { rows: indexes } = await upgraded.query(`SELECT indexname AS name FROM pg_indexes WHERE schemaname='birbcrew_ts'
+    AND indexname IN ('audit_events_member_page','audit_events_type_page','audit_events_initiator_page') ORDER BY 1`);
+  assert.deepEqual(indexes.map(index => index.name), ["audit_events_initiator_page", "audit_events_member_page", "audit_events_type_page"]);
+  // Rows written before the upgrade are filtered like new ones, and the table is still append-only.
+  const page = await readAudit(upgraded, ownerId, auditQuerySchema.parse({ memberId, eventType: "request.accepted,conversation.opened" }));
+  assert.deepEqual(page.events.map(event => [event.type, event.conversationId]), [["conversation.opened", conversationId],
+    ["request.accepted", conversationId], ["conversation.opened", opening], ["conversation.opened", second]]);
+  await assert.rejects(upgraded.query("DELETE FROM birbcrew_ts.audit_events WHERE owner_id=$1", [ownerId]), { code: "23514" });
+  // migrate() brought it to the newest migration in the directory, whatever that is.
+  const migrations = (await readdir(sql)).map(file => Number(file.split("-")[0])).sort((a, b) => a - b);
+  assert.deepEqual((await upgraded.query("SELECT version FROM birbcrew_ts.schema_versions WHERE version>=29 ORDER BY 1")).rows
+    .map(row => row.version), migrations.filter(version => version >= 29));
+});
+
+test("migration 36 preserves old child history without inventing admission facts", async t => {
+  const upgraded = await databaseAt(t, 35), current = new MemberStore(upgraded), children = new ChildStore(upgraded);
+  const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID();
+  const { memberId } = await spawnHistoricalMember(current, { ownerId, requestId: randomUUID(), engine: "pi", profile });
+  await current.openConversation({ ownerId, memberId, conversationId });
+  const request = { ownerId, conversationId, requestId, text: "legacy delegation" };
+  const turn = await current.beginTurn(request, { workflowRunId: randomUUID(), activityId: "parent", attempt: 1 });
+  assert.equal(turn.kind, "start");
+  if (turn.kind !== "start") throw new Error("Expected started parent");
+  const checkpoint = { version: 1, engine: "pi", state: {} };
+  const proposals = [0, 1].map(n => ({ nativeCallId: "legacy_" + n, task: "private legacy task", profile: {
+    role: "analyst" as const, version: 1 as const, instructions: "Answer the task", model: "fixture", tools: [],
+  } }));
+  const historical = proposals.map(() => ({ ...turn.conversation, requestId, childId: randomUUID() }));
+  const [complete, running] = historical;
+  await current.transaction(async db => {
+    await db.query("INSERT INTO birbcrew_ts.delegations(conversation_id,request_id,parent_checkpoint) VALUES($1,$2,$3)", [conversationId, requestId, checkpoint]);
+    for (const [ordinal, proposal] of proposals.entries()) {
+      await db.query(`INSERT INTO birbcrew_ts.pi_children(child_id,conversation_id,request_id,native_call_id,ordinal,task,role_profile)
+        VALUES($1,$2,$3,$4,$5,$6,$7)`, [historical[ordinal].childId, conversationId, requestId, proposal.nativeCallId, ordinal, proposal.task, proposal.profile]);
+    }
+    await publishObservation(db, conversationId, { kind: "delegation", requestId, children: historical.map(({ childId }) => ({ childId, role: "analyst" })) });
+  });
+  const generation = randomUUID(), completed = { kind: "completed", nativeCallId: proposals[0].nativeCallId, text: "legacy reply" };
+  await upgraded.query(`UPDATE birbcrew_ts.pi_children SET phase='complete',outcome=$2 WHERE child_id=$1`, [complete.childId, JSON.stringify(completed)]);
+  await upgraded.query(`UPDATE birbcrew_ts.pi_children SET phase='running',generation=$2 WHERE child_id=$1`, [running.childId, generation]);
+  const before = (await upgraded.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [ownerId])).rows;
+  await current.migrate();
+  assert.deepEqual((await upgraded.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 ORDER BY event_id", [ownerId])).rows, before);
+  assert.deepEqual(await children.begin(complete, { workflowRunId: randomUUID(), activityId: "child", attempt: 1 }), { kind: "settled", outcome: completed });
+  await children.finish(running, generation, null, true);
+  assert.deepEqual((await upgraded.query("SELECT event_type,payload FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type LIKE 'delegation.%' ORDER BY event_id",
+    [ownerId])).rows, [{ event_type: "delegation.finished", payload: { childId: running.childId, outcome: "failed", code: "child_failed" } }]);
+  await current.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile });
+  assert.equal((await upgraded.query("SELECT 1 FROM birbcrew_ts.audit_events WHERE owner_id=$1 AND event_type='member.spawned'", [ownerId])).rowCount, 2);
 });

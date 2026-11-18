@@ -27,12 +27,28 @@ test("a host that carries anything but a host is refused, never trimmed to one",
     // Whitespace and control characters, which the URL parser would strip.
     " example.com", "example.com ", "exa mple.com", "example.com\n", "exa\tmple.com", "example.com\0", "example.com\u007f", "example .com",
     // Not a strict DNS name.
-    "a_b.example.com", "-a.example.com", "a-.example.com", "a".repeat(64) + ".com", "xn--a.example",
+    "a_b.example.com", "-a.example.com", "a-.example.com", "a".repeat(64) + ".com",
+    // A label that would decode to plain ASCII ends in the hyphen Punycode puts there, whichever parser reads it.
+    "xn--example-.com", "xn--.example",
     [...Array(64)].map(() => "abc").join(".") + ".example", // 263 characters, over the 253 a name may have
     // Not an address the parser accepts, or an address outside brackets.
     "1.2.3.4.5", "256.1.1.1", "foo.123", "::1", "[::1", "::1]", "[::1]:443", "[::1].", "[fe80::1%25eth0]", "[fe80::1%eth0]", "[example.com]",
   ]) assert.equal(canonicalHost(input), null, JSON.stringify(input));
   for (const input of [null, undefined, 1, {}, ["example.com"]]) assert.equal(canonicalHost(input as never), null);
+});
+
+test("a label that starts with xn-- and is not Punycode is kept as written and names only itself", () => {
+  // The parser in Node 24.22.3 (ada 4) keeps such a label as the ASCII label it is, where the
+  // one in Node 22 refused the whole URL. It is a strict DNS name either way, and a request for
+  // it asks DNS for exactly these letters, so it is its own canonical form and no other name's.
+  for (const literal of ["xn--a.example", "xn--0.example", "xn--zz.example", "a.xn--b"]) {
+    assert.equal(canonicalHost(literal), literal);
+    assert.equal(canonicalHost(literal.toUpperCase()), literal);
+    assert.equal(fetchTarget(`https://${literal}/x`)?.host, literal);
+    const exact = pattern(literal);
+    for (const other of ["example", "a.example", "xn--bcher-kva.example", "b", "a.b"]) assert.equal(hostMatches(exact, host(other)), false, `${literal} / ${other}`);
+  }
+  assert.equal(hostMatches(pattern("*.example.com"), host("xn--a.example.com")), true);
 });
 
 test("a pattern is an exact host or a wildcard over a domain of at least two labels", () => {

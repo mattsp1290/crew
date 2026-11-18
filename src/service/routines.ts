@@ -5,8 +5,8 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { appendAudit } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
-import { MemberStoreError, submitSchema, type RequestInitiator } from "./domain.ts";
-import type { IntegrationApi, RequestReceipt } from "./integration-api.ts";
+import { approvalDeadlineSeconds, MemberStoreError, submitSchema, type RequestInitiator } from "./domain.ts";
+import type { IntegrationApi, ServerRequestReceipt } from "./integration-api.ts";
 import { latestWindow, minimumIntervalMinutes, nextWindow, parseSchedule, scheduleProblem, type Schedule } from "./routine-schedule.ts";
 import type { MemberStore } from "./store.ts";
 
@@ -51,8 +51,12 @@ export const firingTransitions: Record<FiringStatus, readonly FiringStatus[]> = 
   succeeded: [], failed: [], skipped: [],
 };
 const settledStatuses: readonly FiringStatus[] = ["succeeded", "failed", "skipped"];
-type SkipReason = "missed" | "overlap" | "owner_unavailable";
-type FailReason = "rejected" | "approval_required" | "turn_failed" | "turn_cancelled" | "turn_uncertain";
+// The firing reason CHECK (routine_firings_reason_check) repeats both lists.
+export const skipReasons = ["missed", "overlap", "owner_unavailable"] as const;
+export const failReasons = ["rejected", "approval_required", "approval_expired", "turn_failed", "turn_cancelled", "turn_uncertain",
+  "usage_limit"] as const;
+type SkipReason = typeof skipReasons[number];
+type FailReason = typeof failReasons[number];
 type FiringReason = SkipReason | FailReason;
 
 export const routineCapabilities = {
@@ -76,16 +80,18 @@ export function decideWindow(schedule: Schedule, due: Date, now: Date, armedAt: 
 }
 
 /** What an observed request receipt means for its open firing. A fail_closed routine cancels
- * a request that reaches a human decision, and its firing fails whatever the request's end. */
+ * a request that reaches a human decision, and its firing fails whatever the request's end; so
+ * does a firing whose card expired, which counts as a failure like any other. */
 export function observedFiring(
   firing: { status: "admitted" | "waiting"; reason: FiringReason | null },
-  receipt: Pick<RequestReceipt, "status">, policy: ApprovalPolicy,
+  receipt: Pick<ServerRequestReceipt, "status" | "expiredApproval">, policy: ApprovalPolicy,
 ): { status: FiringStatus; reason: FiringReason | null; outcome?: "success" | "failure"; cancel: boolean } {
-  const closed = firing.reason === "approval_required";
-  const failed = (reason: FailReason) => ({ status: "failed" as const, reason: closed ? "approval_required" as const : reason,
+  const closed: FailReason | undefined = firing.reason === "approval_required" ? "approval_required"
+    : receipt.expiredApproval ? "approval_expired" : undefined;
+  const failed = (reason: FailReason) => ({ status: "failed" as const, reason: closed ?? reason,
     outcome: "failure" as const, cancel: false });
   switch (receipt.status) {
-    case "completed": return closed ? failed("approval_required") : { status: "succeeded", reason: null, outcome: "success", cancel: false };
+    case "completed": return closed ? failed(closed) : { status: "succeeded", reason: null, outcome: "success", cancel: false };
     case "failed": return failed("turn_failed");
     case "cancelled": return failed("turn_cancelled");
     case "uncertain": return failed("turn_uncertain");
@@ -100,7 +106,7 @@ export function observedFiring(
 type RoutineRow = {
   routine_id: string; owner_id: string; create_request_id: string; member_id: string; schedule: string; prompt: string;
   approval_policy: ApprovalPolicy; created_at: Date; state: RoutineState; disabled_reason: "owner" | "consecutive_failures" | null;
-  consecutive_failures: number; next_window: Date | null; revision: number;
+  consecutive_failures: number; next_window: Date | null; revision: number; approval_deadline_seconds: number | null;
 };
 type FiringRow = {
   routine_id: string; scheduled_for: Date; status: FiringStatus; reason: FiringReason | null; conversation_id: string | null;
@@ -111,7 +117,9 @@ type FiringRef = { routine_id: string; scheduled_for: Date; owner_id: string; me
 function routineView(row: RoutineRow) {
   return {
     apiVersion: "1" as const, routineId: row.routine_id, memberId: row.member_id, schedule: row.schedule, timezone: "UTC" as const,
-    prompt: row.prompt, approvalPolicy: row.approval_policy, state: row.state, disabledReason: row.disabled_reason,
+    prompt: row.prompt, approvalPolicy: row.approval_policy,
+    ...(row.approval_deadline_seconds !== null && { approvalDeadlineSeconds: row.approval_deadline_seconds }),
+    state: row.state, disabledReason: row.disabled_reason,
     consecutiveFailures: row.consecutive_failures, nextWindow: row.next_window?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
   };
@@ -128,6 +136,7 @@ const lowerUuid = z.uuid().transform(value => value.toLowerCase());
 const createSchema = z.strictObject({
   requestId: lowerUuid, memberId: lowerUuid, schedule: z.string().max(128),
   prompt: submitSchema.shape.text, approvalPolicy: z.enum(approvalPolicies),
+  approvalDeadlineSeconds: approvalDeadlineSeconds.optional(),
 });
 const pageLimit = (maximum: number) => z.string().regex(/^[1-9][0-9]{0,3}$/).refine(value => Number(value) <= maximum)
   .transform(Number).optional();
@@ -198,18 +207,22 @@ async function countOutcome(db: PoolClient, routineId: string, outcome: "success
  * transaction after it locked the conversation. Null when no firing names the request. The
  * firing row is the only authority: an admission for its identity is refused unless the
  * firing is still claimed, the conversation is the routine's owner and member, and the text
- * is its prompt. The share lock orders this admission with the dispatcher's settlement. */
+ * and approval deadline are the routine's. The share lock orders this admission with the
+ * dispatcher's settlement. */
 export async function firingInitiator(
-  db: Pick<PoolClient, "query">, key: { conversationId: string; requestId: string; text: string },
+  db: Pick<PoolClient, "query">, key: { conversationId: string; requestId: string; text: string; approvalDeadlineSeconds?: number },
   conversation: { ownerId: string; memberId: string },
 ): Promise<RequestInitiator | null> {
-  const { rows: [firing] } = await db.query<{ routine_id: string; status: string; owner_id: string; member_id: string; prompt: string }>(
-    `SELECT f.routine_id, f.status, r.owner_id, r.member_id, r.prompt
+  const { rows: [firing] } = await db.query<{ routine_id: string; status: string; owner_id: string; member_id: string; prompt: string;
+    approval_deadline_seconds: number | null }>(
+    `SELECT f.routine_id, f.status, r.owner_id, r.member_id, r.prompt, r.approval_deadline_seconds
        FROM birbcrew_ts.routine_firings f JOIN birbcrew_ts.routines r USING (routine_id)
       WHERE f.conversation_id=$1 AND f.request_id=$2 FOR SHARE OF f`, [key.conversationId, key.requestId]);
   if (!firing) return null;
   if (firing.status !== "claimed" || firing.owner_id !== conversation.ownerId || firing.member_id !== conversation.memberId
-      || firing.prompt !== key.text) throw new MemberStoreError("conflict");
+      || firing.prompt !== key.text || firing.approval_deadline_seconds !== (key.approvalDeadlineSeconds ?? null)) {
+    throw new MemberStoreError("conflict");
+  }
   return { kind: "routine", id: firing.routine_id };
 }
 
@@ -237,8 +250,9 @@ export class RoutineApi {
     const body = createSchema.parse(input);
     const problem = scheduleProblem(body.schedule, now);
     if (problem) throw new z.ZodError([{ code: "custom", path: ["schedule"], message: problem, input: body.schedule }]);
+    const deadline = body.approvalDeadlineSeconds ?? null;
     const same = (row: RoutineRow) => row.member_id === body.memberId && row.schedule === body.schedule
-      && row.prompt === body.prompt && row.approval_policy === body.approvalPolicy;
+      && row.prompt === body.prompt && row.approval_policy === body.approvalPolicy && row.approval_deadline_seconds === deadline;
     return this.store.transaction(async db => {
       const existing = async () => (await db.query<RoutineRow>(
         "SELECT * FROM birbcrew_ts.routines WHERE owner_id=$1 AND create_request_id=$2", [ownerId, body.requestId])).rows[0];
@@ -251,10 +265,10 @@ export class RoutineApi {
       const member = await db.query("SELECT 1 FROM birbcrew_ts.members WHERE owner_id=$1 AND member_id=$2", [ownerId, body.memberId]);
       if (!member.rowCount) throw new MemberStoreError("not_found");
       const { rows: [inserted] } = await db.query<RoutineRow>(`INSERT INTO birbcrew_ts.routines
-          (owner_id,create_request_id,member_id,schedule,prompt,approval_policy,created_at,state,next_window)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,'enabled',$8) ON CONFLICT (owner_id,create_request_id) DO NOTHING RETURNING *`,
+          (owner_id,create_request_id,member_id,schedule,prompt,approval_policy,created_at,state,next_window,approval_deadline_seconds)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,'enabled',$8,$9) ON CONFLICT (owner_id,create_request_id) DO NOTHING RETURNING *`,
         [ownerId, body.requestId, body.memberId, body.schedule, body.prompt, body.approvalPolicy, now,
-          nextWindow(parseSchedule(body.schedule)!, now)]).catch(enabledLimit);
+          nextWindow(parseSchedule(body.schedule)!, now), deadline]).catch(enabledLimit);
       if (!inserted) {
         const winner = (await existing())!;
         if (!same(winner)) throw new MemberStoreError("conflict");
@@ -262,7 +276,8 @@ export class RoutineApi {
       }
       await appendAudit(db, { type: "routine.created", ownerId, memberId: inserted.member_id, payload: {
         routineId: inserted.routine_id, revision: 1, schedule: inserted.schedule, approvalPolicy: inserted.approval_policy,
-        promptDigest: createHash("sha256").update(inserted.prompt).digest("hex") } });
+        promptDigest: createHash("sha256").update(inserted.prompt).digest("hex"),
+        ...(deadline !== null && { approvalDeadlineSeconds: deadline }) } });
       return routineView(inserted);
     });
   }
@@ -312,8 +327,9 @@ export class RoutineApi {
   }
 }
 
-type DueRoutine = Pick<RoutineRow, "routine_id" | "owner_id" | "member_id" | "schedule" | "prompt"> & { next_window: Date; open: boolean };
-type Claim = FiringRef & { conversation_id: string; request_id: string; prompt: string };
+type DueRoutine = Pick<RoutineRow, "routine_id" | "owner_id" | "member_id" | "schedule" | "prompt" | "approval_deadline_seconds">
+  & { next_window: Date; open: boolean };
+type Claim = FiringRef & Pick<RoutineRow, "approval_deadline_seconds"> & { conversation_id: string; request_id: string; prompt: string };
 type OpenFiring = FiringRef & { status: "admitted" | "waiting"; reason: FiringReason | null; conversation_id: string;
   request_id: string; approval_policy: ApprovalPolicy };
 
@@ -392,6 +408,7 @@ export class RoutineDispatcher {
   private claim(now: Date, armedAt: Date): Promise<Claim[]> {
     return this.transaction(async db => {
       const { rows } = await db.query<DueRoutine>(`SELECT r.routine_id, r.owner_id, r.member_id, r.schedule, r.prompt, r.next_window,
+          r.approval_deadline_seconds,
           EXISTS (SELECT 1 FROM birbcrew_ts.routine_firings f WHERE f.routine_id=r.routine_id
             AND f.status IN ('claimed','admitted','waiting')) AS open
         FROM birbcrew_ts.routines r WHERE r.state='enabled' AND r.next_window<=$1
@@ -439,7 +456,8 @@ export class RoutineDispatcher {
         SELECT routine_id,scheduled_for FROM birbcrew_ts.routine_firings
          WHERE status='claimed' AND lease_until<=$1 AND NOT conversation_id=ANY($4::uuid[])
          ORDER BY lease_until LIMIT $3 FOR UPDATE SKIP LOCKED)
-      RETURNING f.routine_id, f.scheduled_for, f.conversation_id, f.request_id, r.owner_id, r.member_id, r.prompt`,
+      RETURNING f.routine_id, f.scheduled_for, f.conversation_id, f.request_id, r.owner_id, r.member_id, r.prompt,
+        r.approval_deadline_seconds`,
       [now, new Date(now.getTime() + routineLimits.leaseMs), routineLimits.batch, [...this.driving]]);
     return rows;
   }
@@ -450,13 +468,17 @@ export class RoutineDispatcher {
     if (this.driving.has(claim.conversation_id)) return;
     this.driving.add(claim.conversation_id);
     try {
-      let refusal = false;
+      let refusal: FailReason | undefined;
       try {
         const deadline = Date.now() + routineLimits.admissionDeadlineMs;
         const key = { ownerId: claim.owner_id, conversationId: claim.conversation_id };
         await this.members.open({ ...key, memberId: claim.member_id }, deadline);
-        await this.members.accept({ ...key, requestId: claim.request_id, text: claim.prompt }, deadline);
-      } catch (error) { refusal = refused(error); }
+        await this.members.accept({ ...key, requestId: claim.request_id, text: claim.prompt,
+          ...(claim.approval_deadline_seconds !== null && { approvalDeadlineSeconds: claim.approval_deadline_seconds }) }, deadline);
+      } catch (error) {
+        refusal = error instanceof MemberStoreError && (error.code === "usage_limit" || error.code === "usage_limit_closed") ? "usage_limit"
+          : refused(error) ? "rejected" : undefined;
+      }
       const now = this.clock();
       await this.transaction(async db => {
         const { rows: [current] } = await db.query<{ status: FiringStatus }>(`SELECT status FROM birbcrew_ts.routine_firings
@@ -467,7 +489,7 @@ export class RoutineDispatcher {
         const admitted = await db.query("SELECT 1 FROM birbcrew_ts.request_admissions WHERE conversation_id=$1 AND request_id=$2",
           [claim.conversation_id, claim.request_id]);
         if (admitted.rowCount) await moveFiring(db, claim, "claimed", "admitted", null, now);
-        else if (refusal && await moveFiring(db, claim, "claimed", "failed", "rejected", now)) {
+        else if (refusal && await moveFiring(db, claim, "claimed", "failed", refusal, now)) {
           await countOutcome(db, claim.routine_id, "failure", now);
         }
         // Otherwise the outcome is unknown: the claim stays, and its lease expiry retries the same identity.

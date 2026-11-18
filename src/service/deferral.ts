@@ -1,20 +1,19 @@
+import { nextStep, standingChoice, recordWorkItemArgumentsSchema } from "@birbcrew/client/contract";
 import { z } from "zod";
-import { turnKey } from "./domain.ts";
 
-export const recordWorkItemArguments = z.strictObject({
-  operation_id: turnKey.shape.requestId,
-  note: z.string().refine((s) => s.isWellFormed() && !s.includes("\0") && Buffer.byteLength(s) <= 4096).optional(),
-});
+export const recordWorkItemArguments = recordWorkItemArgumentsSchema;
 export const toolNameSchema = z.enum(["record_work_item", "choose_next_step"]);
 export type DeferredTool = z.infer<typeof toolNameSchema>;
-export const nextStep = z.enum(["inspect", "test"]);
+
+export function publicToolArguments(tool: DeferredTool, requestId: string) {
+  return tool === "choose_next_step" ? {} : { operation_id: requestId };
+}
+export { nextStep, standingChoice };
 export const toolChoices = {
   record_work_item: ["approve", "deny"],
   choose_next_step: nextStep.options,
 } as const;
-/** Approve this call and grant later ones (docs/standing-grants.md). A card offers these in its
- * separate standingChoices field, never in choices, so a client that renders choices cannot pick one. */
-export const standingChoice = z.enum(["allow_conversation", "allow_always"]);
+
 export function acceptsChoice(tool: DeferredTool, choice: string) {
   return toolChoices[tool].some((allowed) => allowed === choice)
     || (tool === "record_work_item" && standingChoice.options.some((allowed) => allowed === choice));

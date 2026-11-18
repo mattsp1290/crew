@@ -1,3 +1,4 @@
+import { handoffAcknowledgement } from "../handoff.mts";
 import { holdResumedReceipt, streamGate, waitForGate } from "../stream-gate.mts";
 import { randomUUID } from "node:crypto";
 import type { BaseEvent, RunAgentInput } from "@ag-ui/core";
@@ -120,6 +121,7 @@ function scriptedStream(context: Context, signal: AbortSignal | undefined, onPro
     const answer = contentText(last.content);
     text = last.isError ? JSON.parse(answer).kind : "selected " + answer;
   } else if (latest?.startsWith("record ") && last?.role === "toolResult") text = "settled " + contentText(last.content);
+  else if (handoffAcknowledgement(latest)) text = handoffAcknowledgement(latest)!;
   else if (latest === "recall") text = "recalled " + (remembered ?? "none");
   else if (latest?.startsWith(prefix)) text = "stored " + latest.slice(prefix.length);
   else if (wait) text = "waiting";
@@ -214,19 +216,21 @@ export async function createFixture(onProviderFailure: () => void) {
 }
 
 export async function createPiFixtureOptions(
-  observe?: (context: Context, options?: { sessionId?: string }) => void,
+  observe?: (context: Context, options?: { sessionId?: string; model?: string }) => void,
+  identity?: { id: string; baseUrl: string },
 ) {
+  const fixtureModel = identity ? { ...model, ...identity } : model;
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
   });
   const stream: ProviderStreams["stream"] = (_model, context, options) => {
-    observe?.(context, options);
+    observe?.(context, { ...options, model: _model.id });
     return scriptedStream(context, options?.signal);
   };
   modelRuntime.registerNativeProvider(createProvider({
-    id: model.provider, models: [model],
+    id: fixtureModel.provider, models: [fixtureModel],
     auth: { apiKey: { name: "BirbCrew fixture", resolve: async () => ({ auth: {} }) } },
     api: { stream, streamSimple: stream },
   }));
-  return { model, modelRuntime };
+  return { model: fixtureModel, modelRuntime };
 }

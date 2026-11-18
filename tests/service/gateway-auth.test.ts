@@ -10,7 +10,7 @@ import { createGateway } from "../../src/service/gateway.ts";
 import type { MemberStore } from "../../src/service/store.ts";
 
 // No database or Temporal: authentication must reject before either is touched. The gateway's background loops
-// (cancellation outbox, routine dispatcher) read the store on their own timers. Those two reads are the only calls
+// (cancellation outbox, routine and webhook dispatchers) read the store on their own timers. Those reads are the only calls
 // allowed, and only outside a request's async context; the empty result means nothing to flush and recovery not
 // active, so the loops stop there. Anything else is recorded, with the request that caused it when one is known
 // (request and socket event listeners run outside that context).
@@ -30,7 +30,7 @@ const members = new Proxy({}, { get: (_, name) => () => { record("members." + St
 
 const token = randomUUID();
 const conversation = randomUUID(), request = randomUUID(), member = randomUUID(), grant = randomUUID();
-const routine = randomUUID(), memory = randomUUID();
+const routine = randomUUID(), memory = randomUUID(), webhook = randomUUID(), pack = randomUUID();
 // Every route and method main serves, versioned and unversioned, plus health-like paths that must not exist.
 const routes: [string, string][] = [
   ["GET", "/v1/capabilities"], ["GET", "/v1/health"], ["GET", "/v1/members"], ["GET", "/v1/conversations"],
@@ -38,12 +38,21 @@ const routes: [string, string][] = [
   ["POST", "/v1/routines"], ["GET", "/v1/routines"], ["GET", `/v1/routines/${routine}`], ["DELETE", `/v1/routines/${routine}`],
   ["POST", `/v1/routines/${routine}/enable`], ["POST", `/v1/routines/${routine}/disable`], ["GET", `/v1/routines/${routine}/firings`],
   ["POST", "/v1/memories"], ["GET", "/v1/memories"], ["GET", `/v1/memories/${memory}`], ["DELETE", `/v1/memories/${memory}`],
+  ["POST", "/v1/webhooks"], ["GET", "/v1/webhooks"], ["GET", `/v1/webhooks/${webhook}`], ["DELETE", `/v1/webhooks/${webhook}`],
+  ["POST", `/v1/webhooks/${webhook}/enable`], ["POST", `/v1/webhooks/${webhook}/disable`], ["GET", `/v1/webhooks/${webhook}/deliveries`],
   ["GET", `/v1/members/${member}/grants`], ["POST", `/v1/members/${member}/grants/${grant}/revoke`],
+  ["GET", `/v1/members/${member}/instructions`],
+  ["POST", "/v1/instruction-packs"], ["GET", "/v1/instruction-packs"], ["GET", `/v1/instruction-packs/${pack}`],
+  ["DELETE", `/v1/instruction-packs/${pack}`],
+  ["GET", "/v1/usage"], ["GET", "/v1/usage/members"], ["GET", "/v1/usage/conversations"], ["GET", "/v1/usage/records"],
+  ["GET", `/v1/usage/budgets/${member}`], ["PUT", `/v1/usage/budgets/${member}`], ["DELETE", `/v1/usage/budgets/${member}`],
   ["POST", "/v1/members"], ["POST", "/v1/conversations"],
   ["GET", `/v1/conversations/${conversation}`], ["POST", `/v1/conversations/${conversation}/requests`],
+  ["GET", `/v1/conversations/${conversation}/requests/${request}/approvals/${grant}?memberId=${member}&invocationId=${request}&version=1`],
   ["GET", `/v1/conversations/${conversation}/requests/${request}`], ["POST", `/v1/conversations/${conversation}/requests/${request}/cancel`],
   ["POST", `/v1/conversations/${conversation}/events`], ["POST", `/v1/conversations/${conversation}/human`],
   ["POST", `/v1/conversations/${conversation}/inputs`], ["POST", `/v1/conversations/${conversation}/cancel`],
+  ["POST", `/v1/conversations/${conversation}/handoffs`], ["GET", `/v1/conversations/${conversation}/handoff`],
   ["POST", "/members"], ["POST", "/conversations"], ["GET", `/conversations/${conversation}`],
   ["GET", `/conversations/${conversation}/requests/${request}`], ["POST", `/conversations/${conversation}/inputs`],
   ["POST", `/conversations/${conversation}/human`], ["POST", `/conversations/${conversation}/cancel`],

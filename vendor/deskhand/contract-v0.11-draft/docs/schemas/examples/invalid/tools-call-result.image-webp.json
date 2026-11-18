@@ -1,0 +1,52 @@
+{
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "image",
+      "data": "BASE64_OF_THE_ENCODED_IMAGE_ELIDED",
+      "mimeType": "image/webp"
+    },
+    {
+      "type": "text",
+      "text": "{\"frame_id\":\"frm_Zk3vQ8sN1xT5bYc2Lw9RaA\",\"sha256\":\"8db1f90ff7b0eb8bba6ff6d12c7ca55223f3c4a755ffa66f0f2ab19d83c8f089\",\"display_id\":1,\"display_config_generation\":3,\"capture_rect\":{\"x\":0,\"y\":0,\"width\":1728,\"height\":1117},\"source_pixel_size\":{\"width\":3456,\"height\":2234},\"output_pixel_size\":{\"width\":2355,\"height\":1522},\"point_pixel_scale\":2,\"downscale\":0.6817070194446376,\"format\":\"jpeg\",\"mime_type\":\"image/jpeg\",\"jpeg_quality\":85,\"image_bytes\":1184213,\"captured_at\":\"2026-11-14T15:02:14.019Z\",\"max_age_ms\":60000,\"pointer_position\":{\"x\":1630,\"y\":912},\"frontmost_app\":{\"bundle_id\":\"com.apple.TextEdit\",\"team_id\":null,\"name\":\"TextEdit\"}}"
+    }
+  ],
+  "structuredContent": {
+    "frame_id": "frm_Zk3vQ8sN1xT5bYc2Lw9RaA",
+    "sha256": "8db1f90ff7b0eb8bba6ff6d12c7ca55223f3c4a755ffa66f0f2ab19d83c8f089",
+    "display_id": 1,
+    "display_config_generation": 3,
+    "capture_rect": {
+      "x": 0,
+      "y": 0,
+      "width": 1728,
+      "height": 1117
+    },
+    "source_pixel_size": {
+      "width": 3456,
+      "height": 2234
+    },
+    "output_pixel_size": {
+      "width": 2355,
+      "height": 1522
+    },
+    "point_pixel_scale": 2,
+    "downscale": 0.6817070194446376,
+    "format": "jpeg",
+    "mime_type": "image/jpeg",
+    "jpeg_quality": 85,
+    "image_bytes": 1184213,
+    "captured_at": "2026-11-14T15:02:14.019Z",
+    "max_age_ms": 60000,
+    "pointer_position": {
+      "x": 1630,
+      "y": 912
+    },
+    "frontmost_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    }
+  },
+  "isError": false
+}

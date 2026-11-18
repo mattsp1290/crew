@@ -4,7 +4,7 @@ import { commands } from "./member-commands.mts";
 import { services, until, type Engine } from "./member-services.mts";
 import { startRestartFixtures } from "./proxy-restart-fixtures.mts";
 
-assert.equal(process.version, "v22.23.3", "Activate pinned Node 22.23.3");
+assert.equal(process.version, "v24.22.3", "Activate pinned Node 24.22.3");
 const engines: Engine[] = ["claude", "codex", "pi"];
 const s = await services();
 try {

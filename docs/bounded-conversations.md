@@ -58,7 +58,7 @@ No native summarization, cross-engine conversion or unlimited retention is added
 
 ## Reproduce
 
-Requires Linux with Landlock ABI 4+, Node 22.23.3, a C compiler, Docker and Temporal
+Requires Linux with Landlock ABI 4+, Node 24.22.3, a C compiler, Docker and Temporal
 CLI 1.10.0 on PATH (or `TEMPORAL_CLI` pointing at it). No paid inference or personal
 credentials are required. Tests use disposable local fixture credentials.
 

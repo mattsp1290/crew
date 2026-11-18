@@ -53,7 +53,6 @@ class ClaudeReviewer(Record):
 
 class OpenCodeGoReviewer(Record):
     kind: Literal["opencode-go"]
-    subscription_evidence: Path
     api_key_file: Path | None = None
 
 
@@ -78,7 +77,7 @@ class ExecutionSettings(Record):
     def absolute_paths(self):
         optional = (self.codex_socket, self.claude)
         if isinstance(self.reviewer, OpenCodeGoReviewer):
-            optional += (self.reviewer.subscription_evidence, self.reviewer.api_key_file)
+            optional += (self.reviewer.api_key_file,)
         for path in (
             self.worktree_root,
             self.artifact_root,

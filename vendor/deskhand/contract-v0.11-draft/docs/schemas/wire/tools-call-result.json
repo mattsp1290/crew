@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deskhand.invalid/schemas/wire/tools-call-result.json",
+  "title": "tools/call result",
+  "description": "The result member of every tools/call response (docs/contract.md section 3.3): exactly four members. content is one text block holding the JSON of structuredContent, preceded by one image block only on a successful screenshot; scripts/check-contract.py checks the tool and the mimeType. structuredContent is a tool_error exactly when isError is true.",
+  "type": "object",
+  "properties": {
+    "resultType": { "const": "complete" },
+    "content": {
+      "type": "array",
+      "oneOf": [
+        { "prefixItems": [{ "$ref": "#/$defs/text_block" }], "minItems": 1, "maxItems": 1 },
+        {
+          "prefixItems": [{ "$ref": "#/$defs/image_block" }, { "$ref": "#/$defs/text_block" }],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "structuredContent": { "type": "object" },
+    "isError": { "type": "boolean" }
+  },
+  "required": ["resultType", "content", "structuredContent", "isError"],
+  "additionalProperties": false,
+  "if": { "properties": { "isError": { "const": true } }, "required": ["isError"] },
+  "then": {
+    "properties": {
+      "structuredContent": { "required": ["code"] },
+      "content": { "maxItems": 1 }
+    }
+  },
+  "else": { "properties": { "structuredContent": { "not": { "required": ["code"] } } } },
+  "$defs": {
+    "text_block": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "text" },
+        "text": { "type": "string" }
+      },
+      "required": ["type", "text"],
+      "additionalProperties": false
+    },
+    "image_block": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "image" },
+        "data": { "description": "The encoded image, base64.", "type": "string", "minLength": 1 },
+        "mimeType": { "enum": ["image/jpeg", "image/png"] }
+      },
+      "required": ["type", "data", "mimeType"],
+      "additionalProperties": false
+    }
+  }
+}

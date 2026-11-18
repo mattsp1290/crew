@@ -10,7 +10,6 @@ The approved-goal activity worker (`python -m birbcrew.execution.worker`) can ru
 {
   "reviewer": {
     "kind": "opencode-go",
-    "subscription_evidence": "/etc/crew/opencode-go-evidence.json",
     "api_key_file": "/run/crew/opencode-go.key"
   },
   "codex": "/usr/local/bin/codex",
@@ -25,9 +24,9 @@ These fields go into the existing installation file. Its other fields are unchan
 - If `reviewer` is absent, the Claude reviewer is selected. Configurations written before this field existed keep their behavior.
 - `{"kind": "claude"}` requires `claude`, and any other reviewer rejects it. A configuration that breaks either rule fails to load.
 - All configured paths must be absolute.
-- `subscription_evidence` uses the existing OpenCode Go attestation format. `checked_at` must include a timezone.
-  - Every review checks the attestation before contacting the provider, and the attestation must be at most 12 hours old. Refresh it on that schedule.
-  - If it is missing, stale or ineligible, the review is inconclusive with `subscription_evidence_rejected` and sends no request.
+- The reviewer needs only its key. Earlier releases also required `subscription_evidence`, a dated owner statement that expired after 12 hours. That field was removed. A configuration that still names it fails to load with `execution_config_invalid` and the field's name, so remove the field and the file.
+  - No code asserts the statement's claims any more: that Extra Usage is off and that the subscription permits this use. Nothing ever checked them against the provider. Keep overage billing off in the provider's console.
+  - Each review still sends one request with no retry and at most 8192 output tokens.
 - `api_key_file` must be a regular file, not a symbolic link. The worker's UID must own it, with no group or other permission bits. It must contain one token, optionally followed by a newline.
   - Without `api_key_file`, the key comes from the `OPENCODE_GO_API_KEY` assignment in `$HOME/.profile`, as before.
   - Crew never writes the key to evidence or receipts. A test that enables debug logging for a review checks that the key does not appear in the log output.
@@ -35,7 +34,7 @@ These fields go into the existing installation file. Its other fields are unchan
 At startup, the worker checks the installation before it connects to Temporal. Its error messages never contain file contents. Configuration errors list field paths and validation messages. Those can name an unrecognized field or `kind` value, but never another input value.
 
 - **Installation file.** If it is invalid, the worker exits with `execution_config_invalid` followed by the field names and error messages.
-- **Key and attestation.** The worker reads the configured key and parses the attestation. If either fails, it exits with `opencode_go_key_unusable: <reason>` or `subscription_evidence_unusable: <reason>`. The reason is either the reader's fixed message or an exception type such as `FileNotFoundError`. The attestation's age is not checked at startup.
+- **Key.** The worker reads the configured key. If that fails, it exits with `opencode_go_key_unusable: <reason>`. The reason is either the reader's fixed message or an exception type such as `FileNotFoundError`. A review that later finds the key unreadable is inconclusive with `provider_credential_unavailable` and sends no request.
 - **Codex socket.** When `codex_socket` is set, the worker waits up to 120 seconds for something to accept a connection on it. A missing path, a regular file, or a stale socket that nothing is listening on all count as not ready yet. If the wait runs out, the worker exits with `codex_socket_unavailable`. Other errors, such as permission denied, stop the worker immediately.
 
 Each review sends the unchanged prompt to `https://opencode.ai/inference/go/openai/v1` as one Chat Completions request:
@@ -111,7 +110,6 @@ On SIGTERM, the worker stops polling and lets running activities finish for up t
 | `repository.checkout` | worker writable; Codex read-only; same path | Owns the Git directory of every worktree. |
 | `artifact_root` | worker, writable, persistent | Private review and acceptance evidence. |
 | `BIRBCREW_CONFIG`, `BIRBCREW_EXECUTION_CONFIG` files | worker, read-only | Store, Temporal and execution settings. Include the Temporal mTLS files if configured. |
-| `subscription_evidence` file | worker, read-only | OpenCode Go attestation. |
 | `api_key_file` | worker | A private copy owned by UID 10001, mode 0400 or 0600. |
 | `/home/crew/.ssh/` | worker, read-only | Deploy key and a `known_hosts` entry for `github.com`. OpenSSH reads this directory from the passwd entry, not `$HOME`. |
 | `gh` credentials | worker | `GH_TOKEN`, or `GH_CONFIG_DIR` pointing at a mounted `hosts.yml`. Every child process inherits the worker's environment and UID. Git, the acceptance command and the Codex proxy can therefore reach either form. `GH_CONFIG_DIR` only keeps the token out of environment dumps. |
@@ -127,7 +125,7 @@ Kubernetes Secret volumes usually expose keys as root-owned symbolic links, whic
 - **Tests.** `uv run --group dev pytest` covers:
   - Settings: reviewer selection, the `claude` path rules, absolute paths, key-file permissions and contents, the existing `$HOME/.profile` reader, the startup checks (including that they do not echo file contents or configuration values), the socket wait (missing, regular file, stale and listening), and `--sock` reaching the proxy argv for authoring and interruption.
   - Worker wiring with a stand-in Temporal worker: SIGTERM ends the wait, and the 660-second grace period is passed. The drain itself is Temporal's `graceful_shutdown_timeout`; this repository does not test it.
-  - Reviews, using a local scripted model and a local HTTP stub: approved; changes requested; malformed, missing or conflicting verdicts; provider HTTP and connection failures; timeouts; expired, future, timezone-less or invalid attestations; a single request with no retry; closing the provider client; and heartbeats while a request is pending.
+  - Reviews, using a local scripted model and a local HTTP stub: approved; changes requested; malformed, missing or conflicting verdicts; provider HTTP and connection failures; timeouts; a missing or invalid key; a leftover attestation file that is absent, expired or invalid having no effect; a single request with no retry; closing the provider client; and heartbeats while a request is pending.
 - **Image runs.** The image was built for linux/arm64 and for linux/amd64 (emulated). Both were run with `--user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp`. Both reported `codex-cli 0.167.1`, git 2.47.3, gh 2.46.0 and OpenSSH 10.0p2, and imported `birbcrew.execution.worker`.
 - **Two-container Codex on linux/arm64.**
   - A foreground `codex app-server --listen unix://` container served Crew's `Daemon` client from a second container. The containers shared `/tmp`.

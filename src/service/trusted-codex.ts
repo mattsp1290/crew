@@ -10,6 +10,7 @@ import { codexExecutable } from "./codex-executable.ts";
 import { nativeHistory,type CodexProfile } from "./codex.ts";
 import { codexSubscriptionEndpoint } from "./accounts.ts";
 import type { TrustedNativeInput } from "./trusted-native-types.ts";
+import { codexRolloutModel, codexRolloutTotal, codexUsage } from "./usage-capture.ts";
 
 const hash=(value:string)=>createHash("sha256").update(value).digest("hex");
 const saved=z.strictObject({version:z.literal(1),engine:z.literal("codex-app-server"),threadId:z.uuid(),nativeId:z.uuid(),
@@ -47,7 +48,9 @@ async function executeTrustedCodex(input:TrustedNativeInput,profile:CodexProfile
   const root=join(parent,threadId),home=join(root,"home"),scratch=join(root,"workspace");
   if(!prior){await mkdir(root,{mode:0o700});await mkdir(home,{mode:0o700});await mkdir(scratch,{mode:0o700});}
   if(await realpath(home)!==home || await realpath(scratch)!==scratch)throw new Error("Invalid native storage");
-  if(prior){const actual=await nativeHistory(home,scratch,prior.nativeId,prior.rollout);if(actual.bytes!==prior.bytes || actual.sha256!==prior.sha256)throw new Error("Trusted native history changed");}
+  // The app-server reports no per-turn usage; the rollout's running total does, as on the member lane.
+  let priorTotal:ReturnType<typeof codexRolloutTotal>=null;
+  if(prior){const actual=await nativeHistory(home,scratch,prior.nativeId,prior.rollout,lines=>{priorTotal=codexRolloutTotal(lines);});if(actual.bytes!==prior.bytes || actual.sha256!==prior.sha256)throw new Error("Trusted native history changed");}
   const ambient=["auth.json","config.toml","mcp.json","hooks.json","AGENTS.md","AGENTS.override.md","plugins","rules","agents",".codex",".agents"];
   if((await readdir(home)).some(n=>ambient.includes(n)) || (await readdir(scratch)).some(n=>ambient.includes(n)))throw new Error("Unexpected Codex configuration");
   await profile.authorize?.();const subscription=await profile.subscription?.();
@@ -144,6 +147,9 @@ async function executeTrustedCodex(input:TrustedNativeInput,profile:CodexProfile
     if(failure)throw failure;
     if(results.size || buffer.trim() || decoder.end())throw new Error("Incomplete final native protocol state");
     input.signal.throwIfAborted();
-    return {text,checkpoint:saved.parse({version:1,engine:"codex-app-server",threadId,nativeId,memberId,ownerDigest,model:profile.model,requestId:input.runId,...await nativeHistory(home,scratch,nativeId)})};
+    let total:unknown,model:string|null=null;
+    const history=await nativeHistory(home,scratch,nativeId,undefined,lines=>{total=codexRolloutTotal(lines);model=codexRolloutModel(lines);});
+    return {text,checkpoint:saved.parse({version:1,engine:"codex-app-server",threadId,nativeId,memberId,ownerDigest,model:profile.model,requestId:input.runId,...history}),
+      usage:codexUsage(total,priorTotal,model)};
   } finally {input.signal.removeEventListener("abort",abort);stop();await closed;for(const p of pending.values())clearTimeout(p.timer);}
 }

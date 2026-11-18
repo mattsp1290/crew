@@ -1,17 +1,26 @@
+import { memberSubagents } from "./child-target.ts";
 import { z } from "zod";
-import { appendAudit, auditEventTypes, auditLimits } from "./audit.ts";
+import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type DecisionReceiptsCapabilityV1,
+  type ServerRequestReceipt } from "@birbcrew/client/contract";
+import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
 import { capabilityReport, storedCapabilities } from "./capabilities.ts";
 import type { MemberClient } from "./client.ts";
-import { initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema, turnKey,
-  type Engine, type RequestInitiator } from "./domain.ts";
+import { approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
+  turnKey, type Engine } from "./domain.ts";
 import { standingChoice } from "./deferral.ts";
 import { grantListLimit } from "./grants.ts";
+import { handoffCapabilities } from "./handoffs.ts";
 import { conversationTurnLimit, workflowGenerationTurnLimit } from "./limits.ts";
 import { memoryCapabilities } from "./memories.ts";
+import { instructionsCapabilities, instructionsSummarySql, type InstructionsSummary } from "./instructions.ts";
+import { packCapabilities } from "./instruction-packs.ts";
 import { routineCapabilities } from "./routines.ts";
 import type { MemberStore } from "./store.ts";
+import { webhookCapabilities } from "./webhooks.ts";
+import { usageCapabilities } from "./usage.ts";
 
 const listDefaultLimit = 50, listMaximumLimit = 100;
+const receipts = decisionReceiptsCapabilityV1Schema.shape;
 
 export const integrationCapabilities = {
   apiVersion: "1",
@@ -29,8 +38,15 @@ export const integrationCapabilities = {
   audit: {
     version: 1, route: "/v1/audit", eventTypes: auditEventTypes, pagination: "event-id-keyset-no-skipped-commits",
     formats: ["json", "csv"], limits: auditLimits, retention: "append-only-with-database; no-automatic-TTL",
+    filters: auditFilterNames, actorKinds,
   },
   routines: routineCapabilities,
+  approvalDetails: { version: 1, tools: ["record_work_item"] },
+  decisionReceipts: {
+    version: receipts.version.value, field: receipts.field.value, route: receipts.route.value,
+    tools: ["record_work_item", "choose_next_step"], replay: receipts.replay.value,
+    conflictCode: receipts.conflictCode.value, unverifiableCode: receipts.unverifiableCode.value,
+  } satisfies DecisionReceiptsCapabilityV1,
   standingGrants: {
     version: 1, choices: standingChoice.options, cardField: "standingChoices", stateField: "grantedCalls", tools: ["record_work_item"], policyVersion: 1,
     initiatorKinds: ["owner"], route: "/v1/members/{memberId}/grants", inactiveListLimit: grantListLimit,
@@ -38,6 +54,18 @@ export const integrationCapabilities = {
   },
   memories: memoryCapabilities,
   memberCapabilities: capabilityReport,
+  handoffs: handoffCapabilities,
+  approvalExpiry: {
+    version: 1, field: "approvalDeadlineSeconds", routes: ["/v1/conversations/{conversationId}/requests", "/v1/routines"],
+    minimumSeconds: approvalDeadline.minimumSeconds, maximumSeconds: approvalDeadline.maximumSeconds,
+    engines: ["claude", "pi"], cardField: "expiresAt", stateField: "expiredCalls", receiptField: "expiredApproval",
+    outcome: "request-cancelled", auditEvent: "approval.expired", firingReason: "approval_expired",
+    codex: "earlier-of-live-and-request-deadline", piChildCards: "not-covered",
+  },
+  memberInstructions: instructionsCapabilities,
+  usage: usageCapabilities,
+  webhooks: webhookCapabilities,
+  instructionPacks: packCapabilities,
 } as const;
 
 type Listing = "member" | "conversation";
@@ -64,19 +92,11 @@ function page<T>(kind: Listing, rows: T[], size: number, id: (row: T) => string)
 
 const keySchema = turnKey;
 type Key = z.infer<typeof keySchema>;
-type Status = "accepted" | "waiting" | "running" | "completed" | "cancellation_requested" | "cancelled" | "failed" | "uncertain";
-export interface RequestReceipt {
-  apiVersion: "1";
-  conversationId: string;
-  requestId: string;
-  acceptance: { boundary: "sql_admission_and_temporal_queue" };
-  status: Status;
-  /** Absent for a request admitted before admissions were durable. */
-  initiator?: RequestInitiator;
-  result?: { text: string };
-  reason?: string;
-  cancellation?: { receiptId: string; delivery: "pending" | "delivered"; nativeTermination: "confirmed" | "unconfirmed"; effects: "not_assessed" };
+export type { ServerRequestReceipt } from "@birbcrew/client/contract";
+export class ReceiptContractError extends Error {
+  constructor() { super("Request receipt violates the public contract"); this.name = "ReceiptContractError"; }
 }
+type Status = ServerRequestReceipt["status"];
 
 /** Public contract adapter; no SDK or Temporal internals are exposed to HTTP consumers. */
 export class IntegrationApi {
@@ -90,7 +110,7 @@ export class IntegrationApi {
     this.members = members;
   }
 
-  async submit(input: unknown): Promise<RequestReceipt> {
+  async submit(input: unknown): Promise<ServerRequestReceipt> {
     const request = submitSchema.parse(input);
     // Unlike the legacy ACCEPTED stage, acceptTurn waits for SQL admission.
     // On lost acknowledgement the caller must reconcile, never choose a new UUID.
@@ -98,7 +118,7 @@ export class IntegrationApi {
     return this.status({ ownerId: request.ownerId, conversationId: request.conversationId, requestId: request.requestId });
   }
 
-  async status(input: unknown): Promise<RequestReceipt> {
+  async status(input: unknown): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
     // Reconcile an accepted/no-turn receipt against a terminal logical workflow.
     // This observes Temporal only: it never starts a workflow or dispatches inference.
@@ -106,14 +126,19 @@ export class IntegrationApi {
     const { rows: [row] } = await this.store.pool.query<{
       admission: string | null; reason: string | null; initiator_kind: string | null; initiator_id: string | null;
       phase: string | null; reply: string | null; receipt_id: string | null; delivered_at: Date | null; stopped: boolean; waiting: boolean;
+      approval_deadline_seconds: number | null; expired_id: string | null; expires_at: Date | null; expired_at: Date | null;
     }>(`SELECT a.phase AS admission,a.reason,a.initiator_kind,a.initiator_id,t.phase,t.reply,x.receipt_id,x.delivered_at,
-       EXISTS(SELECT 1 FROM birbcrew_ts.deferred_calls d WHERE d.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND d.request_id=COALESCE(a.request_id,t.request_id) AND d.decision IS NULL) AS waiting,
+       a.approval_deadline_seconds,e.approval_id AS expired_id,e.expires_at,e.expired_at,
+       EXISTS(SELECT 1 FROM birbcrew_ts.deferred_calls d WHERE d.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND d.request_id=COALESCE(a.request_id,t.request_id) AND d.decision IS NULL AND d.expired_at IS NULL) AS waiting,
        (EXISTS(SELECT 1 FROM birbcrew_ts.tool_cancellations tc WHERE tc.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND tc.request_id=COALESCE(a.request_id,t.request_id))
         AND EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n WHERE n.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND n.request_id=COALESCE(a.request_id,t.request_id))
         AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n WHERE n.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND n.request_id=COALESCE(a.request_id,t.request_id) AND NOT n.stopped)) AS stopped
        FROM birbcrew_ts.request_admissions a FULL JOIN birbcrew_ts.turns t USING(conversation_id,request_id)
        JOIN birbcrew_ts.conversations c ON c.conversation_id=COALESCE(a.conversation_id,t.conversation_id)
        LEFT JOIN birbcrew_ts.integration_cancellations x ON x.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND x.request_id=COALESCE(a.request_id,t.request_id)
+       LEFT JOIN LATERAL (SELECT d.approval_id,d.expires_at,d.expired_at FROM birbcrew_ts.deferred_calls d
+         WHERE d.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND d.request_id=COALESCE(a.request_id,t.request_id)
+           AND d.expired_at IS NOT NULL LIMIT 1) e ON true
        WHERE c.owner_id=$1 AND COALESCE(a.conversation_id,t.conversation_id)=$2 AND COALESCE(a.request_id,t.request_id)=$3`,
       [key.ownerId,key.conversationId,key.requestId]);
     if (!row) throw new MemberStoreError("not_found");
@@ -123,7 +148,7 @@ export class IntegrationApi {
       : row.phase === "uncertain" ? "uncertain"
       : row.receipt_id ? "cancellation_requested"
       : row.waiting ? "waiting" : row.phase === "started" ? "running" : "accepted";
-    return {
+    const receipt = serverRequestReceiptSchema.safeParse({
       apiVersion: "1", conversationId: key.conversationId, requestId: key.requestId,
       acceptance: { boundary: "sql_admission_and_temporal_queue" }, status,
       ...(row.initiator_kind ? { initiator: initiatorFromColumns(row.initiator_kind, row.initiator_id) } : {}),
@@ -133,11 +158,16 @@ export class IntegrationApi {
         receiptId: row.receipt_id, delivery: row.delivered_at ? "delivered" as const : "pending" as const,
         nativeTermination: row.stopped ? "confirmed" as const : "unconfirmed" as const, effects: "not_assessed" as const,
       } } : {}),
-    };
+      ...(row.approval_deadline_seconds !== null ? { approvalDeadlineSeconds: row.approval_deadline_seconds } : {}),
+      ...(row.expired_id ? { expiredApproval: { approvalId: row.expired_id, expiresAt: row.expires_at!.toISOString(),
+        expiredAt: row.expired_at!.toISOString() } } : {}),
+    });
+    if (!receipt.success) throw new ReceiptContractError();
+    return receipt.data;
   }
 
   /** `policy` marks an intent a routine's fail_closed policy requested rather than the owner. */
-  async cancel(input: unknown, policy?: "fail_closed"): Promise<RequestReceipt> {
+  async cancel(input: unknown, policy?: "fail_closed"): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
     // Backfill active legacy turns created after migration17, without inventing an
     // admission for an unknown UUID or accepting a new payload. Such turns come from
@@ -169,16 +199,25 @@ export class IntegrationApi {
   /** Owner-scoped keyset page in identifier order; backed by members UNIQUE (owner_id, member_id). */
   async listMembers(ownerId: string, query: unknown) {
     const { limit, after } = memberListQuery.parse(query);
-    const { rows } = await this.store.pool.query<{ memberId: string; engine: Engine; profile: string; stored: unknown }>(
-      `SELECT m.member_id AS "memberId",m.engine,m.profile,c.capabilities AS stored
-       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.member_capabilities c USING (owner_id,member_id)
+    const { rows } = await this.store.pool.query<{ memberId: string; engine: Engine; profile: string; instructions: InstructionsSummary | null;
+      instructionPacks: string[] | null; consent: unknown; seal: unknown; active: string[] | null; stored: unknown }>(
+      `SELECT m.member_id AS "memberId",m.engine,m.profile,m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active,
+         CASE WHEN i.member_id IS NOT NULL THEN ${instructionsSummarySql} END AS instructions,
+         (SELECT array_agg(a.pack_id::text ORDER BY a.position) FROM birbcrew_ts.member_instruction_packs a
+           WHERE a.owner_id=m.owner_id AND a.member_id=m.member_id) AS "instructionPacks",
+         c.capabilities AS stored
+       FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
+       LEFT JOIN birbcrew_ts.member_instructions i ON i.owner_id=m.owner_id AND i.member_id=m.member_id
+       LEFT JOIN birbcrew_ts.member_capabilities c ON c.owner_id=m.owner_id AND c.member_id=m.member_id
        WHERE m.owner_id=$1 AND ($2::uuid IS NULL OR m.member_id>$2) ORDER BY m.member_id LIMIT $3`,
       [ownerId, after ?? null, limit + 1]);
     const { items, next } = page("member", rows, limit, row => row.memberId);
+    // Never the text: only GET /v1/members/{memberId}/instructions returns it. Pack IDs, in order.
     // `capabilities` only for a member that has some, so a member without any reads as before.
-    const members = items.map(({ stored, ...member }) => {
+    const members = items.map(({ instructions, instructionPacks, consent, seal, active, stored, ...member }) => {
       const capabilities = storedCapabilities(stored);
-      return capabilities ? { ...member, capabilities } : member;
+      return { ...member, subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
+        ...(instructionPacks ? { instructionPacks } : {}), ...(capabilities ? { capabilities } : {}) };
     });
     return { apiVersion: "1" as const, members, next };
   }

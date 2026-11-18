@@ -1,0 +1,30 @@
+name: Deskhand contract corpus
+on:
+  pull_request:
+    paths:
+      - 'vendor/deskhand/**'
+      - 'src/**'
+      - 'packages/**'
+      - 'clients/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'package*.json'
+      - 'tsconfig.json'
+      - '.github/workflows/deskhand-contract.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:deskhand
+      - run: npm run build:client
+      - run: npm run typecheck

@@ -12,38 +12,42 @@ import { authorizeLive } from "./live-account.ts";
 import { verifyLive } from "./live-members.ts";
 import { openRelay } from "./live-relay.ts";
 
-async function attestation(t: TestContext) {
+async function approval(t: TestContext) {
   const dir = await mkdtemp(join(tmpdir(), "birb-live-gate-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, "owner.json");
-  const value = { approval_id: randomUUID(), provider: "opencode-go", account_path: "test", checked_at: new Date().toISOString(), evidence: "fixture",
-    eligible_coding_use: true, extra_usage_disabled: true, approved_live_proof: true, endpoint: goEndpoint, model: goModel, max_requests: 16 };
+  const value = { approval_id: randomUUID(), provider: "opencode-go", account: "test",
+    approved_live_proof: true, endpoint: goEndpoint, model: goModel, max_requests: 16 };
   const write = (extra: object = {}) => writeFile(path, JSON.stringify({ ...value, ...extra }), { mode: 0o600 });
   await write();
-  const args = ["--engine", "pi", "--attestation", path];
+  const args = ["--engine", "pi", "--approval", path];
   const env = { OPENCODE_GO_API_KEY: "synthetic" };
   return { path, args, env, write, claims: join(dir, "claims") };
 }
 
-test("live preflight requires a current private decision for exactly one provider, model, origin and request budget", async (t) => {
-  const gate = await attestation(t);
+test("live preflight requires a private owner decision for exactly one provider, model, origin and request budget", async (t) => {
+  const gate = await approval(t);
   await assert.rejects(authorizeLive([], gate.env));
   await assert.rejects(authorizeLive([...gate.args, "--engine", "pi"], gate.env));
-  await assert.rejects(authorizeLive(["--engine", "claude", "--attestation", gate.path], { BIRBCREW_CLAUDE_API_KEY: "synthetic" }));
+  await assert.rejects(authorizeLive(["--engine", "claude", "--approval", gate.path], { BIRBCREW_CLAUDE_API_KEY: "synthetic" }));
   await assert.rejects(authorizeLive(gate.args, { OPENAI_API_KEY: "ignored" }));
+  // A dated account statement is not a proof approval: its fields are unknown here, whatever they say.
   for (const invalid of [{ approved_live_proof: false }, { endpoint: "https://example.invalid" }, { max_requests: 25 },
-    { model: "other" }, { checked_at: "2020-01-01T00:00:00Z" }, { extra_usage_disabled: false }]) {
+    { model: "other" }, { account: " " }, { checked_at: "2020-01-01T00:00:00Z" }, { evidence: "console check" },
+    { extra_usage_disabled: true }, { eligible_coding_use: true }]) {
     await gate.write(invalid);
     await assert.rejects(authorizeLive(gate.args, gate.env, gate.claims));
   }
   await gate.write();
+  const account = await authorizeLive(gate.args, gate.env, gate.claims);
+  assert.deepEqual(JSON.parse(account.liveProfiles), { pi: { provider: "opencode-go", account: "test" } });
   await chmod(gate.path, 0o644);
   await assert.rejects(authorizeLive(gate.args, gate.env, gate.claims));
 });
 
-test("the command redacts the account path, evidence and credentials on a declined opt-in", async (t) => {
-  const gate = await attestation(t);
-  await gate.write({ approved_live_proof: false, evidence: "private evidence marker" });
+test("the command redacts the account and credentials on a declined opt-in", async (t) => {
+  const gate = await approval(t);
+  await gate.write({ approved_live_proof: false, account: "private account marker" });
   const result = spawnSync(process.execPath, ["tests/proof/live-members.ts", ...gate.args], {
     env: { PATH: process.env.PATH, OPENCODE_GO_API_KEY: "private selected key", OPENAI_API_KEY: "private foreign key" },
     encoding: "utf8", timeout: 5_000,
@@ -54,7 +58,7 @@ test("the command redacts the account path, evidence and credentials on a declin
 });
 
 test("the relay counts before upstream submission and fails closed on revocation", async (t) => {
-  const gate = await attestation(t);
+  const gate = await approval(t);
   for (const revoked of [true, false]) {
     await gate.write({ max_requests: 1 });
     const account = await authorizeLive(gate.args, gate.env, gate.claims);
@@ -77,12 +81,12 @@ test("the relay counts before upstream submission and fails closed on revocation
 });
 
 test("the same approval can admit provider traffic from just one process, including after its exit", async (t) => {
-  const gate = await attestation(t);
+  const gate = await approval(t);
   await gate.write({ max_requests: 1 });
   const script = `
     import { authorizeLive } from "./tests/proof/live-account.ts";
     import { openRelay } from "./tests/proof/live-relay.ts";
-    const account = await authorizeLive(["--engine","pi","--attestation",process.argv[1]], process.env, process.argv[2]);
+    const account = await authorizeLive(["--engine","pi","--approval",process.argv[1]], process.env, process.argv[2]);
     let sent = 0;
     const relay = await openRelay(account, AbortSignal.timeout(3000), async () => { sent++; return Response.json({}); });
     try {
@@ -96,7 +100,7 @@ test("the same approval can admit provider traffic from just one process, includ
 });
 
 test("aborting stops the admitted request immediately and refuses new provider submissions", async (t) => {
-  const gate = await attestation(t), account = await authorizeLive(gate.args, gate.env, gate.claims);
+  const gate = await approval(t), account = await authorizeLive(gate.args, gate.env, gate.claims);
   const controller = new AbortController();
   const entered = Promise.withResolvers<AbortSignal>();
   let submissions = 0;
@@ -120,7 +124,7 @@ test("aborting stops the admitted request immediately and refuses new provider s
 });
 
 test("a loopback request without the disposable SDK credential cannot use the provider account", async (t) => {
-  const gate = await attestation(t), account = await authorizeLive(gate.args, gate.env, gate.claims);
+  const gate = await approval(t), account = await authorizeLive(gate.args, gate.env, gate.claims);
   let submissions = 0;
   const relay = await openRelay(account, AbortSignal.timeout(5000), async () => { submissions++; return Response.json({}); });
   try {
@@ -131,7 +135,7 @@ test("a loopback request without the disposable SDK credential cannot use the pr
 });
 
 test("the live Pi entry exercises native tool results, cold recall, delegation and cleanup with a controlled upstream", { timeout: 150_000 }, async (t) => {
-  const gate = await attestation(t);
+  const gate = await approval(t);
   const account = await authorizeLive(gate.args, gate.env, gate.claims);
   const transport: typeof fetch = async (input, init) => {
     const request = new Request(input, init);

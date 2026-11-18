@@ -4,17 +4,21 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { Pool, type PoolClient } from "pg";
-import { nativeProposal } from "./deferral.ts";
 import { ApprovalStore, savedProposal } from "./approvals.ts";
 import type { PublicSegment } from "./activities.ts";
 import { inspectChild, requestChildStop, revokeChild, type ReadySegment } from "./supervisor-child.ts";
 import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import { ChildStore, childrenFor } from "./children.ts";
-import { commitSchema, type Conversation, type Checkpoint } from "./domain.ts";
+import type { Conversation, Checkpoint } from "./domain.ts";
 import { textProjection, textWriter } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
-import { commandSchema, type Launch } from "./supervisor.ts";
+import { commandSchema, runnerResultSchema, type Launch } from "./supervisor.ts";
+import { recordSegmentUsage } from "./usage.ts";
+import { operatorPrices } from "./usage-prices.ts";
+import { errorSummary, relayWarning, warn } from "./diagnostics.ts";
 
+// Read before "ready": a table the worker accepted cannot fail here later, mid-segment.
+const prices = operatorPrices();
 const pool = new Pool({ connectionString: process.env.BIRBCREW_DATABASE_URL });
 const store = new MemberStore(pool);
 const ledger = new ApprovalStore(pool);
@@ -151,6 +155,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
   let exited: Promise<boolean> | undefined;
   let confirmed = false;
   let reaped = false;
+  let runnerEnd = "no exit";
   try {
     const { continuation } = admission;
     const project = await textProjection(pool, launch.conversationId);
@@ -173,13 +178,15 @@ async function start(launch: Launch): Promise<SegmentResult> {
           const matched = "matchedOperation" in value && value.matchedOperation === true;
           preview = (preview ?? stream.drain()).then(() => store.previewTool(launch, id, matched));
           void preview.catch(() => { });
+        } else if (value && typeof value === "object" && "warning" in value && typeof value.warning === "string") {
+          relayWarning(value.warning, { conversationId: launch.conversationId, requestId: launch.requestId });
         } else {
           reply = value;
         }
       });
       exited = new Promise<boolean>((resolve) => {
-        child.once("error", () => resolve(false));
-        child.once("close", (code) => resolve(code === 0));
+        child.once("error", () => { runnerEnd = "process error"; resolve(false); });
+        child.once("close", (code, signal) => { runnerEnd = signal ? "signal " + signal : "exit code " + code; resolve(code === 0); });
       });
       child.send({ launch, conversation, checkpoint, continuation, childProfile, childResults,threadId:launch.childId ?? conversation.conversationId, runId: launch.requestId, text: launch.text }, (error) => {
         if (error) killNativeGroup(child);
@@ -192,23 +199,20 @@ async function start(launch: Launch): Promise<SegmentResult> {
     await preview;
     const pid = active.get(launch.token)?.pid;
     reaped = pid !== undefined && await groupStopped(pid);
-    if (!confirmed || !reaped) throw new Error("SDK process stopped without a confirmed result");
+    if (!confirmed || !reaped) {
+      const state = [runnerEnd, reply === undefined && "no reply", !reaped && "process group still running"].filter(Boolean).join(", ");
+      throw new Error("SDK process stopped without a confirmed result (" + state + ")");
+    }
     const {ownerId,conversationId,requestId,token} = launch;
     const childKey = launch.childId ? {ownerId,conversationId,requestId,memberId:member.conversation.memberId,childId:launch.childId} : undefined;
-    if (childKey && z.strictObject({error:z.literal("Native SDK turn failed")}).safeParse(reply).success) {
+    if (z.strictObject({error:z.literal("Native SDK turn failed")}).safeParse(reply).success) {
+      if (!childKey) throw new Error("Native runner reported a failed turn");
       await children.finish(childKey,token,null);
       return {kind:"childDone"};
     }
-    const result = z.discriminatedUnion("kind", [
-      z.strictObject({ kind: z.literal("complete"), text: commitSchema.shape.reply, checkpoint: commitSchema.shape.checkpoint }),
-      z.strictObject({ kind:z.literal("delegated"),checkpoint:commitSchema.shape.checkpoint,proposals:z.array(z.strictObject({
-        nativeCallId:z.string().min(1).max(256),task:z.string().min(1).max(4096),
-        profile:z.strictObject({role:z.enum(["analyst","recorder"]),version:z.literal(1),instructions:z.string().min(1),
-          model:z.string().min(1),tools:z.array(z.literal("record_work_item")).max(1)}),
-      })).min(1).max(2) }),
-      z.strictObject({ kind: z.literal("pending"), checkpoint: commitSchema.shape.checkpoint,
-        proposal: nativeProposal }),
-    ]).parse(reply);
+    const result = runnerResultSchema.parse(reply);
+    // Before the outcome commits: the model work happened even if that commit then fails.
+    await recordSegmentUsage(pool, launch, result.usage, prices);
     if (result.kind === "delegated") {
       if (childKey || continuation || member.childResults || member.conversation.engine !== "pi") throw new Error("Unexpected delegation");
       return {kind:"delegated",children:await children.delegate(member.conversation,requestId,token,result.proposals,result.checkpoint)};
@@ -313,7 +317,8 @@ process.on("message", async (message) => {
   let response;
   try {
     response = { id, ok: true, reply: await handle(launch, action) };
-  } catch {
+  } catch (error) {
+    warn("native_turn_unconfirmed", { action, conversationId: launch.conversationId, requestId: launch.requestId, ...errorSummary(error) });
     response = { id, ok: false, error: "Native turn denied or outcome uncertain" };
   }
   if (process.connected) process.send?.(response, () => {});

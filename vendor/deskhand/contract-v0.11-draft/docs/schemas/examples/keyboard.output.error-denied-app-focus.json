@@ -1,0 +1,24 @@
+{
+  "code": "denied_app",
+  "message": "Keyboard focus belongs to an app that is not allowed.",
+  "state": "ok",
+  "operation_id": "call_01HZX3M9R1",
+  "measured": {
+    "frontmost_app": {
+      "bundle_id": "com.apple.TextEdit",
+      "team_id": null,
+      "name": "TextEdit"
+    },
+    "target_app": {
+      "bundle_id": "com.apple.Spotlight",
+      "team_id": null,
+      "name": "Spotlight"
+    },
+    "window_title": null,
+    "global_point": null,
+    "measured_at": "2026-11-14T15:02:24.105Z"
+  },
+  "details": {
+    "denied_by": "policy"
+  }
+}

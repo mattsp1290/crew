@@ -3,26 +3,21 @@ import type { ChildKey } from "./children.ts";
 import type { Approval } from "./approvals.ts";
 import { z } from "zod";
 
-export const engineSchema = z.enum(["pi", "claude", "codex"]);
+import { engineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
+  createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema,
+  requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
+export { engineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
-
-function boundedText(bytes: number) {
-  return z.string().min(1).refine(
-    (text) => !text.includes("\0") && text.isWellFormed()
-      && new TextEncoder().encode(text).length <= bytes,
-    { message: `Expected valid UTF-8 text of at most ${bytes} bytes` },
-  );
-}
-
-const uuid = z.uuid().transform((value) => value.toLowerCase());
 const ownerId = boundedText(256);
-const profile = boundedText(128);
-
-export const spawnSchema = z.strictObject({ ownerId, requestId: uuid, engine: engineSchema, profile });
-export const conversationKey = z.strictObject({ ownerId, conversationId: uuid });
-export const openSchema = conversationKey.extend({ memberId: uuid });
-export const turnKey = conversationKey.extend({ requestId: uuid });
-export const submitSchema = turnKey.extend({ text: boundedText(16_384) });
+const uuid = requestIdentitySchema.shape.requestId;
+export const spawnSchema = createMemberSchema.extend({ ownerId });
+export const conversationKey = conversationIdentitySchema.extend({ ownerId });
+export const openSchema = openConversationSchema.extend({ ownerId });
+export const turnKey = requestIdentitySchema.extend({ ownerId });
+export const submitSchema = submitRequestSchema.extend({ ownerId });
+/** Only a handoff's reserved first request may exceed promptBytes. Admission checks the reservation. */
+export const turnTextBytes = 65_536;
+export const turnRequestSchema = submitSchema.extend({ text: boundedText(turnTextBytes) });
 export const executionSchema = z.strictObject({
   workflowRunId: boundedText(256),
   activityId: boundedText(256),
@@ -39,16 +34,6 @@ export const checkpointSchema = z.strictObject({
 
 export const commitSchema = claimSchema.extend({ reply: boundedText(65_536), checkpoint: checkpointSchema });
 
-/** What started a request, recorded once with its durable admission. The closed set of kinds:
- * a later kind is a new member here, a case in initiatorColumns, and a migration widening
- * request_admissions_initiator_kind_check and audit_events_initiator_check. The owner carries
- * no id because the conversation's owner_id already names them. A routine is named by its id;
- * only its firing row can make an admission record it (025-routines.sql). */
-export const requestInitiator = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("owner") }),
-  z.strictObject({ kind: z.literal("routine"), id: z.uuid() }),
-]);
-export type RequestInitiator = z.infer<typeof requestInitiator>;
 export const initiatorKinds = requestInitiator.options.map(option => option.shape.kind.value);
 export const ownerInitiator: RequestInitiator = Object.freeze({ kind: "owner" });
 
@@ -57,6 +42,7 @@ export function initiatorColumns(initiator: RequestInitiator): [kind: RequestIni
   switch (initiator.kind) {
     case "owner": return ["owner", null];
     case "routine": return ["routine", initiator.id];
+    case "handoff": return ["handoff", initiator.id];
   }
 }
 
@@ -79,7 +65,9 @@ export type BeginTurn =
 
 export class MemberStoreError extends Error {
   readonly code: "not_found" | "conflict" | "busy" | "stale" | "input_limit" | "history_unavailable" | "request_rejected"
-    | "routine_limit" | "routine_deleted" | "memory_limit" | "memory_deleted";
+    | "routine_limit" | "routine_deleted" | "memory_limit" | "memory_deleted" | "instructions_limit"
+    | "handed_off" | "handoff_pending" | "handoff_empty" | "handoff_too_large" | "trusted_conversation"
+    | "usage_limit" | "usage_limit_closed" | "webhook_limit" | "webhook_deleted" | "pack_limit" | "pack_deleted" | "pack_in_use" | "decision_conflict" | "decision_unverifiable";
 
   constructor(code: MemberStoreError["code"]) {
     super(code);

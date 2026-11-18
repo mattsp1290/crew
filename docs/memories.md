@@ -175,15 +175,15 @@ control characters are refused, and other characters keep their own bytes. The
 largest block is 32 entries of 1024 quote characters: 67,637 bytes, plus the newline
 before it, so `injectedBytesPerConversation` is 67,638.
 
-Each engine has its own ceiling on the whole system context, notes and memory
-together:
+Each engine has its own ceiling on the whole system context, which holds any
+instruction packs and instructions as well as notes and memory:
 
 - Claude takes at most 262,144 UTF-16 code units of project context (`claude.ts`).
   A character outside the Basic Multilingual Plane counts as two.
 - Codex gets the context as one `--config developer_instructions=<JSON string>`
   argument. The SDK escapes it a second time, so a quote costs four bytes. Linux
   refuses one argument of 131,072 bytes or more, counting its NUL.
-- Pi keeps the prompt in process.
+- Pi gets the prompt in a frame on its worker's channel, where no argument limit applies.
 
 The worst cases do not fit. The largest memory block takes 133,487 bytes as a Codex
 argument. The largest project notes take 224,541 code units, which Claude takes alone,
@@ -193,7 +193,10 @@ largest notes alone take 262,001 bytes; that predates memory.
 Notes and the memory set never grow after a conversation opens. So
 `openConversation` composes the context the way each launch will, and refuses the
 open with `409 memory_limit` when the notes alone fit the member's engine but notes
-and memory together do not. Nothing is written. With 31 entries of 1024 quotes and no
+and memory together do not. Nothing is written. A member with
+[instructions](member-instructions.md#limits-and-context-size) or
+[instruction packs](instruction-packs.md#limits-and-context-size) counts them with the
+notes: `memory_limit` then means notes and instructions fit without the memory. With 31 entries of 1024 quotes and no
 notes, a Codex member opens: its argument is 129,321 bytes. To open with more, delete
 entries. Notes too large on their own are not memory's doing: such a conversation
 opens as it did before memory, and its first launch fails as it did then.
@@ -312,7 +315,7 @@ Conversations opened before the upgrade have no references and get no memory.
 
 ## Validation
 
-Use Node 22.23.3 on Linux and a disposable PostgreSQL 17 database whose role may
+Use Node 24.22.3 on Linux and a disposable PostgreSQL 17 database whose role may
 create databases. `BIRBCREW_PG_BIN` must name PostgreSQL 17 `pg_dump`/`pg_restore`.
 
 ```sh

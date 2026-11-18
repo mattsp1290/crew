@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "error": {
+    "code": -32020,
+    "message": "Header mismatch",
+    "data": {
+      "header": "MCP-Protocol-Version",
+      "detail": "MCP-Protocol-Version is required."
+    }
+  }
+}

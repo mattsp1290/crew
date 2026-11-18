@@ -3,7 +3,8 @@ import { nativeCallIds } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
 import { runLiveTool } from "./codex-live.ts";
 import { conversationContext } from "./memories.ts";
-import { flushTelemetry, traced, turnFlushBudgetMs } from "./telemetry.ts";
+import { flushTelemetry, observedAgent, traced, turnFlushBudgetMs } from "./telemetry.ts";
+import { verifyChildConfiguration } from "./supervisor-child.ts";
 import { withNativeAdmission } from "./native-admission.ts";
 import type { Launch } from "./supervisor.ts";
 import { pathToFileURL } from "node:url";
@@ -13,6 +14,8 @@ import { memberProfiles } from "./profiles.ts";
 import type { DriverInput } from "./activities.ts";
 import type { Conversation, Checkpoint } from "./domain.ts";
 import { temporalSettings } from "./temporal-config.ts";
+import { usageAttributes } from "./usage-capture.ts";
+import { errorSummary, forwardWarnings, warn } from "./diagnostics.ts";
 
 interface AdmittedTurn {
   launch: Launch;
@@ -27,6 +30,8 @@ interface AdmittedTurn {
 }
 
 const controller = new AbortController();
+// This process has no stderr. The supervisor host writes what it is sent.
+forwardWarnings((line) => { if (process.connected) process.send?.({ warning: line }); });
 process.once("disconnect", () => process.exit(1));
 process.on("message", (message) => {
   if (message === "stop") controller.abort();
@@ -45,11 +50,12 @@ process.once("message", async (command: AdmittedTurn) => {
       const driver = memberProfiles(profiles, stateDir, process.pid).get(member.profile)?.[member.engine];
       if (!driver) throw new Error("Unsupported member profile");
       // Read at every launch, outside workflow code. Claude and Codex reuse what their native session recorded on its first turn.
-      const projectContext = command.childProfile ? undefined : await conversationContext(pool, member);
+      const projectContext = command.launch.childId ? undefined : await conversationContext(pool, member);
       const profile = profiles.get(member.profile);
       const tool = profile?.protectedTool ?? profile?.humanTool;
       const store = new MemberStore(pool);
-      reply = await withNativeAdmission(pool,command.launch,AbortSignal.any([controller.signal,AbortSignal.timeout(170_000)]), async signal => {
+      reply = await withNativeAdmission(pool,command.launch,AbortSignal.any([controller.signal,AbortSignal.timeout(170_000)]), async (signal, db) => {
+        await verifyChildConfiguration(db, command.launch, profiles, member, command.childProfile);
         const items = member.engine === "codex" ? codexItemWriter(await nativeCallIds(pool,member.conversationId), !!tool,
           (index,text,receipt) => store.appendCodexItem(command.launch,index,text,receipt)) : undefined;
         const input: DriverInput = {
@@ -62,19 +68,22 @@ process.once("message", async (command: AdmittedTurn) => {
           checkpoint: command.checkpoint, continuation: command.continuation, signal,
         };
         const scope = {...command.launch, engine:member.engine, workflowRunId:command.launch.execution.workflowRunId};
+        const provider = member.engine === "codex" ? "openai" : member.engine === "claude" ? "anthropic" : profile?.pi?.model.provider ?? "";
+        const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => driver(value, member));
         const invoke = () => traced("model.invoke",scope, async () => {
           const result = items && tool
-            ? await runLiveTool(pool, temporal, command.launch, member, tool, input, value => driver(value, member), items.disclose)
-            : await driver(input, member);
+            ? await runLiveTool(pool, temporal, command.launch, member, tool, input, invokeDriver, items.disclose)
+            : await invokeDriver(input);
           await items?.finish();
           return result;
-        });
+        }, result => usageAttributes(result.usage));
         return traced("workflow.segment",scope, () => command.checkpoint ? traced("native.restore",scope,invoke) : invoke());
       });
     } finally {
       await close?.();
     }
-  } catch {
+  } catch (error) {
+    warn("native_turn_failed", { conversationId: command?.launch?.conversationId, requestId: command?.launch?.requestId, ...errorSummary(error) });
     reply = { error: "Native SDK turn failed" };
   } finally {
     // Batched spans would be lost at process.exit below. A failing pool.end() still crashes the runner

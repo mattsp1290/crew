@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { canonicalDigest, hasProtoKey } from "./canonical-json.ts";
-import { spawnSchema, type Member } from "./domain.ts";
+import { spawnSchema } from "./domain.ts";
 import { hostPatternSchema, patternCovers, type HostPattern } from "./hosts.ts";
 
 /** Member capabilities (docs/member-capabilities.md). A capability set says which Crew tools a
@@ -60,10 +60,9 @@ export type CapabilityInput = z.input<typeof capabilitySchema>;
 
 /** A spawn request. `capabilities` asks for a set within the profile's ceiling; absent, or a
  * set with no capability, gives the member none. Kept out of domain.ts, which the Temporal
- * workflow bundle includes: this module reaches node:crypto. */
+ * workflow bundle includes: this module reaches node:crypto. Kept out of the portable client's
+ * createMemberSchema too, until a member can use a capability. */
 export const spawnRequestSchema = spawnSchema.extend({ capabilities: capabilitySchema.optional() });
-/** A member as spawn and the member listing report it: `capabilities` only when it has some. */
-export type SpawnedMember = Member & { capabilities?: CapabilitySet };
 
 export function hasCapabilities(set: CapabilitySet | null | undefined): set is CapabilitySet {
   return !!set && (set.workspace !== undefined || set.webFetch !== undefined || set.webSearch !== undefined);

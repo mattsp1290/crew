@@ -1,0 +1,18 @@
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "tools/call",
+  "params": {
+    "name": "status",
+    "arguments": {
+      "holder_id": "crew:inst-7f3a:desk-lunus",
+      "operation": {
+        "holder_id": "crew:inst-7f3a:desk-lunus",
+        "operation_id": "call_01HZX3M9Q3"
+      }
+    },
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+    }
+  }
+}

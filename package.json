@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": "22.23.3"
+    "node": "24.22.3"
   },
   "os": [
     "linux"
@@ -14,32 +14,55 @@
     "x64"
   ],
   "scripts": {
-    "build": "scripts/build-native && npm run typecheck",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test tests/fixtures/engines/artifacts.test.ts tests/fixtures/engines/consumer.test.mjs tests/fixtures/engines/codex/qualification.test.ts tests/service/temporal-config.test.ts tests/service/gateway-auth.test.ts",
+    "build": "npm run build:client && scripts/build-native && npm run typecheck",
+    "typecheck": "node scripts/check-deskhand-boundary-imports.mjs && tsc --noEmit",
+    "test": "node --test tests/fixtures/engines/artifacts.test.ts tests/fixtures/engines/consumer.test.mjs tests/fixtures/engines/codex/qualification.test.ts tests/fixtures/engines/pi/confinement.test.ts tests/service/temporal-config.test.ts tests/service/gateway-auth.test.ts",
     "gateway": "node src/service/gateway.ts",
     "members": "node src/service/cli.ts",
     "test:integration": "scripts/verify-members",
     "test:live": "node tests/proof/live-members.ts",
     "test:proxy": "node --test tests/proxy-relay.test.ts tests/service/proxy-credential.test.ts tests/service/proxy-members.test.ts tests/service/proxy-scope.test.ts",
     "test:trusted": "node --test tests/service/trusted-*.test.ts",
-    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts",
+    "test:telemetry": "node --test tests/service/telemetry-otlp.test.ts tests/service/telemetry-agent.test.ts tests/service/telemetry-exporter-*.test.ts",
     "test:proxy:restart": "node tests/proof/proxy-restart.mts",
     "recovery": "node src/service/recovery-cli.ts",
     "test:recovery": "node --test tests/service/recovery.test.ts",
     "test:recovery:native": "node tests/proof/recovery-native.mts",
     "test:rollover": "node tests/proof/rollover.mts",
-    "test:api": "node --test tests/service/integration-api.test.ts",
+    "test:api": "node --test tests/service/integration-api.test.ts tests/service/decision-receipts.test.ts",
+    "test:observers": "node --test tests/service/observer-fanout.test.ts",
     "test:audit": "node --test tests/service/audit.test.ts",
     "test:routines": "node --test tests/service/routine-schedule.test.ts tests/service/routines.test.ts",
     "test:routines:service": "node tests/proof/routines.mts",
     "test:memories": "node --test tests/service/memories.test.ts",
     "test:memories:service": "node tests/proof/memories.mts",
+    "test:instructions": "node --test tests/service/member-instructions.test.ts",
+    "test:instructions:service": "node tests/proof/member-instructions.mts",
+    "test:packs": "node --test tests/service/instruction-packs.test.ts",
+    "test:handoffs:service": "node tests/proof/handoffs.mts",
     "test:grants": "node --test tests/service/standing-grants.test.ts",
     "test:capabilities": "node --test tests/service/hosts.test.ts tests/service/capabilities.test.ts tests/service/tool-catalog.test.ts tests/service/tool-calls.test.ts",
+    "test:expiry": "node --test tests/service/approval-expiry.test.ts",
+    "test:expiry:workflow": "node --test tests/service/approval-expiry-workflow.test.ts",
+    "test:handoffs": "node --test tests/service/handoffs.test.ts",
+    "test:usage": "node --test tests/service/usage.test.ts tests/service/usage-cost.test.ts",
+    "test:usage:capture": "node --test tests/service/usage-capture.test.ts",
+    "test:child-targets": "node --test tests/service/child-targets.test.ts tests/service/child-target-races.test.ts tests/service/child-budget.test.ts tests/service/child-target-workflow.test.ts",
+    "test:webhooks": "node --test tests/service/webhook-target.test.ts tests/service/webhooks.test.ts",
     "test:api:service": "node tests/proof/integration-api.mts",
     "test:recovery:coordinated": "node tests/proof/coordinated-recovery.mts",
-    "test:temporal:tls": "node tests/proof/temporal-tls.mts"
+    "test:temporal:tls": "node tests/proof/temporal-tls.mts",
+    "build:client": "npm run build --prefix packages/client",
+    "openapi": "node scripts/generate-openapi.mjs",
+    "check:openapi": "node scripts/generate-openapi.mjs --check",
+    "test:deskhand": "node scripts/generate-deskhand-vocabulary.mjs --check && node scripts/check-deskhand-boundary-imports.mjs && node --test tests/service/deskhand-contract.test.ts tests/service/deskhand-results/corpus.test.ts tests/service/deskhand-results/metadata.test.ts tests/service/deskhand-results/effects.test.ts tests/service/deskhand-results/tooling.test.ts",
+    "test:client": "node --test tests/client/*.test.mts",
+    "verify:client": "node scripts/verify-client-package.mjs",
+    "verify:observability": "node scripts/verify-observability.mjs",
+    "delegation-control": "node src/service/delegation-control-cli.ts",
+    "test:delegation-control:sql": "node --test tests/service/delegation-control-races.test.ts",
+    "test:delegation-control": "node --test tests/service/delegation-control.test.ts",
+    "test:delegation-control:workflow": "node --test tests/service/delegation-control-workflow.test.ts"
   },
   "dependencies": {
     "@ag-ui/claude-agent-sdk": "file:vendor/ag-ui/claude-agent-sdk-0.0.8.tgz",
@@ -49,15 +72,19 @@
     "@ag-ui/pi": "file:vendor/ag-ui/ag-ui-pi-0.0.1.tgz",
     "@anthropic-ai/claude-agent-sdk": "0.3.306",
     "@anthropic-ai/sdk": "0.113.0",
+    "@birbcrew/client": "file:packages/client",
     "@birbcrew/pi-subagents": "file:packages/pi-subagents/birbcrew-pi-subagents-0.1.0.tgz",
+    "@birbcrew/switchboard-observability": "file:vendor/switchboard/birbcrew-switchboard-observability-0.0.0-dadfe09.tgz",
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
+    "@mattsp1290/switchboard": "file:vendor/switchboard/switchboard-58c7922d8fade3617cc86fedcf41677f897025ef.tgz",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@openai/codex": "0.167.1",
     "@openai/codex-sdk": "0.167.1",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.208.0",
+    "@opentelemetry/otlp-exporter-base": "file:vendor/opentelemetry/opentelemetry-otlp-exporter-base-0.208.0-crew.1.tgz",
     "@opentelemetry/resources": "2.2.0",
     "@opentelemetry/sdk-trace-base": "2.2.0",
     "@temporalio/activity": "1.25.0",
@@ -69,8 +96,10 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "22.20.5",
+    "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "typescript": "5.9.3"
   },
   "description": "Durable Claude, Codex and Pi coding coworkers",
@@ -81,5 +110,8 @@
   "homepage": "https://github.com/mattsp1290/crew#readme",
   "bugs": {
     "url": "https://github.com/mattsp1290/crew/issues"
+  },
+  "overrides": {
+    "@opentelemetry/otlp-exporter-base": "$@opentelemetry/otlp-exporter-base"
   }
 }

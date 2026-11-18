@@ -5,9 +5,12 @@ import { codexExecutable } from "./codex-executable.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { Codex, type McpToolCallItem } from "@openai/codex-sdk";
+import { Codex, type McpToolCallItem, type ThreadEvent } from "@openai/codex-sdk";
 import { z } from "zod";
 import { codexSubscriptionEndpoint } from "./accounts.ts";
+import { redact } from "./diagnostics.ts";
+import { turnTextBytes } from "./domain.ts";
+import { codexRolloutModel, codexRolloutTotal, codexUsage, type SegmentUsage } from "./usage-capture.ts";
 
 const uuid = z.uuid();
 const hash = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -40,7 +43,8 @@ const loopback = (raw: string) => {
   }
   return url;
 };
-export async function nativeHistory(home: string, scratch: string, nativeId: string, known?: string) {
+export async function nativeHistory(home: string, scratch: string, nativeId: string, known?: string,
+  read?: (lines: readonly string[]) => void) {
   // The CLI places rollout files in sessions/YYYY/MM/DD.
   const filePattern = /^sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[\dT-]+-([0-9a-f-]{36})\.jsonl$/;
   const index = join(home, "state_5.sqlite");
@@ -65,6 +69,7 @@ export async function nativeHistory(home: string, scratch: string, nativeId: str
   const first = JSON.parse(lines[0]), last = JSON.parse(lines[lines.length - 1]);
   if (first.type !== "session_meta" || first.payload?.id !== nativeId || last.type !== "event_msg" ||
       last.payload?.type !== "task_complete") throw new Error("Codex native turn is incomplete");
+  read?.(lines);
   return { rollout: path, bytes: bytes.length, sha256: hash(bytes) };
 }
 
@@ -74,7 +79,19 @@ async function delivered(item: McpToolCallItem, input: CodexInput) {
   if (content?.length === 1 && content[0].type === "text") await input.onToolDelivered?.(content[0].text);
 }
 
-export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint }> {
+function codexTurnFailure(event: Extract<ThreadEvent, { type: "error" | "turn.failed" }>): Error {
+  const failure = new Error("Codex native turn failed");
+  try {
+    const code = event.type;
+    if (code !== "error" && code !== "turn.failed") return failure;
+    const message = code === "error" ? event.message : event.error?.message;
+    const reason = typeof message === "string" ? redact(message, 64) : undefined;
+    Object.assign(failure, { code, ...(reason && { reason }) });
+  } catch {}
+  return failure;
+}
+
+export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
   if (!profile.proxyTransport) return executeCodexTurn(input, profile);
   if (profile.subscription) throw new Error("Proxy transport cannot use a subscription");
   const transport = await profile.proxyTransport(input.signal);
@@ -83,11 +100,11 @@ export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Pr
   } finally { await transport.close(); }
 }
 
-async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint }> {
+async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
   input.signal.throwIfAborted();
   const threadId = uuid.parse(input.threadId), requestId = uuid.parse(input.runId), memberId = uuid.parse(profile.memberId);
   const ownerDigest = hash(profile.ownerId);
-  if (!isAbsolute(profile.stateDir) || !profile.model || !input.text || Buffer.byteLength(input.text) > 16_384) throw new Error("Invalid Codex member input");
+  if (!isAbsolute(profile.stateDir) || !profile.model || !input.text || Buffer.byteLength(input.text) > turnTextBytes) throw new Error("Invalid Codex member input");
   const provider = profile.baseUrl ? loopback(profile.baseUrl) : undefined;
   const approved = profile.authorize !== undefined;
   const credentialCount = Number(profile.apiKey !== undefined) + Number(profile.subscription !== undefined);
@@ -113,8 +130,9 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     await mkdir(scratch, { mode: 0o700 });
   }
   if (await realpath(home) !== home || await realpath(scratch) !== scratch) throw new Error("Invalid Codex storage");
+  let priorTotal: ReturnType<typeof codexRolloutTotal> = null;
   if (prior) {
-    const saved = await nativeHistory(home, scratch, prior.nativeId, prior.rollout);
+    const saved = await nativeHistory(home, scratch, prior.nativeId, prior.rollout, lines => { priorTotal = codexRolloutTotal(lines); });
     if (saved.sha256 !== prior.sha256 || saved.bytes !== prior.bytes) throw new Error("Codex native history changed");
   }
   // The host owns configuration. Native session files can survive a restart, configuration from disk cannot.
@@ -155,12 +173,13 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       developer_instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
       ...(input.mcp && endpoint && { mcp_servers: { birbcrew: { url: endpoint.href,
         bearer_token_env_var: "BIRBCREW_MCP_AUTH", enabled_tools: [input.mcp.tool], required: true,
-        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve" } } }),
+        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve",
+        omit_tools_from: ["code_mode", "deferred"] } } }),
     },
   });
   const options = { workingDirectory: scratch, model: profile.model, skipGitRepoCheck: true, sandboxMode: "read-only", approvalPolicy: "never", webSearchMode: "disabled" } as const;
   const thread = prior ? sdk.resumeThread(prior.nativeId, options) : sdk.startThread(options);
-  let nativeId: string | undefined, completed = false, text = "";
+  let nativeId: string | undefined, completed: { usage: unknown } | undefined, text = "";
   for await (const event of (await thread.runStreamed(input.text, { signal: input.signal })).events) {
     if (event.type === "thread.started") {
       if (nativeId || (prior && event.thread_id !== prior.nativeId)) throw new Error("Unexpected Codex thread identity");
@@ -173,12 +192,14 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       if (delta) await input.onText?.(delta);
     } else if (event.type === "item.completed" && event.item.type === "mcp_tool_call") {
       await delivered(event.item, input);
-    } else if (event.type === "turn.completed") completed = true;
-    else if (event.type === "error" || event.type === "turn.failed") throw new Error("Codex native turn failed");
+    } else if (event.type === "turn.completed") completed = event;
+    else if (event.type === "error" || event.type === "turn.failed") throw codexTurnFailure(event);
   }
   input.signal.throwIfAborted();
   if (!nativeId || !text || !completed) throw new Error("Incomplete native Codex turn");
+  let model: string | null = null;
+  const history = await nativeHistory(home, scratch, nativeId, undefined, lines => { model = codexRolloutModel(lines); });
   return { text, checkpoint: { version: 1, engine: "codex", state: {
-    threadId, requestId, nativeId, memberId, ownerDigest, model: profile.model, ...await nativeHistory(home, scratch, nativeId),
-  } } };
+    threadId, requestId, nativeId, memberId, ownerDigest, model: profile.model, ...history,
+  } }, usage: codexUsage(completed.usage, priorTotal, model) };
 }

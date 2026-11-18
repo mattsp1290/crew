@@ -5,6 +5,7 @@ import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { claudeCheckpoint, runClaudeTurn } from "./claude.ts";
 import type { TrustedNativeInput } from "./trusted-native-types.ts";
+import { combinedUsage, segmentUsage, type SegmentUsage } from "./usage-capture.ts";
 
 const text = (max: number) => z.string().refine(v => v.isWellFormed() && !v.includes("\0") && Buffer.byteLength(v) <= max);
 export const trustedClaudeTool = z.strictObject({
@@ -19,8 +20,9 @@ export const trustedClaudeCommand = z.strictObject({
   continuation: z.strictObject({nativeCallId:text(256),toolName:text(64),text:text(65_536),isError:z.boolean()}).optional(),
 });
 const pending = z.strictObject({ kind:z.literal("pending"),text:text(65_536),checkpoint:claudeCheckpoint,
-  proposal:z.strictObject({nativeCallId:text(256),toolName:text(64),args:z.record(z.string(),z.json())}) });
-const response = z.union([pending,z.strictObject({kind:z.literal("complete"),text:text(65_536),checkpoint:claudeCheckpoint}),z.strictObject({error:z.string()})]);
+  proposal:z.strictObject({nativeCallId:text(256),toolName:text(64),args:z.record(z.string(),z.json())}),usage:segmentUsage });
+const response = z.union([pending,z.strictObject({kind:z.literal("complete"),text:text(65_536),checkpoint:claudeCheckpoint,usage:segmentUsage}),
+  z.strictObject({error:z.string()})]);
 type Profile = Parameters<typeof runClaudeTurn>[1];
 type Command = z.infer<typeof trustedClaudeCommand>;
 
@@ -28,6 +30,8 @@ export async function runTrustedClaude(input: TrustedNativeInput, profile: Profi
   let checkpoint = input.checkpoint === null ? null : claudeCheckpoint.parse(input.checkpoint);
   let continuation: Command["continuation"];
   let combined = "";
+  // One query per tool round trip; the request's usage is all of them.
+  const usage: SegmentUsage[] = [];
   for (let count=0; count <= 16; count++) {
     input.signal.throwIfAborted();
     const command = trustedClaudeCommand.parse({threadId:input.threadId,runId:input.runId,text:input.text,
@@ -35,9 +39,10 @@ export async function runTrustedClaude(input: TrustedNativeInput, profile: Profi
     const result = await execute(command,input,profile);
     checkpoint = result.checkpoint;
     combined += result.text;
+    usage.push(result.usage);
     if (Buffer.byteLength(combined)>65_536) throw new Error("Claude response exceeds limit");
     if (result.kind === "complete") {
-      return {text:combined,checkpoint};
+      return {text:combined,checkpoint,usage:combinedUsage(usage)};
     }
     if (count===16) throw new Error("Trusted Claude tool call budget exhausted");
     const call=result.proposal;

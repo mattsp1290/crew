@@ -1,42 +1,15 @@
-import json
 import os
 import re
 import stat
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic import AwareDatetime, BaseModel, ConfigDict
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 ENDPOINT = "https://opencode.ai/inference/go/openai/v1"
 MODEL = "glm-5.3-flash"
-
-
-class SubscriptionEvidence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    provider: str
-    account_path: str
-    extra_usage_disabled: bool
-    eligible_coding_use: bool
-    checked_at: AwareDatetime
-    evidence: str
-
-
-def check_evidence(path: Path) -> SubscriptionEvidence:
-    evidence = SubscriptionEvidence.model_validate_json(path.read_text())
-    if evidence.provider != "opencode-go" or not evidence.account_path:
-        raise ValueError("An identified OpenCode Go subscription is required")
-    if not evidence.extra_usage_disabled or not evidence.eligible_coding_use:
-        raise ValueError(
-            "Live calls blocked. Owner must verify eligibility and disable Extra Usage."
-        )
-    age = datetime.now(UTC) - evidence.checked_at
-    if age < timedelta(0) or age > timedelta(hours=12) or not evidence.evidence:
-        raise ValueError("Current account-setting evidence is required before live calls")
-    return evidence
 
 
 def read_go_key() -> str:
@@ -82,8 +55,7 @@ def chat_model(client: AsyncOpenAI) -> OpenAIChatModel:
     return OpenAIChatModel(MODEL, provider=OpenAIProvider(openai_client=client))
 
 
-def model(evidence_path: Path) -> OpenAIChatModel:
-    check_evidence(evidence_path)
+def model() -> OpenAIChatModel:
     return chat_model(go_client(read_go_key()))
 
 
@@ -109,25 +81,13 @@ def project_model_settings(cid: str) -> dict:
     }
 
 
-def evidence_summary(path: Path) -> dict:
-    evidence = check_evidence(path)
-    read_go_key()
-    return {
-        **json.loads(evidence.model_dump_json()),
-        "endpoint": ENDPOINT,
-        "model": MODEL,
-        "credential_present": True,
-        "credential_source": "~/.profile",
-        "usage_visibility": "Owner attestation of console settings. No billing API verified.",
-    }
-
-
-def preflight_account(path: Path) -> dict:
-    summary = evidence_summary(path)
+def preflight_account() -> dict:
+    """Check the configured Go credential against the provider's model list. No model call."""
+    key = read_go_key()
     response = httpx.get(
         ENDPOINT + "/models",
         headers={
-            "Authorization": "Bearer " + read_go_key(),
+            "Authorization": "Bearer " + key,
             "User-Agent": "birbcrew-coding-proof/0.1.0",
             "x-opencode-session": "birbcrew-preflight",
         },
@@ -140,4 +100,13 @@ def preflight_account(path: Path) -> dict:
         )
     if MODEL not in {item.get("id") for item in response.json().get("data", [])}:
         raise ValueError("Live calls blocked. Selected model is not listed for this credential.")
-    return summary | {"models_http_status": 200, "selected_model_listed": True}
+    return {
+        "provider": "opencode-go",
+        "endpoint": ENDPOINT,
+        "model": MODEL,
+        "credential_present": True,
+        "credential_source": "~/.profile",
+        "usage_visibility": "Not checked. No billing API or console setting is read.",
+        "models_http_status": 200,
+        "selected_model_listed": True,
+    }

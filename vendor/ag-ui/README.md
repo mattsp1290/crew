@@ -12,7 +12,7 @@ and both adapters use AG-UI client and core 1.0.4.
 
 ## Rebuild the Claude archive
 
-Use a clean checkout of the manifest's Claude revision, Node 22.23.3, and
+Use a clean checkout of the manifest's Claude revision, Node 24.22.3, and
 pnpm 10.33.4. The adapter's upstream tests also use the A2UI middleware.
 
 ```sh

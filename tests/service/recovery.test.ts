@@ -1,3 +1,4 @@
+import { testDatabaseName } from "./database-fixtures.ts";
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {mkdir,mkdtemp,readFile,writeFile,rm,cp} from 'node:fs/promises';
@@ -18,6 +19,9 @@ import {revokeGrant} from '../../src/service/grants.ts';
 import {conversationContext,MemoryApi} from '../../src/service/memories.ts';
 import {classify} from '../../src/service/tool-catalog.ts';
 import {ToolCallStore} from '../../src/service/tool-calls.ts';
+import {HandoffApi} from '../../src/service/handoffs.ts';
+import {PackApi} from '../../src/service/instruction-packs.ts';
+import {recordSegmentUsage,UsageApi} from '../../src/service/usage.ts';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 const exec=promisify(execFile);
@@ -43,7 +47,7 @@ function deferrer(context:TestContext) {
  return (step:()=>Promise<unknown>)=>{steps.push(step);};
 }
 async function database(defer:ReturnType<typeof deferrer>) {
- const name='recovery_'+randomUUID().replaceAll('-','');
+ const name=testDatabaseName('recovery_');
  await admin.query(`CREATE DATABASE ${name}`);
  // Not FORCE: end() resolves before its connections close, and terminating one then is an unhandled pool
  // error. A plain DROP waits up to 5 s for those sessions to exit, and fails loudly on a real leak.
@@ -174,6 +178,11 @@ test('real PostgreSQL archive restores mappings, checkpoint, committed replay an
  assert.deepEqual(audit.map(row=>row.event_type),['member.spawned','conversation.opened','request.finished']);
  assert.deepEqual((await restored.query('SELECT * FROM birbcrew_ts.audit_events ORDER BY event_id')).rows,audit);
  assert.deepEqual((await readAudit(restored,'owner',auditQuerySchema.parse({}))).events.map(event=>event.eventId),audit.map(row=>row.event_id));
+ // Filtered reads return the same rows from the restored copy, which pg_restore gives the same indexes.
+ const filtered=auditQuerySchema.parse({memberId:member.memberId.toUpperCase(),eventType:'conversation.opened,request.finished',from:'2000-01-01T00:00:00Z'});
+ assert.deepEqual((await readAudit(restored,'owner',filtered)).events.map(event=>event.eventId),audit.filter(row=>row.event_type!=='member.spawned').map(row=>row.event_id));
+ const indexes="SELECT indexdef FROM pg_indexes WHERE schemaname='birbcrew_ts' AND tablename='audit_events' ORDER BY indexname";
+ assert.deepEqual((await restored.query(indexes)).rows,(await t.pool.query(indexes)).rows);
  await assert.rejects(restored.query('DELETE FROM birbcrew_ts.audit_events'),{code:'23514'});
  await assert.rejects(t.recovery.resume(t.hooks),/fenced/);
  const manifest=await readRecoveryManifest(relocated);
@@ -376,6 +385,35 @@ test('a restored installation revokes every standing grant as it resumes; a held
  assert.equal((await call(new MemberStore(restored),restored)).grantId,undefined);
 });
 
+test('a card keeps its absolute deadline across a restore, and past it only the restored installation settles it, once',async context=>{
+ const t=await setup(context);
+ const ownerId='owner';const {memberId}=await t.store.spawn({ownerId,requestId:randomUUID(),engine:'pi',profile:'fixture'});
+ const key={ownerId,conversationId:randomUUID(),requestId:randomUUID()};
+ await t.store.openConversation({ownerId,memberId,conversationId:key.conversationId});
+ const request={...key,text:'record at the recovery point',approvalDeadlineSeconds:60};
+ await t.store.recordAcceptance(request,ownerInitiator);
+ const start=await t.store.beginTurn(request);assert.equal(start.kind,'start');if(start.kind!=='start') return;
+ const card=await new ApprovalStore(t.pool).propose({...key,memberId,token:start.token,invocationId:key.requestId,nativeCallId:'call',
+  toolName:'record_work_item',arguments:{operation_id:key.requestId}});
+ assert.ok(card.expiresAt);
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ const restored=await restoreBundle(t);const recovery=new InstallationRecovery(restored,t.fence);
+ await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ await recovery.resume(t.hooks,manifest);
+ const {rows:[row]}=await restored.query('SELECT expires_at,expired_at FROM birbcrew_ts.deferred_calls WHERE approval_id=$1',[card.approvalId]);
+ assert.deepEqual([row.expires_at.toISOString(),row.expired_at],[card.expiresAt,null],'the deadline is a time, not a duration restarted by the restore');
+ // The deadline passed while the installation was held and restored.
+ await restored.query('UPDATE birbcrew_ts.deferred_calls SET expires_at=clock_timestamp() WHERE approval_id=$1',[card.approvalId]);
+ const ledger=new ApprovalStore(restored);
+ await assert.rejects(ledger.decide({...key,memberId,invocationId:key.requestId,nativeCallId:'call',approvalId:card.approvalId,
+  argumentDigest:card.argumentDigest,version:card.version,choice:'approve'}),{code:'conflict'});
+ assert.deepEqual(await Promise.all([ledger.expireTurn(card),ledger.expireTurn(card)]),[{kind:'expired'},{kind:'expired'}]);
+ assert.equal((await restored.query("SELECT count(*)::integer AS n FROM birbcrew_ts.audit_events WHERE event_type='approval.expired'")).rows[0].n,1);
+ // The held source writes nothing.
+ await assert.rejects(new ApprovalStore(t.pool).expireTurn(card),{code:'55000'});
+});
+
 test('capture accepts the memory tables, and a held installation refuses every memory write',async context=>{
  const t=await setup(context);
  const {memberId}=await spawn(t.store);const api=new MemoryApi(t.store);
@@ -394,6 +432,38 @@ test('capture accepts the memory tables, and a held installation refuses every m
  assert.deepEqual(await api.get('owner',kept.memoryId),kept,'reads still work');
  await t.recovery.resume(t.hooks);
  assert.equal((await api.delete('owner',kept.memoryId)).state,'deleted');
+});
+
+test('capture accepts the handoff table, and a held installation refuses every handoff write',async context=>{
+ const t=await setup(context);
+ const {memberId}=await spawn(t.store);
+ const members={async open(input:Parameters<MemberStore['openConversation']>[0]){return t.store.openConversation(input);},
+  async accept(input:TurnRequest){await t.store.recordAcceptance(input,ownerInitiator);return {requestId:input.requestId};}} as unknown as MemberClient;
+ const api=new HandoffApi(t.store,members);
+ async function committed() {
+  const conversationId=randomUUID(),requestId=randomUUID(),text='remember '+requestId;
+  await t.store.openConversation({ownerId:'owner',memberId,conversationId});
+  await t.store.recordAcceptance({ownerId:'owner',conversationId,requestId,text},ownerInitiator);
+  const start=await t.store.beginTurn({ownerId:'owner',conversationId,requestId,text});
+  assert.equal(start.kind,'start');if(start.kind!=='start') throw new Error('unreachable');
+  await t.store.commitTurn({ownerId:'owner',conversationId,requestId,token:start.token,reply:'stored',checkpoint:{version:1,engine:'pi',state:{}}});
+  return conversationId;
+ }
+ const [handed,held]=[await committed(),await committed()];
+ const kept=await api.create('owner',handed,{requestId:randomUUID(),memberId});
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ assert.equal(manifest.inventory.conversation_handoffs,1);
+ for(const write of [()=>api.create('owner',held,{requestId:randomUUID(),memberId}),
+  ()=>t.pool.query(`INSERT INTO birbcrew_ts.conversation_handoffs (owner_id,request_id,source_conversation_id,source_member_id,
+    target_conversation_id,target_member_id,transcript,transcript_digest,carried_turns,omitted_turns,uncertain_turns)
+    SELECT owner_id,$1,$2,source_member_id,target_conversation_id,target_member_id,transcript,transcript_digest,1,0,0
+    FROM birbcrew_ts.conversation_handoffs`,[randomUUID(),held])]) {
+  await assert.rejects(write(),{code:'55000'});
+ }
+ assert.equal((await api.read('owner',handed)).outgoing?.handoffId,kept.handoffId,'reads still work');
+ await t.recovery.resume(t.hooks);
+ assert.equal((await api.create('owner',held,{requestId:randomUUID(),memberId})).carriedTurns,1);
 });
 
 test('a restored installation suspends every active memory as it resumes; a held source keeps its own',async context=>{
@@ -513,6 +583,121 @@ test('a real archive restores member capabilities and the tool-call ledger; the 
  assert.deepEqual(member.capabilities,capabilities);
  // The held source, which resumed without a restore, kept the outcome it recorded.
  assert.deepEqual(await phases(t.pool),{...atCapture,admitted:'completed'});
+});
+
+test('capture accepts the usage tables; a restore rewinds the ledger and budgets and resume leaves both as restored',async context=>{
+ const t=await setup(context);
+ const {memberId}=await spawn(t.store);const usage=new UsageApi(t.store);
+ await usage.setBudget('owner',memberId,{tokenLimit:1000});
+ async function spend(store:MemberStore,pool:Pool,input:number) {
+  const conversationId=randomUUID();await store.openConversation({ownerId:'owner',memberId,conversationId});
+  const request={ownerId:'owner',conversationId,requestId:randomUUID(),text:'metered'};
+  await store.recordAcceptance(request,ownerInitiator);
+  const execution={workflowRunId:randomUUID(),activityId:'turn',attempt:1};
+  const turn=await store.beginTurn(request,execution);assert.equal(turn.kind,'start');if(turn.kind!=='start')return;
+  await pool.query('INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt) VALUES ($1,$2,$3,$4,$5,1)',
+   [conversationId,request.requestId,turn.token,execution.workflowRunId,execution.activityId]);
+  await recordSegmentUsage(pool,{...request,token:turn.token,execution},{state:'reported',model:'m',inputTokens:input,outputTokens:0,
+   cachedInputTokens:null,cacheWriteTokens:null,reasoningTokens:null,costUsd:null});
+ }
+ await spend(t.store,t.pool,600);
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ assert.deepEqual([manifest.inventory.usage_ledger,manifest.inventory.usage_budgets],[1,1]);
+ await assert.rejects(usage.setBudget('owner',memberId,{tokenLimit:5}),{code:'55000'});
+ await t.recovery.resume(t.hooks);
+ // After the recovery point the member spends more and the owner tightens its budget: the source refuses.
+ await spend(t.store,t.pool,500);
+ await usage.setBudget('owner',memberId,{tokenLimit:900});
+ const refused={ownerId:'owner',conversationId:randomUUID(),requestId:randomUUID(),text:'refused'};
+ await t.store.openConversation({ownerId:'owner',conversationId:refused.conversationId,memberId});
+ await assert.rejects(t.store.recordAcceptance(refused,ownerInitiator),{code:'usage_limit'});
+ await t.recovery.holdForRestore(manifest.generation,t.hooks);
+ const restored=await restoreBundle(t);const recovery=new InstallationRecovery(restored,t.fence);
+ await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ await recovery.resume(t.hooks,manifest);
+ // The restore brought back the earlier limit and forgot the later 500 tokens; resume changed neither.
+ const view=await new UsageApi(new MemberStore(restored)).budget('owner',memberId);
+ assert.deepEqual([view.budget?.tokenLimit,view.budget?.revision,view.usedTokens,view.admitting],[1000,1,600,true]);
+ assert.equal((await restored.query("SELECT count(*)::integer AS n FROM birbcrew_ts.audit_events WHERE event_type LIKE 'usage.%'")).rows[0].n,1);
+ const restoredStore=new MemberStore(restored);
+ await restoredStore.openConversation({ownerId:'owner',conversationId:refused.conversationId,memberId});
+ await restoredStore.recordAcceptance(refused,ownerInitiator);
+ await assert.rejects(restored.query('DELETE FROM birbcrew_ts.usage_ledger'),{code:'23514'});
+});
+
+test('capture counts member instructions, a held installation refuses them, and a restore keeps them as they were',async context=>{
+ const t=await setup(context);
+ const role='You review database migrations and never propose schema changes yourself.';
+ const member=await t.store.spawn({ownerId:'owner',requestId:randomUUID(),engine:'pi',profile:'fixture',instructions:role});
+ const conversation=await t.store.openConversation({ownerId:'owner',memberId:member.memberId,conversationId:randomUUID()});
+ const launched=await conversationContext(t.pool,conversation);
+ assert.match(launched!,/never propose schema changes/);
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ assert.equal(manifest.inventory.member_instructions,1);
+ for(const write of [()=>t.store.spawn({ownerId:'owner',requestId:randomUUID(),engine:'pi',profile:'fixture',instructions:'held'}),
+  ()=>t.pool.query(`INSERT INTO birbcrew_ts.member_instructions(owner_id,member_id,body) VALUES('owner',$1,'direct')`,[member.memberId])]) {
+  await assert.rejects(write(),{code:'55000'});
+ }
+ assert.deepEqual((await t.pool.query('SELECT body FROM birbcrew_ts.member_instructions')).rows,[{body:role}],'reads still work');
+ await t.recovery.resume(t.hooks);
+ // A member spawned after the recovery point is gone after the restore, its instructions with it.
+ const later=await t.store.spawn({ownerId:'owner',requestId:randomUUID(),engine:'pi',profile:'fixture',instructions:'after the recovery point'});
+ await t.recovery.holdForRestore(manifest.generation,t.hooks);
+ const restored=await restoreBundle(t);const recovery=new InstallationRecovery(restored,t.fence);
+ await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ await recovery.resume(t.hooks,manifest);
+ const rows=async(pool:Pool)=>(await pool.query('SELECT member_id,body FROM birbcrew_ts.member_instructions ORDER BY created_at')).rows;
+ assert.deepEqual(await rows(restored),[{member_id:member.memberId,body:role}],'the restore neither suspends nor removes them');
+ assert.equal(await conversationContext(restored,conversation),launched,'a restored conversation launches with the text it had');
+ assert.deepEqual((await restored.query(`SELECT event_type FROM birbcrew_ts.audit_events WHERE event_type LIKE 'member.instructions%'`)).rows,
+  [{event_type:'member.instructions_set'}],'the resume records nothing about instructions');
+ assert.deepEqual((await rows(t.pool)).map(row=>row.member_id),[member.memberId,later.memberId]);
+ await assert.rejects(restored.query('UPDATE birbcrew_ts.member_instructions SET body=$1',['changed']),{code:'23514'});
+});
+
+test('capture counts instruction packs, a held installation refuses every pack write, and a restore keeps them as they were',async context=>{
+ const t=await setup(context);
+ const packs=new PackApi(t.store);
+ const style='Write commit messages in the imperative mood.';
+ const used=await packs.create('owner',{requestId:randomUUID(),name:'style',text:style});
+ const spare=await packs.create('owner',{requestId:randomUUID(),name:'spare',text:'Spare text the owner deletes after the recovery point.'});
+ const member=await t.store.spawn({ownerId:'owner',requestId:randomUUID(),engine:'pi',profile:'fixture',instructionPacks:[used.packId]});
+ const conversation=await t.store.openConversation({ownerId:'owner',memberId:member.memberId,conversationId:randomUUID()});
+ const launched=await conversationContext(t.pool,conversation);
+ assert.match(launched!,/imperative mood/);
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ assert.deepEqual([manifest.inventory.instruction_packs,manifest.inventory.member_instruction_packs],[2,1]);
+ for(const write of [()=>packs.create('owner',{requestId:randomUUID(),name:'held',text:'held'}),()=>packs.delete('owner',spare.packId),
+  ()=>t.store.spawn({ownerId:'owner',requestId:randomUUID(),engine:'pi',profile:'fixture',instructionPacks:[used.packId]}),
+  ()=>t.pool.query(`INSERT INTO birbcrew_ts.instruction_packs(owner_id,create_request_id,name,body) VALUES('owner',$1,'direct','direct')`,[randomUUID()]),
+  ()=>t.pool.query(`INSERT INTO birbcrew_ts.member_instruction_packs(member_id,position,owner_id,pack_id) VALUES($1,2,'owner',$2)`,[member.memberId,spare.packId])]) {
+  await assert.rejects(write(),{code:'55000'});
+ }
+ // Deleting an attached pack is refused as in use before the barrier is reached, held or not.
+ await assert.rejects(packs.delete('owner',used.packId),{code:'pack_in_use'});
+ assert.equal((await packs.get('owner',used.packId)).text,style,'reads still work');
+ await t.recovery.resume(t.hooks);
+ // After the recovery point: the spare pack is deleted, and a new pack and member appear.
+ await packs.delete('owner',spare.packId);
+ const later=await packs.create('owner',{requestId:randomUUID(),name:'later',text:'after the recovery point'});
+ await t.store.spawn({ownerId:'owner',requestId:randomUUID(),engine:'pi',profile:'fixture',instructionPacks:[later.packId]});
+ await t.recovery.holdForRestore(manifest.generation,t.hooks);
+ const restored=await restoreBundle(t);const recovery=new InstallationRecovery(restored,t.fence);
+ await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ await recovery.resume(t.hooks,manifest);
+ // Nothing is suspended or removed: the member launches with the pack it had, and the deleted pack is back, unattached.
+ const restoredPacks=new PackApi(new MemberStore(restored));
+ assert.deepEqual((await restoredPacks.list('owner',{})).instructionPacks.map(pack=>[pack.packId,pack.state,pack.memberCount]).sort(),
+  [[used.packId,'active',1],[spare.packId,'active',0]].sort());
+ assert.equal(await conversationContext(restored,conversation),launched,'a restored conversation launches with the packs it had');
+ assert.deepEqual((await restored.query(`SELECT event_type FROM birbcrew_ts.audit_events WHERE event_type LIKE '%instruction_pack%' ORDER BY event_id`)).rows
+  .map(row=>row.event_type),['instruction_pack.created','instruction_pack.created','member.instruction_packs_attached'],'the resume records nothing about packs');
+ // The owner deletes the returned pack again; the restored installation takes pack writes.
+ assert.equal((await restoredPacks.delete('owner',spare.packId)).state,'deleted');
+ await assert.rejects(restoredPacks.delete('owner',used.packId),{code:'pack_in_use'});
 });
 
 test('a restore past the fence epoch, its epoch file missing or behind, starts above every ID the restored identity drew',async context=>{
@@ -672,4 +857,154 @@ test('bundle directory fsync failure cannot record a successful or transferable 
  assert.equal((await t.recovery.status()).latest,null);
  const manifest=await readRecoveryManifest(t.bundle);
  await assert.rejects(t.fence.transfer(manifest.installation,manifest.sourceInstance,randomUUID(),manifest.generation),/overlap/);
+});
+
+test('restoring an older snapshot atomically retires named roles and delegation while preserving recorded child identity',async context=>{
+ const t=await setup(context);
+ const {ChildStore}=await import('../../src/service/children.ts');
+ const {withNativeAdmission}=await import('../../src/service/native-admission.ts');
+ const {drainDelegation}=await import('../../src/service/delegation-control.ts');
+ const {fixedRoles}=await import('@birbcrew/pi-subagents');
+ const account='a'.repeat(64),destination={engine:'pi',profile:'target',model:'fixture',providerHost:'fixture.invalid',accountDigest:account};
+ await t.pool.query("INSERT INTO birbcrew_ts.profiles(name,engine,account_digest) VALUES('target','pi',decode($1,'hex'))",[account]);
+ await t.pool.query(`INSERT INTO birbcrew_ts.profiles(name,engine,account_digest,delegate_task,child_target_seal,child_target_active)
+  VALUES('parent','pi',decode($1,'hex'),true,$2,ARRAY['analyst'])`,[account,{mode:'named',roles:{analyst:destination}}]);
+ const request={ownerId:'owner',requestId:randomUUID(),engine:'pi' as const,profile:'parent'};
+ const member=await t.store.spawn(request),conversationId=randomUUID(),requestId=randomUUID();
+ await t.store.openConversation({ownerId:'owner',memberId:member.memberId,conversationId});
+ const turn=await t.store.beginTurn({ownerId:'owner',conversationId,requestId,text:'delegate'});
+ if(turn.kind!=='start') throw Error('Expected started parent');
+ const [child]=await new ChildStore(t.pool).delegate(turn.conversation,requestId,turn.token,[{
+  nativeCallId:'restore-call',task:'private child',profile:{role:'analyst',version:1,...fixedRoles.analyst,model:'parent-model'},
+ }],{version:1,engine:'pi',state:{}});
+ const identity=(await t.pool.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile;
+ const history={ownerId:'owner',conversationId:randomUUID(),requestId:randomUUID(),text:'completed delegation before backup'};
+ const historyExecution={workflowRunId:randomUUID(),activityId:'parent',attempt:1};
+ const checkpoint={version:1,engine:'pi',state:{}};
+ await t.store.openConversation({ownerId:history.ownerId,conversationId:history.conversationId,memberId:member.memberId});
+ const historyTurn=await t.store.beginTurn(history,historyExecution);
+ if(historyTurn.kind!=='start') throw Error('Expected started historical parent');
+ const sourceChildren=new ChildStore(t.pool);
+ const [historicalChild]=await sourceChildren.delegate(historyTurn.conversation,history.requestId,historyTurn.token,[{
+  nativeCallId:'restore-history-call',task:'completed private child',profile:{role:'analyst',version:1,...fixedRoles.analyst,model:'parent-model'},
+ }],checkpoint);
+ const historicalStart=await sourceChildren.begin(historicalChild,{workflowRunId:randomUUID(),activityId:'child',attempt:1});
+ if(historicalStart.kind!=='start') throw Error('Expected started historical child');
+ await sourceChildren.finish(historicalChild,historicalStart.generation,{text:'historical child result',checkpoint});
+ const historyResume={...historyExecution,activityId:'parent-followup'};
+ const resumed=await t.store.beginResume(history,null,historyResume);
+ if(resumed.kind!=='start') throw Error('Expected resumed historical parent');
+ const historicalReply='historical parent result';
+ await t.store.commitTurn({ownerId:history.ownerId,conversationId:history.conversationId,requestId:history.requestId,
+  token:resumed.token,checkpoint,reply:historicalReply});
+ const historicalIdentity=(await t.pool.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[historicalChild.childId])).rows[0].role_profile;
+ const sourceAuthority=(await t.recovery.status()).control;
+ const observationSql='SELECT birbcrew_ts.record_delegation_parent_observation($1,$2,$3,$4,$5,$6,$7) AS accepted';
+ const observationArgs=[sourceAuthority.installation,sourceAuthority.instance,history.conversationId,history.requestId,
+  historyResume.workflowRunId,historyResume.activityId,historicalReply];
+ assert.deepEqual((await t.pool.query(observationSql,observationArgs)).rows,[{accepted:true}],
+  'SQL-seeded positive exercises the database boundary without Temporal evidence');
+ const observationRows=(await t.pool.query('SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1',[history.conversationId])).rows;
+ assert.equal(observationRows.length,1);
+ const applicableSql='SELECT birbcrew_ts.delegation_parent_result_observed($1,$2) AS observed';
+ assert.deepEqual((await t.pool.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:true}]);
+ assert.equal((await t.pool.query('SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1',[history.conversationId])).rowCount,0);
+ const controlSql='SELECT birbcrew_ts.change_delegation_control($1,$2,$3,$4,$5,$6) AS receipt';
+ const oldCommand=randomUUID(),oldRevision=(await t.pool.query('SELECT revision::text FROM birbcrew_ts.delegation_control')).rows[0].revision;
+ const oldArgs=[oldCommand,oldRevision,{kind:'global'},true,'restore-fixture','command before backup'];
+ const oldReceipt=(await t.pool.query(controlSql,oldArgs)).rows[0].receipt;
+ assert.equal(oldReceipt.enabled,true);
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ await t.recovery.resume(t.hooks);
+ await t.pool.query("UPDATE birbcrew_ts.profiles SET child_target_active='{}' WHERE name='parent'");
+ await t.pool.query(controlSql,[randomUUID(),oldReceipt.revision,{kind:'global'},false,'restore-fixture','disable after backup']);
+ await t.recovery.holdForRestore(manifest.generation,t.hooks);
+ const restored=await restoreBundle(t),recovery=new InstallationRecovery(restored,t.fence);
+ const targetInstance=randomUUID();
+ await recovery.acceptRestore(t.bundle,pins,targetInstance);
+ const restoredAuthority=(await recovery.status()).control;
+ assert.equal(restoredAuthority.instance,targetInstance);
+ assert.notEqual(restoredAuthority.instance,sourceAuthority.instance);
+ const archivedObservations=async()=>(await restored.query('SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1 AND instance_id=$2',
+  [history.conversationId,sourceAuthority.instance])).rows;
+ const currentObservations=async()=>(await restored.query('SELECT * FROM birbcrew_ts.delegation_parent_observations WHERE conversation_id=$1 AND instance_id=$2',
+  [history.conversationId,targetInstance])).rows;
+ assert.deepEqual(await archivedObservations(),observationRows,'the real PostgreSQL archive preserves the source observation');
+ assert.deepEqual(await currentObservations(),[]);
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
+ const currentObservationArgs=[restoredAuthority.installation,targetInstance,...observationArgs.slice(2)];
+ assert.deepEqual((await restored.query(observationSql,currentObservationArgs)).rows,[{accepted:false}],'held authority cannot record a positive observation');
+ const active=async()=>(await restored.query("SELECT child_target_active FROM birbcrew_ts.profiles WHERE name='parent'")).rows[0].child_target_active;
+ assert.deepEqual(await active(),['analyst'],'the backup cannot retain an unknown later removal');
+ let admittedCallbacks=0;
+ const launch={...child,text:'private child',token:randomUUID(),execution:{workflowRunId:randomUUID(),activityId:'child',attempt:1}};
+ await assert.rejects(withNativeAdmission(restored,launch,context.signal,async()=>{admittedCallbacks++;}),/held for recovery/);
+ assert.equal(admittedCallbacks,0);
+ await assert.rejects(recovery.resume({reconcile:async()=>{throw Error('reconcile first');}},manifest),/reconcile first/);
+ assert.deepEqual(await active(),['analyst']);
+ assert.deepEqual((await recovery.status()).control,restoredAuthority,'failed reconciliation cannot activate the restored instance');
+ assert.deepEqual(await archivedObservations(),observationRows);
+ assert.deepEqual(await currentObservations(),[],'failed reconciliation cannot create current-instance evidence');
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
+ assert.equal((await recovery.status()).control.phase,'restored');
+ assert.equal((await restored.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows[0].global_enabled,true);
+ assert.equal((await restored.query('SELECT 1 FROM birbcrew_ts.delegation_control_children WHERE child_id=$1',[child.childId])).rowCount,0);
+ await recovery.resume(t.hooks,manifest);
+ assert.deepEqual(await active(),[]);
+ const control=(await restored.query('SELECT revision::text,global_enabled FROM birbcrew_ts.delegation_control')).rows[0];
+ assert.equal(control.global_enabled,false);
+ const cohort=(await restored.query(`SELECT c.retire,h.instance_id,h.receipt FROM birbcrew_ts.delegation_control_children c
+  JOIN birbcrew_ts.delegation_control_changes h USING(command_id) WHERE c.child_id=$1`,[child.childId])).rows;
+ assert.equal(cohort.length,1);assert.equal(cohort[0].retire,true);
+ assert.equal(cohort[0].instance_id,(await recovery.status()).control.instance);
+ assert.equal(cohort[0].receipt.revision,control.revision);
+ assert.deepEqual((await restored.query(`SELECT retire FROM birbcrew_ts.delegation_control_children
+  WHERE command_id=$1 AND child_id=$2`,[cohort[0].receipt.commandId,historicalChild.childId])).rows,[{retire:false}],
+  'activation includes completed history whose archived positive belongs to the old instance');
+ assert.deepEqual(await archivedObservations(),observationRows);
+ assert.deepEqual(await currentObservations(),[]);
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:false}]);
+ const drain=await drainDelegation({pool:restored,workflows:{
+  signalDecision:async()=>({kind:'accepted'}),
+  observe:async()=>({kind:'closed',runId:'restore-fixture-child',status:'COMPLETED'}),
+  observeParentResult:async()=>({kind:'pending'}),
+ }},cohort[0].receipt.commandId);
+ assert.equal(drain.valid,true);assert.equal(drain.admissionClosed,true);assert.equal(drain.complete,false);
+ assert.deepEqual(drain.blockers.filter(blocker=>blocker.kind==='parent_workflow'&&blocker.requestId===history.requestId),
+  [{kind:'parent_workflow',requestId:history.requestId,observation:{kind:'pending'}}],
+  'a pending workflow observation cannot borrow archived source-instance evidence');
+ assert.deepEqual(await currentObservations(),[],'drain does not persist a positive observation');
+ const restoredStore=new MemberStore(restored);
+ await assert.rejects(restoredStore.beginResume(history,null,{...historyResume,workflowRunId:randomUUID()}),{code:'stale'});
+ assert.deepEqual(await restoredStore.beginResume(history,null,historyResume),{kind:'replay',reply:historicalReply},
+  'the restored committed turn replays its recorded run instead of acquiring a new run');
+ assert.deepEqual((await restored.query(observationSql,observationArgs)).rows,[{accepted:false}],'source-instance evidence remains stale after activation');
+ assert.deepEqual((await restored.query(observationSql,currentObservationArgs)).rows,[{accepted:true}],
+  'a fresh SQL-seeded positive may record the existing exact result under current authority');
+ assert.deepEqual((await restored.query(applicableSql,[history.conversationId,history.requestId])).rows,[{observed:true}]);
+ assert.equal((await currentObservations()).length,1);
+ assert.deepEqual(await archivedObservations(),observationRows);
+ assert.deepEqual((await restored.query('SELECT phase,role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[historicalChild.childId])).rows,
+  [{phase:'complete',role_profile:historicalIdentity}]);
+ await assert.rejects(restored.query(controlSql,oldArgs),{code:'55000'});
+ assert.equal((await restored.query('SELECT global_enabled FROM birbcrew_ts.delegation_control')).rows[0].global_enabled,false);
+ assert.deepEqual((await restored.query('SELECT role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0].role_profile,identity);
+ const replay=await new MemberStore(restored).spawn(request);
+ assert.equal(replay.subagents.targets[0].availability,'removed');
+ assert.deepEqual((await new MemberStore(restored).spawn({...request,requestId:randomUUID()})).subagents,{mode:'named',targets:[]});
+ const children=new ChildStore(restored);
+ await assert.rejects(children.begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1}),{code:'55000'});
+ await children.closeExitedChild(child,false);
+ const failed=await children.begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1});
+ assert.deepEqual(failed,{kind:'settled',outcome:{kind:'failed',nativeCallId:'restore-call',code:'child_failed'}});
+ await restored.query(controlSql,[randomUUID(),control.revision,{kind:'global'},true,'restore-fixture','enable future delegation']);
+ assert.deepEqual(await children.begin(child,{workflowRunId:randomUUID(),activityId:'child',attempt:1}),failed);
+ assert.deepEqual((await restored.query('SELECT generation,phase,role_profile FROM birbcrew_ts.pi_children WHERE child_id=$1',[child.childId])).rows[0],
+  {generation:null,phase:'failed',role_profile:identity});
+ assert.equal((await restored.query('SELECT 1 FROM birbcrew_ts.native_launches WHERE child_id=$1',[child.childId])).rowCount,0);
+ assert.deepEqual((await restored.query(`SELECT event_type,count(*)::int AS count FROM birbcrew_ts.audit_events
+  WHERE payload->>'childId'=$1 AND event_type IN ('delegation.started','delegation.finished') GROUP BY event_type`,[child.childId])).rows,
+  [{event_type:'delegation.finished',count:1}]);
+ await assert.rejects(restored.query("UPDATE birbcrew_ts.profiles SET child_target_active=ARRAY['analyst'] WHERE name='parent'"),{code:'23514'});
 });
