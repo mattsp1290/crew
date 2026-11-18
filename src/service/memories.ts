@@ -69,7 +69,8 @@ export function codexArgument(context: string) {
   return "developer_instructions=" + JSON.stringify("You are a BirbCrew coworker.\n" + context);
 }
 /** Whether a native launch of this engine can carry the context. Claude checks the length of
- * its project context (claude.ts); Codex passes it in one argument; Pi keeps it in process. */
+ * its project context (claude.ts); Codex passes it in one argument; the Pi host sends it in the first
+ * frame on its confined worker's channel, never on a command line. */
 export function contextFits(engine: Engine, context: string | undefined): boolean {
   if (context === undefined) return true;
   switch (engine) {

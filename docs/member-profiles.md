@@ -117,7 +117,8 @@ refusal, a refused key, and Pi's session headers across checkpoint restore.
 
 Profiles ending in `.approval.v1` add the host-owned `record_work_item` tool.
 For example, select `fixture.approval.v1` for a local test or
-`pi-go-glm-5.3-flash.approval.v1` for an approved Pi account. Each member
+`pi-go-glm-5.3-flash.approval.v1` for the Pi account that the `pi` entry of
+`BIRBCREW_LIVE_PROFILES` configures. Each member
 retains the account, tools and native storage associated with its selected
 profile. A worker registering different settings for that name is rejected.
 
@@ -152,8 +153,8 @@ child. The entire turn has one work-item budget. The parent receives both
 results in its original call order, even when the second child finishes first.
 
 Use `members -- cancel-pending` with the parent request ID to cancel active and
-waiting children. The production profile for separately authorized Pi use is
-`pi-go-glm-5.3-flash.crew.v1`.
+waiting children. With the `pi` entry of `BIRBCREW_LIVE_PROFILES`, the live
+Pi profile that delegates is `pi-go-glm-5.3-flash.crew.v1`.
 
 ## Answer a next-step question
 
