@@ -38,6 +38,7 @@ response fields are compatible; consumers must reject an unsupported major versi
 Trusted context is currently an operator-configured local runtime, **not** a public
 HTTP context/tool injection endpoint. Capabilities are implementation contracts, not
 proof of the operator's provider access or configured profile availability.
+Proposed, not advertised: [frontend tools](frontend-tools.md) specifies a future `frontendTools` capability. It adds only optional fields and new routes (definition, batch and call routes) and leaves existing text submit and the observation route and stream unchanged.
 
 | Route | Purpose |
 | --- | --- |
