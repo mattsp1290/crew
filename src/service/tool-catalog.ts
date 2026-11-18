@@ -141,7 +141,8 @@ export interface Preview {
   summary: string;
   /** What the call would do, rendered by Crew from the arguments alone. The lines that say
    * what is acted on (command, working directory, path, method and URL, query) are always
-   * complete; only file content and request bodies are cut to fit. */
+   * complete; only file content and request bodies are cut to fit. A card must wrap its long
+   * lines, never scroll or shorten them: a line can be as long as the preview. */
   text: string;
   /** Whether content was cut. */
   truncated: boolean;

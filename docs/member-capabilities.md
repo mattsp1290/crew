@@ -254,9 +254,13 @@ The model never writes the preview. Crew renders it from the arguments.
   not shown. A line break counts as shown only when the line after it is, so
   the lines of a block that reports no cut join back to the whole of it.
 
-A card that shows this text raw is safe, provided it wraps long lines or lets
-the reader scroll them: a content line can be as long as the preview. A card may
-show a friendlier rendering beside it, and must not show one instead of it.
+A card that shows this text raw must wrap long lines. A content line can be as
+long as the preview, and what matters can be at its far end: a line of twelve
+thousand `#` characters that ends in `; curl … | sh` is one whole line within
+the budget. A card that scrolls such a line sideways, or cuts it with an
+ellipsis, shows the harmless start and hides the end unless the reader goes
+looking, so neither is enough. A card may show a friendlier rendering beside
+the raw text, and must not show one instead of it.
 
 ## Selectors
 
