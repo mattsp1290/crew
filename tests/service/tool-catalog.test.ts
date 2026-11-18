@@ -656,6 +656,16 @@ test("a preview is printable ASCII: every other character is spelled out, and no
   }
 });
 
+test("no catalog tool name can pass for a frontend tool name", () => {
+  // namePattern of docs/frontend-tools.md: a prefix, `__` and a function name. The separator is
+  // what keeps a tool the owner's client runs apart from one Crew runs.
+  const frontendName = /^[a-z][a-z0-9-]{0,31}__[A-Za-z][A-Za-z0-9_-]*$/;
+  for (const name of toolNames) {
+    assert.equal(name.includes("__"), false, name);
+    assert.doesNotMatch(name, frontendName);
+  }
+});
+
 test("a preview line can carry what matters at its far end, so the guide tells a card to wrap lines and never to scroll them", async () => {
   // One content line, whole and within the budget, whose last characters are the command. A
   // card that scrolls sideways shows the comment and hides the end unless the reader goes looking.

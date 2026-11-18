@@ -8,7 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { z } from "zod";
 import { ApprovalStore } from "../../src/service/approvals.ts";
-import { ownerInitiator } from "../../src/service/domain.ts";
+import type { MemberClient } from "../../src/service/client.ts";
+import { ownerInitiator, type TurnRequest } from "../../src/service/domain.ts";
+import { HandoffApi } from "../../src/service/handoffs.ts";
 import { withNativeAdmission } from "../../src/service/native-admission.ts";
 import { InstallationRecovery, readRecoveryManifest, type RecoveryHooks, type RecoveryPins } from "../../src/service/recovery.ts";
 import { FileRecoveryFence } from "../../src/service/recovery-fence.ts";
@@ -54,7 +56,7 @@ function fixture(pool: Pool) {
     AND invocation_id=$3 AND native_call_id=$4`, [key.conversationId, key.requestId, key.invocationId, key.nativeCallId])).rows[0];
   return { pool, store, ledger, turn, grant, row };
 }
-const { pool, ledger, turn, grant, row } = fixture(shared);
+const { pool, store, ledger, turn, grant, row } = fixture(shared);
 const phases = async (keys: ToolCallKey[]) => Promise.all(keys.map(async key => { const call = await ledger.get(key); return call.phase + (call.delivered ? "+delivered" : ""); }));
 
 test("a decided call is recorded once, in the phase its verdict gives it; a retry reads it back", async () => {
@@ -309,6 +311,34 @@ test("after a worker is lost: an outcome is delivered, a read is run again, and 
     [["start", "ready"], ["wait", "waiting"], ["deliver", "refused"], ["deliver", "failed"]]);
   // An effect that was only ready was never run, so it may start.
   assert.equal((await ledger.admit(ready, next)).run, true);
+});
+
+test("the ledger does not judge whether a call's turn may still act: a committed turn, a cancelled request and a sealed conversation are the gate's to refuse", async () => {
+  // What docs/member-capabilities.md tells the gate to check under the conversation lock, because
+  // nothing here does. If the ledger ever learns one of these, this test and that list change together.
+  const stopped = await turn();
+  const request = { ownerId: stopped.ownerId, conversationId: stopped.conversationId, requestId: stopped.requestId };
+  assert.equal(await store.cancelGenerating(request), true);
+  const afterCancel = stopped.key();
+  assert.equal((await ledger.record(afterCancel, reading, allowed)).phase, "ready", "a cancelled request");
+  await store.commitTurn({ ...request, token: stopped.token, reply: "stopped", checkpoint: { version: 1, engine: "pi", state: {} } });
+  const afterCommit = stopped.key();
+  assert.equal((await ledger.record(afterCommit, reading, allowed)).phase, "ready", "a committed turn");
+
+  // A handoff seals its source: the conversation admits no new request for good.
+  const source = await turn();
+  const done = { ownerId: source.ownerId, conversationId: source.conversationId, requestId: source.requestId };
+  await store.commitTurn({ ...done, token: source.token, reply: "done", checkpoint: { version: 1, engine: "pi", state: {} } });
+  const members = { open: (input: Parameters<MemberStore["openConversation"]>[0]) => store.openConversation(input),
+    accept: async (input: TurnRequest) => { await store.recordAcceptance(input, ownerInitiator); return { requestId: input.requestId }; } } as unknown as MemberClient;
+  const handoff = await new HandoffApi(store, members).create(source.ownerId, source.conversationId, { requestId: randomUUID(), memberId: source.memberId });
+  assert.equal(handoff.source.conversationId, source.conversationId);
+  await assert.rejects(store.recordAcceptance({ ...done, requestId: randomUUID(), text: "more" }, ownerInitiator), { code: "handed_off" });
+  const afterSeal = source.key();
+  assert.equal((await ledger.record(afterSeal, reading, allowed)).phase, "ready", "a sealed conversation");
+
+  for (const key of [afterCancel, afterCommit, afterSeal]) assert.equal((await ledger.admit(key, randomUUID())).run, true);
+  assert.deepEqual(await phases([afterCancel, afterCommit, afterSeal]), ["admitted", "admitted", "admitted"]);
 });
 
 test("one owner never reads or changes another owner's calls", async () => {

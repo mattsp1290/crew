@@ -358,6 +358,37 @@ test("a set above the ceiling is refused with 400 and nothing is written", async
   assert.deepEqual([await g.rows("members"), await g.rows("member_capabilities"), await g.rows("audit_events")], [[], [], []]);
 });
 
+test("a set is written with the member's instructions and packs: a retry must repeat all three, and a refusal of any leaves none", async (t) => {
+  const g = await gateway(t);
+  const pack = await g.api("/v1/instruction-packs", { requestId: randomUUID(), name: "house style", text: "Explain why, not what." });
+  assert.equal(pack.status, 201);
+  const capabilities = { version: 1, workspace: { files: "read" } };
+  const whole = { requestId: randomUUID(), engine: "pi", profile: bounded, instructions: "You review database migrations.",
+    instructionPacks: [pack.body.packId], capabilities };
+  const spawned = await g.api("/v1/members", whole);
+  assert.equal(spawned.status, 201);
+  const { memberId } = spawned.body;
+  assert.deepEqual(Object.keys(spawned.body), ["ownerId", "memberId", "engine", "profile", "subagents", "instructions", "instructionPacks", "capabilities"]);
+  assert.deepEqual([spawned.body.capabilities, spawned.body.instructionPacks], [capabilities, [pack.body.packId]]);
+  assert.deepEqual(await g.api("/v1/members", whole), spawned, "a retry that repeats all three reads the member back");
+  for (const [left, differing] of Object.entries({ capabilities: { ...whole, capabilities: undefined }, instructions: { ...whole, instructions: undefined },
+    instructionPacks: { ...whole, instructionPacks: undefined }, set: { ...whole, capabilities: { version: 1, workspace: { files: "write" } } } })) {
+    assert.deepEqual(await g.api("/v1/members", differing), { status: 409, body: { error: "conflict" } }, left);
+  }
+  const listed = (await g.api("/v1/members")).body.members.find((member: { memberId: string }) => member.memberId === memberId);
+  assert.deepEqual([listed.capabilities, listed.instructionPacks, listed.instructions], [capabilities, [pack.body.packId], spawned.body.instructions]);
+  const trail = (await g.rows("audit_events")).filter(row => row.member_id === memberId).sort((a, b) => Number(BigInt(a.event_id) - BigInt(b.event_id)));
+  assert.deepEqual(trail.map(row => row.event_type), ["member.spawned", "member.instructions_set", "member.instruction_packs_attached"]);
+  assert.equal(trail[0].payload.capabilityDigest, capabilityDigest(set(capabilities as CapabilityInput)));
+
+  // The ceiling is checked first: a set above it answers 400 whatever else the request names.
+  assert.deepEqual(await g.api("/v1/members", { ...whole, requestId: randomUUID(), capabilities: { version: 1, webSearch: {} }, instructionPacks: [randomUUID()] }),
+    { status: 400, body: { error: "capabilities_exceed_profile" } });
+  // A set within the ceiling does not outlive a refusal further on: an unknown pack takes the member and its set with it.
+  assert.deepEqual(await g.api("/v1/members", { ...whole, requestId: randomUUID(), instructionPacks: [randomUUID()] }), { status: 404, body: { error: "not_found" } });
+  assert.deepEqual([(await g.rows("members")).length, (await g.rows("member_capabilities")).length], [1, 1]);
+});
+
 test("an empty set is no capabilities: the member, a retry and the trail read as if none were named", async (t) => {
   const g = await gateway(t);
   const requestId = randomUUID();
