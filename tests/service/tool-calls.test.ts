@@ -223,6 +223,15 @@ test("a ready call is admitted by one execution, finished by it alone, then deli
   for (const endless of [nested(toolCallLimits.resultDepth + 1), nested(20_000), loop, twice, { rows: Array.from({ length: toolCallLimits.resultBytes }, () => 1) }]) {
     await assert.rejects(ledger.complete(bounded, execution, endless), { code: "input_limit", name: "MemberStoreError" });
   }
+  // A sparse array is as long as it says, whatever it holds: its empty slots count toward the
+  // limit, so one of fifty million is refused at once and nothing loops over them.
+  const began = performance.now();
+  for (const sparse of [{ rows: new Array(toolCallLimits.resultBytes) }, { rows: new Array(50_000_000) }, { deep: [[new Array(toolCallLimits.resultBytes)]] }]) {
+    await assert.rejects(ledger.complete(bounded, execution, sparse), { code: "input_limit", name: "MemberStoreError" });
+  }
+  assert.ok(performance.now() - began < 2_000, "refused without visiting the slots");
+  // A short one is within the limit and is still not JSON: a slot that holds nothing is not a value.
+  await assert.rejects(ledger.complete(bounded, execution, { rows: new Array(3) }), z.ZodError);
   assert.deepEqual(await phases([bounded]), ["admitted"], "a refused result leaves the call where it was");
   const deepest = t.key();
   await ledger.record(deepest, reading, allowed);

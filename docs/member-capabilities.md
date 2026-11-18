@@ -426,7 +426,9 @@ unpaired surrogate is refused before it is sent. An executor must turn output th
 is not text, such as the bytes of a binary file, into text first. A result over the
 limit, including one that is small as JSON and large as PostgreSQL prints it, is
 `input_limit`, and the call stays `admitted`. So is a result nested more than 64
-levels deep or one that holds itself: it is refused before anything reads into it.
+levels deep, one that holds itself, or one with an array longer than the limit has
+bytes, whether its slots are filled or empty: it is refused before anything reads
+into it.
 
 A database error that leaves the ledger module, from a read, a write or the
 settling of a restore, has had the fields that quote the failing row or parameter

@@ -60,7 +60,13 @@ function walkable(result: unknown): boolean {
   let left = toolCallLimits.resultBytes;
   const visit = (value: unknown, depth: number): boolean => {
     if (left-- <= 0 || depth > toolCallLimits.resultDepth) return false;
-    return typeof value !== "object" || value === null || Object.values(value).every(inner => visit(inner, depth + 1));
+    if (typeof value !== "object" || value === null) return true;
+    if (!Array.isArray(value)) return Object.values(value).every(inner => visit(inner, depth + 1));
+    // Every slot counts, filled or not. Object.values skips the empty slots of a sparse array,
+    // but the schema that reads the result next visits each one, however many the length claims.
+    if (value.length > left) return false;
+    for (let index = 0; index < value.length; index++) if (!visit(value[index], depth + 1)) return false;
+    return true;
   };
   return visit(result, 0);
 }
