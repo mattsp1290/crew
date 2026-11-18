@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { fenceEpochLimit, RecoveryRefusedError, type RecoveryFence } from './recovery-fence.ts';
 import { appendAudit } from './audit.ts';
 import { changeDelegationControl, controlState } from './delegation-control.ts';
+import { settleRestoredToolCalls } from './tool-calls.ts';
 import { settleRestoredWebhooks } from './webhooks.ts';
 export { RecoveryRefusedError } from './recovery-fence.ts';
 
@@ -67,6 +68,8 @@ async function settleRestoredState(db:PoolClient,activate:()=>Promise<boolean>) 
   payload:{memoryId:memory.memory_id,reason:'recovery_restore'}});
  // Webhook endpoints are disabled and undelivered rows cancelled: nothing from before the restore is sent.
  await settleRestoredWebhooks(db);
+ // An effect allowed before the recovery point may have run on the discarded timeline: never run it here.
+ await settleRestoredToolCalls(db);
 }
 export type SnapshotArtifact={kind:RecoveryManifest['artifacts'][number]['kind'];file:string};
 /** Hooks are trusted operator code, not user/AG-UI input. They must stop ALL

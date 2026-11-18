@@ -7,7 +7,7 @@ import { Client, Connection } from "@temporalio/client";
 import { Pool } from "pg";
 import { MemberClient } from "./client.ts";
 import { MemberStore } from "./store.ts";
-import { spawnSchema } from "./domain.ts";
+import { spawnRequestSchema } from "./capabilities.ts";
 import { flushTelemetry } from "./telemetry.ts";
 import { temporalConnectionOptions, temporalSettings } from "./temporal-config.ts";
 
@@ -52,7 +52,7 @@ async function main() {
     }
     const input: unknown = await json(process.stdin);
     if (operation === "spawn") {
-      const spawn = spawnSchema.parse(input);
+      const spawn = spawnRequestSchema.parse(input);
       const registered = await pool.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2",
         [spawn.engine, spawn.profile]);
       if (!registered.rowCount) throw new Error("Start a worker with this engine and profile before spawning a member");

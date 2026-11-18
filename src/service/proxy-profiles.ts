@@ -13,6 +13,14 @@ export type ProxyProfileOptions = RelayOptions & {
   humanTool?: "choose_next_step";
 };
 
+const relayBacked = new WeakSet<object>();
+/** Whether these are engine options createProxyProfile built, so the member SDK holds only a
+ * relay credential and never a provider key. Nothing else can mark options: a copy of them, or
+ * options written by hand, are not relay-backed. */
+export function usesRelayCredential(engineOptions: unknown): boolean {
+  return typeof engineOptions === "object" && engineOptions !== null && relayBacked.has(engineOptions);
+}
+
 /** Trusted operator configuration only. Never construct this from an AG-UI request. */
 export async function createProxyProfile(options: ProxyProfileOptions) {
   const protocols = { claude: "anthropic-messages", codex: "openai-responses", pi: "openai-chat-completions" } as const;
@@ -96,6 +104,8 @@ export async function createProxyProfile(options: ProxyProfileOptions) {
       }));
       profile.pi = { model, modelRuntime: runtime };
     }
+    // Frozen, so the options that carry the mark cannot be given another credential afterwards.
+    relayBacked.add(Object.freeze(profile[options.engine]!));
     return { profile, close };
   } catch {
     await close();

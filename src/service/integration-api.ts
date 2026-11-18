@@ -3,6 +3,7 @@ import { z } from "zod";
 import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type DecisionReceiptsCapabilityV1,
   type ServerRequestReceipt } from "@birbcrew/client/contract";
 import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
+import { capabilityReport, storedCapabilities } from "./capabilities.ts";
 import type { MemberClient } from "./client.ts";
 import { approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
   turnKey, type Engine } from "./domain.ts";
@@ -52,6 +53,7 @@ export const integrationCapabilities = {
     revocation: "later-proposals-only",
   },
   memories: memoryCapabilities,
+  memberCapabilities: capabilityReport,
   handoffs: handoffCapabilities,
   approvalExpiry: {
     version: 1, field: "approvalDeadlineSeconds", routes: ["/v1/conversations/{conversationId}/requests", "/v1/routines"],
@@ -198,19 +200,25 @@ export class IntegrationApi {
   async listMembers(ownerId: string, query: unknown) {
     const { limit, after } = memberListQuery.parse(query);
     const { rows } = await this.store.pool.query<{ memberId: string; engine: Engine; profile: string; instructions: InstructionsSummary | null;
-      instructionPacks: string[] | null; consent: unknown; seal: unknown; active: string[] | null }>(
+      instructionPacks: string[] | null; consent: unknown; seal: unknown; active: string[] | null; stored: unknown }>(
       `SELECT m.member_id AS "memberId",m.engine,m.profile,m.child_target_consent AS consent,p.child_target_seal AS seal,p.child_target_active AS active,
          CASE WHEN i.member_id IS NOT NULL THEN ${instructionsSummarySql} END AS instructions,
          (SELECT array_agg(a.pack_id::text ORDER BY a.position) FROM birbcrew_ts.member_instruction_packs a
-           WHERE a.owner_id=m.owner_id AND a.member_id=m.member_id) AS "instructionPacks"
+           WHERE a.owner_id=m.owner_id AND a.member_id=m.member_id) AS "instructionPacks",
+         c.capabilities AS stored
        FROM birbcrew_ts.members m LEFT JOIN birbcrew_ts.profiles p ON p.engine=m.engine AND p.name=m.profile
        LEFT JOIN birbcrew_ts.member_instructions i ON i.owner_id=m.owner_id AND i.member_id=m.member_id
+       LEFT JOIN birbcrew_ts.member_capabilities c ON c.owner_id=m.owner_id AND c.member_id=m.member_id
        WHERE m.owner_id=$1 AND ($2::uuid IS NULL OR m.member_id>$2) ORDER BY m.member_id LIMIT $3`,
       [ownerId, after ?? null, limit + 1]);
     const { items, next } = page("member", rows, limit, row => row.memberId);
     // Never the text: only GET /v1/members/{memberId}/instructions returns it. Pack IDs, in order.
-    const members = items.map(({ instructions, instructionPacks, consent, seal, active, ...member }) => ({ ...member, subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
-      ...(instructionPacks ? { instructionPacks } : {}) }));
+    // `capabilities` only for a member that has some, so a member without any reads as before.
+    const members = items.map(({ instructions, instructionPacks, consent, seal, active, stored, ...member }) => {
+      const capabilities = storedCapabilities(stored);
+      return { ...member, subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
+        ...(instructionPacks ? { instructionPacks } : {}), ...(capabilities ? { capabilities } : {}) };
+    });
     return { apiVersion: "1" as const, members, next };
   }
 

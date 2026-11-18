@@ -9,6 +9,8 @@ import { memberSubagents, type MemberSubagents } from "./child-target.ts";
 import { childrenFor } from "./children.ts";
 import { savedProposal, type Approval } from "./approvals.ts";
 import { appendAudit } from "./audit.ts";
+import { capabilitiesWithin, CapabilityCeilingError, capabilityDigest, hasCapabilities, spawnRequestSchema, storedCapabilities,
+  type CapabilitySet } from "./capabilities.ts";
 import { firingConversation, firingInitiator } from "./routines.ts";
 import { snapshotMemories } from "./memories.ts";
 import { instructionsOf, packIdsOf, type InstructionsSummary } from "./instructions.ts";
@@ -22,15 +24,17 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  MemberStoreError, openSchema, ownerInitiator, requestInitiator, spawnSchema, submitSchema, turnRequestSchema,
+  MemberStoreError, openSchema, ownerInitiator, requestInitiator, submitSchema, turnRequestSchema,
   type BeginTurn, type Conversation, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 
-type SpawnedMember = Member & { subagents: MemberSubagents; instructions?: InstructionsSummary; instructionPacks?: string[] };
+type SpawnedMember = Member & { subagents: MemberSubagents; instructions?: InstructionsSummary; instructionPacks?: string[];
+  capabilities?: CapabilitySet };
 const memberColumns = `owner_id AS "ownerId", member_id AS "memberId", engine, profile`;
-function spawnedMember(member: Member, stored: InstructionsSummary | null, packs: string[], subagents: MemberSubagents): SpawnedMember {
+function spawnedMember(member: Member, stored: InstructionsSummary | null, packs: string[], subagents: MemberSubagents,
+  capabilities: CapabilitySet | null): SpawnedMember {
   return { ...member, subagents, ...(stored ? { instructions: { bytes: stored.bytes, digest: stored.digest } } : {}),
-    ...(packs.length ? { instructionPacks: packs } : {}) };
+    ...(packs.length ? { instructionPacks: packs } : {}), ...(capabilities ? { capabilities } : {}) };
 }
 
 type ConversationKey = z.input<typeof conversationKey>;
@@ -162,7 +166,8 @@ export class MemberStore {
       await db.query("CREATE SCHEMA IF NOT EXISTS birbcrew_ts");
       await db.query("CREATE TABLE IF NOT EXISTS birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
       const migrations = [[1, "001-members.sql"], [2, "002-approvals.sql"], [3, "003-native-launches.sql"],
-      [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"], [37, "037-named-child-targets.sql"], [38, "038-delegation-control.sql"], [39, "039-decision-receipts.sql"]] as const;
+      [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"], [37, "037-named-child-targets.sql"], [38, "038-delegation-control.sql"], [39, "039-decision-receipts.sql"],
+      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"]] as const;
       // Number a new migration above every one already released.
       const { rows: [{ latest }] } = await db.query<{ latest: number | null }>("SELECT max(version) AS latest FROM birbcrew_ts.schema_versions");
       for (const [version, name] of migrations) {
@@ -178,11 +183,17 @@ export class MemberStore {
     });
   }
 
-  /** Instructions and instruction packs are written only here, in the member's own spawn
-   * transaction (instructions.ts, instruction-packs.ts). A replay must repeat each exactly, or
-   * leave it out exactly when the member has none. */
-  async spawn(input: z.input<typeof spawnSchema>): Promise<SpawnedMember> {
-    const { ownerId, requestId, engine, profile, instructions, instructionPacks = [] } = spawnSchema.parse(input);
+  /** Instructions, instruction packs and capabilities are written only here, in the member's own
+   * spawn transaction (instructions.ts, instruction-packs.ts, capabilities.ts). A replay must
+   * repeat each exactly, or leave it out exactly when the member has none.
+   *
+   * A member's capabilities are the set its spawn asked for, which must be within the ceiling
+   * its profile registered; none when it asked for none. Only a new member is checked against
+   * the ceiling: a replay that differs in any way is a conflict, whatever it asks for. A replay
+   * reads member_capabilities, so it needs schema version 40. */
+  async spawn(input: z.input<typeof spawnRequestSchema>): Promise<SpawnedMember> {
+    const { ownerId, requestId, engine, profile, instructions, instructionPacks = [], capabilities } = spawnRequestSchema.parse(input);
+    const requested = hasCapabilities(capabilities) ? capabilities : null;
     return this.transaction(async (db) => {
       const { rows: [created] } = await db.query<Member>(
         `INSERT INTO birbcrew_ts.members (owner_id, spawn_request_id, engine, profile)
@@ -190,18 +201,26 @@ export class MemberStore {
         [ownerId, requestId, engine, profile],
       );
       if (created) {
+        if (requested) {
+          // A set above the ceiling rolls the member back, with everything else this spawn wrote.
+          const { rows: [registered] } = await db.query<{ capabilities: unknown }>(
+            "SELECT capabilities FROM birbcrew_ts.profiles WHERE name = $1 AND engine = $2", [profile, engine]);
+          if (!capabilitiesWithin(requested, storedCapabilities(registered?.capabilities))) throw new CapabilityCeilingError();
+          await db.query("INSERT INTO birbcrew_ts.member_capabilities (owner_id, member_id, capabilities) VALUES ($1, $2, $3)",
+            [ownerId, created.memberId, JSON.stringify(requested)]);
+        }
         if (instructions !== undefined) await db.query(
           "INSERT INTO birbcrew_ts.member_instructions (owner_id, member_id, body) VALUES ($1, $2, $3)",
           [ownerId, created.memberId, instructions]);
         if (instructionPacks.length) await attachPacks(db, created, instructionPacks, instructions);
         const stored = instructions === undefined ? null : await instructionsOf(db, created);
         await appendAudit(db, { type: "member.spawned", ownerId, memberId: created.memberId,
-          payload: { spawnRequestId: requestId, engine, profile } });
+          payload: { spawnRequestId: requestId, engine, profile, ...(requested && { capabilityDigest: capabilityDigest(requested) }) } });
         if (stored) await appendAudit(db, { type: "member.instructions_set", ownerId, memberId: created.memberId,
           payload: { digest: stored.digest, bytes: stored.bytes } });
         if (instructionPacks.length) await appendAudit(db, { type: "member.instruction_packs_attached", ownerId,
           memberId: created.memberId, payload: { packIds: instructionPacks } });
-        return spawnedMember(created, stored, instructionPacks, await this.memberSubagents(db, created));
+        return spawnedMember(created, stored, instructionPacks, await this.memberSubagents(db, created), requested);
       }
       // A replay writes nothing, and must name exactly what the first spawn named.
       const { rows: [member] } = await db.query<Member>(
@@ -210,9 +229,13 @@ export class MemberStore {
       );
       const stored = await instructionsOf(db, member);
       const packs = await packIdsOf(db, member);
+      const held = storedCapabilities((await db.query<{ capabilities: unknown }>(
+        "SELECT capabilities FROM birbcrew_ts.member_capabilities WHERE owner_id = $1 AND member_id = $2",
+        [ownerId, member.memberId])).rows[0]?.capabilities);
       if (member.engine !== engine || member.profile !== profile || stored?.text !== instructions
-        || packs.join() !== instructionPacks.join()) throw new MemberStoreError("conflict");
-      return spawnedMember(member, stored, packs, await this.memberSubagents(db, member));
+        || packs.join() !== instructionPacks.join()
+        || (held && capabilityDigest(held)) !== (requested && capabilityDigest(requested))) throw new MemberStoreError("conflict");
+      return spawnedMember(member, stored, packs, await this.memberSubagents(db, member), held);
     });
   }
 

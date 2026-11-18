@@ -5,9 +5,14 @@ import type { MemberProfiles, TurnDriver } from "./activities.ts";
 import { ChildTargetError, holdsChildTools, type ChildTarget, type ChildRole } from "./child-target.ts";
 import type { ProviderIdentity } from "./provider-identity.ts";
 import type { Engine } from "./domain.ts";
+import type { CapabilityInput } from "./capabilities.ts";
 
 export interface MemberProfile {
   accountId: string;
+  /** The capability ceiling for members of this profile (docs/member-capabilities.md). Absent
+   * means none. Set it here, in trusted operator code; no request can. A ceiling with a shell
+   * needs a profile from createProxyProfile. No engine offers a capability tool yet. */
+  capabilities?: CapabilityInput;
   childTargets?: Readonly<Partial<Record<Engine, Readonly<Partial<Record<ChildRole, ChildTarget>>>>>>;
   upstreamIdentity?: Readonly<Partial<Record<Engine, ProviderIdentity>>>;
   delegateTask?: true;

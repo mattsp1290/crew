@@ -17,6 +17,8 @@ import {RoutineApi,RoutineDispatcher} from '../../src/service/routines.ts';
 import {ApprovalStore} from '../../src/service/approvals.ts';
 import {revokeGrant} from '../../src/service/grants.ts';
 import {conversationContext,MemoryApi} from '../../src/service/memories.ts';
+import {classify} from '../../src/service/tool-catalog.ts';
+import {ToolCallStore} from '../../src/service/tool-calls.ts';
 import {HandoffApi} from '../../src/service/handoffs.ts';
 import {PackApi} from '../../src/service/instruction-packs.ts';
 import {recordSegmentUsage,UsageApi} from '../../src/service/usage.ts';
@@ -512,6 +514,75 @@ test('a restored installation suspends every active memory as it resumes; a held
  assert.match((await conversationContext(restored,later))!,new RegExp(again.memoryId));
  // The source, which resumed without a restore, kept its active entry.
  assert.deepEqual((await states(t.pool)).map(row=>row.state),['deleted','active']);
+});
+
+test('a real archive restores member capabilities and the tool-call ledger; the resumed target never runs an effect that was unfinished at the recovery point',async context=>{
+ const t=await setup(context);
+ const capabilities={version:1 as const,workspace:{files:'write' as const}};
+ await t.pool.query("INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,capabilities) VALUES ('fixture','pi',$1,$2)",[Buffer.alloc(32),JSON.stringify(capabilities)]);
+ const spawned={ownerId:'owner',requestId:randomUUID(),engine:'pi' as const,profile:'fixture',capabilities};
+ const member=await t.store.spawn(spawned);const {memberId}=member;
+ async function turn(store:MemberStore) {
+  const conversationId=randomUUID(),requestId=randomUUID(),text='tools '+requestId,key={ownerId:'owner',conversationId,requestId};
+  await store.openConversation({ownerId:'owner',memberId,conversationId});
+  await store.recordAcceptance({...key,text},ownerInitiator);
+  const start=await store.beginTurn({...key,text});
+  assert.equal(start.kind,'start');if(start.kind!=='start') throw new Error('unreachable');
+  return {...key,memberId,token:start.token,invocationId:requestId};
+ }
+ // A standing grant, made by answering a card, is the only thing that allows an effect without one.
+ const {token,...card}=await turn(t.store);
+ const approval=await new ApprovalStore(t.pool).propose({...card,token,nativeCallId:'card',toolName:'record_work_item',arguments:{operation_id:card.requestId}});
+ await new ApprovalStore(t.pool).decide({...card,nativeCallId:'card',approvalId:approval.approvalId,argumentDigest:approval.argumentDigest,version:approval.version,choice:'allow_always'});
+ const grantId=(await t.pool.query('SELECT grant_id FROM birbcrew_ts.tool_grants')).rows[0].grant_id as string;
+ const {token:_,...scope}=await turn(t.store);
+ const ledger=new ToolCallStore(t.pool),execution=randomUUID();
+ const read=classify({tool:'fs_read',arguments:{path:'a.txt'}}),write=classify({tool:'fs_write',arguments:{path:'a.txt',content:'x'}});
+ const key=(nativeCallId:string)=>({...scope,nativeCallId});
+ await ledger.record(key('read'),read,{verdict:'allow',by:'default'});
+ for(const name of ['ready','admitted','finished']) await ledger.record(key(name),write,{verdict:'allow',by:'grant',grantId});
+ for(const name of ['read','admitted','finished']) await ledger.admit(key(name),execution);
+ await ledger.complete(key('finished'),execution,{bytes:1});
+ const rows=async(pool:Pool,table:string)=>(await pool.query(`SELECT * FROM birbcrew_ts.${table} ORDER BY 1`)).rows;
+ const phases=async(pool:Pool)=>Object.fromEntries((await pool.query('SELECT native_call_id,phase,uncertain_reason FROM birbcrew_ts.tool_calls')).rows
+  .map(row=>[row.native_call_id,row.uncertain_reason?`${row.phase}:${row.uncertain_reason}`:row.phase]));
+ await dumpToBundle(t);
+ const manifest=await readRecoveryManifest(t.bundle);
+ assert.deepEqual([manifest.inventory.member_capabilities,manifest.inventory.tool_calls],[1,4]);
+ const atCapture={read:'admitted',ready:'ready',admitted:'admitted',finished:'completed'};
+ // The source resumes and the admitted effect completes there, after the recovery point.
+ await t.recovery.resume(t.hooks);
+ assert.deepEqual(await phases(t.pool),atCapture);
+ await ledger.complete(key('admitted'),execution,{bytes:1});
+ await t.recovery.holdForRestore(manifest.generation,t.hooks);
+ const restored=await restoreBundle(t);const recovery=new InstallationRecovery(restored,t.fence);
+ await recovery.acceptRestore(t.bundle,pins,randomUUID());
+ // The archive carries both tables exactly, and their triggers guard the copy.
+ assert.deepEqual(await rows(restored,'member_capabilities'),await rows(t.pool,'member_capabilities'));
+ assert.deepEqual(await phases(restored),atCapture);
+ const [before]=(await restored.query("SELECT * FROM birbcrew_ts.tool_calls WHERE native_call_id='finished'")).rows;
+ assert.deepEqual(before,(await t.pool.query("SELECT * FROM birbcrew_ts.tool_calls WHERE native_call_id='finished'")).rows[0]);
+ await recovery.resume(t.hooks,manifest);
+ // The restored ledger does not know the write completed, so it must not run it: both effects are uncertain.
+ assert.deepEqual(await phases(restored),{read:'admitted',ready:'uncertain:recovery_restore',admitted:'uncertain:recovery_restore',finished:'completed'});
+ const target=new ToolCallStore(restored);
+ for(const name of ['ready','admitted']) {
+  assert.equal((await target.admit(key(name),randomUUID())).run,false);
+  assert.equal((await target.admit(key(name),execution)).run,false);
+  await assert.rejects(target.complete(key(name),execution,{bytes:1}),{code:'stale'});
+  assert.equal((await target.classifyLost(key(name))).action,'deliver');
+ }
+ assert.equal((await target.classifyLost(key('read'))).action,'rerun');
+ assert.equal((await target.admit(key('read'),randomUUID())).run,true);
+ assert.equal((await target.classifyLost(key('finished'))).action,'deliver');
+ await assert.rejects(restored.query("UPDATE birbcrew_ts.tool_calls SET arguments='{}' WHERE native_call_id='finished'"),{code:'23514'});
+ await assert.rejects(restored.query('DELETE FROM birbcrew_ts.tool_calls'),{code:'23514'});
+ await assert.rejects(restored.query('DELETE FROM birbcrew_ts.member_capabilities'),{code:'23514'});
+ // The member keeps the capabilities it was spawned with, on both timelines.
+ assert.deepEqual(await new MemberStore(restored).spawn(spawned),member);
+ assert.deepEqual(member.capabilities,capabilities);
+ // The held source, which resumed without a restore, kept the outcome it recorded.
+ assert.deepEqual(await phases(t.pool),{...atCapture,admitted:'completed'});
 });
 
 test('capture accepts the usage tables; a restore rewinds the ledger and budgets and resume leaves both as restored',async context=>{

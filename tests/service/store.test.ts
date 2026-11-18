@@ -265,7 +265,8 @@ test("migration 39 upgrades a schema 38 database in place without scanning or re
   const upgraded = new MemberStore(db);
   await Promise.all([upgraded.migrate(), upgraded.migrate()]);
   const versions = (await db.query<{ version: number }>("SELECT version FROM birbcrew_ts.schema_versions ORDER BY version")).rows.map(r => r.version);
-  assert.deepEqual(versions.slice(-2), [38, 39]);
+  // migrate() goes on to every later migration in the directory; 39 is the one that follows 38.
+  assert.deepEqual(versions.filter(version => version >= 38).slice(0, 2), [38, 39]);
   const { rows: [column] } = await db.query(`SELECT data_type, is_nullable, column_default FROM information_schema.columns
     WHERE table_schema='birbcrew_ts' AND table_name='deferred_calls' AND column_name='decision_id'`);
   assert.deepEqual(column, { data_type: "uuid", is_nullable: "YES", column_default: null });

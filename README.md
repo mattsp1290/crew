@@ -176,3 +176,9 @@ member has cannot be deleted. Packs come before the member's own instructions in
 launches and share their 16,384 bytes. They never change a member's tools, approvals or limits,
 but the model follows them as the owner's instructions, so a pack built from untrusted text is
 a prompt-injection path to every member that has it.
+
+[Member capabilities](docs/member-capabilities.md) are the foundation for tools that
+Crew will run for a member: files in a workspace, a shell, web fetch and search. An
+operator sets a ceiling in a profile, an owner may pick a set within it at spawn, and
+a tool catalog and a tool-call ledger define how each call will be classified and
+recorded. No engine offers or runs any of these tools yet.

@@ -191,7 +191,7 @@ try {
   await untilLive(async () => (await pool.query("SELECT 1 FROM birbcrew_ts.native_launches WHERE NOT stopped")).rowCount === 0 ? true : undefined, "old native runners stopped");
   await seed.stop(); await noRunners(); await pollers("old-seed-stopped");
   const current = await startWorker(newRoot, newConfig, "current");
-  assert.equal((await pool.query("SELECT max(version) AS version FROM birbcrew_ts.schema_versions")).rows[0].version, 39);
+  assert.equal((await pool.query("SELECT max(version) AS version FROM birbcrew_ts.schema_versions")).rows[0].version, 41);
   const heldTask = "hold " + randomUUID();
   const retiredRequest = turn(await conversation(newRoot), "delegate " + JSON.stringify({ role: "analyst", task: heldTask }));
   await members.accept(retiredRequest);

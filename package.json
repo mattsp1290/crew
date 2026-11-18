@@ -41,6 +41,7 @@
     "test:packs": "node --test tests/service/instruction-packs.test.ts",
     "test:handoffs:service": "node tests/proof/handoffs.mts",
     "test:grants": "node --test tests/service/standing-grants.test.ts",
+    "test:capabilities": "node --test tests/service/hosts.test.ts tests/service/capabilities.test.ts tests/service/tool-catalog.test.ts tests/service/tool-calls.test.ts",
     "test:expiry": "node --test tests/service/approval-expiry.test.ts",
     "test:expiry:workflow": "node --test tests/service/approval-expiry-workflow.test.ts",
     "test:handoffs": "node --test tests/service/handoffs.test.ts",

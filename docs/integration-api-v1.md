@@ -22,7 +22,10 @@ contract (event types, page limits, formats, filter names and actor kinds) and t
 scheduled-routine limits and policies (`routines`), `standingGrants` (the standing
 choices, the card and state fields, the grantable tool, policy version and
 initiator kinds, the grants route and the inactive-list limit), `memories` (the
-member memory route, limits, injection and deletion semantics per engine), `handoffs`
+member memory route, limits, injection and deletion semantics per engine),
+`memberCapabilities` (the capability set version, the spawn and member fields, the
+kinds, and `toolExecution: "not-implemented"`: no engine runs a capability tool
+yet, see [member capabilities](member-capabilities.md)), `handoffs`
 (the conversation handoff routes, delivery and transcript and prompt limits),
 `approvalExpiry` (the deadline field, its bounds and the fields that report an
 expiry), `memberInstructions` (the spawn field, the read route, limits, order and
@@ -42,7 +45,7 @@ Proposed, not advertised: [frontend tools](frontend-tools.md) specifies a future
 
 | Route | Purpose |
 | --- | --- |
-| `POST /v1/members` | Existing member creation contract (`requestId`, `engine`, `profile`), plus optional `instructions` and `instructionPacks` |
+| `POST /v1/members` | Existing member creation contract (`requestId`, `engine`, `profile`), plus optional `instructions` and `instructionPacks`, and an optional `capabilities` set within the profile's ceiling; a set above it is `400 capabilities_exceed_profile` |
 | `POST /v1/conversations` | Open an owned conversation (`conversationId`, `memberId`) |
 | `POST /v1/conversations/{conversationId}/requests` | Submit `{ "requestId": "UUID", "text": "exact input" }`, optionally with `approvalDeadlineSeconds` |
 | `GET /v1/conversations/{conversationId}/requests/{requestId}` | Reconcile status and original committed result; never invokes inference |
@@ -166,6 +169,13 @@ IDs in order.
   "next": null
 }
 ```
+
+A member that was spawned with [capabilities](member-capabilities.md) also has a
+`capabilities` object in the member listing and in the spawn response. A member
+without any has no such key. The portable client and `packages/client/openapi.json`
+do not carry `capabilities` yet: the client refuses the field on `createMember` and
+drops it from a member it reads. No engine runs a capability tool, so the field
+changes nothing a member does.
 
 | Parameter | Routes | Meaning |
 | --- | --- | --- |
