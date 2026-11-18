@@ -72,8 +72,9 @@ ALTER TABLE birbcrew_ts.profiles
 -- the same name could be registered again with a narrower ceiling, or with none and a provider
 -- key, under members that keep the set they were given. This migration adds no trigger for
 -- that. guard_profile_child_authority (037-named-child-targets.sql) already keeps every
--- registration for good and refuses a change to any of its columns but child_target_active,
--- and it compares whole rows, so the new column is covered. capabilities.test.ts pins that.
+-- registration for good and refuses every change to one except removing roles from
+-- child_target_active. It compares whole rows, so the new column is covered.
+-- capabilities.test.ts pins that.
 
 CREATE FUNCTION birbcrew_ts.reject_capability_change() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

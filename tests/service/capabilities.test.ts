@@ -450,9 +450,9 @@ test("the database binds a stored set to its member and ceiling, checks its shap
   await store.openConversation({ ownerId: g.ownerId, memberId: late.memberId, conversationId: randomUUID() });
   await assert.rejects(insert(g.ownerId, late.memberId, readOnly), { code: "23514", message: /before the member opens a conversation/ });
   // The registration's ceiling is as fixed as the member's set. Migration 37's guard on profiles
-  // holds this, not a trigger of this migration: it refuses a change to any column but the active
-  // child roles, and so to the ceiling, whether the change widens it, clears it or gives one to
-  // a registration that had none.
+  // holds this, not a trigger of this migration: it refuses every change to a registration except
+  // removing active child roles, and so any change to the ceiling, whether it widens it, clears
+  // it or gives one to a registration that had none.
   const unchanged = { code: "23514", message: /Profile authority cannot grow or change identity/ };
   for (const widened of [JSON.stringify({ ...ceiling, webSearch: {} }), null]) {
     await assert.rejects(pool.query("UPDATE birbcrew_ts.profiles SET capabilities=$2 WHERE name=$1 AND engine='pi'", [bounded, widened]), unchanged);

@@ -221,9 +221,9 @@ Triggers hold the rest:
   their sets. Migration 40 adds no trigger for this. Migration 37
   ([named child destinations](member-profiles.md#configure-named-child-destinations))
   already keeps every registration for good, with or without a ceiling, and
-  refuses a change to any of its columns except the list of active child roles.
-  Its guard compares whole rows, so it covers the ceiling column, and
-  `capabilities.test.ts` pins that it does.
+  refuses every change to a registration except taking roles off its list of
+  active child roles. Its guard compares whole rows, so it covers the ceiling
+  column, and `capabilities.test.ts` pins that it does.
 
 Whether the set is within the ceiling is decided in TypeScript only, as for
 standing grants.
@@ -348,6 +348,9 @@ some shell reads them as something other than a plain word:
   runs `cmd`. A card for the no-op `1=2` would otherwise offer a prefix that covers
   every command.
 - A first word that starts with `-` or `+`. `sh -c` reads it as shell options.
+- A first word that starts with `%`. bash and zsh read it as a job to bring to the
+  foreground (`%1` is `fg %1`) and never look for a program of that name; dash
+  runs the program. A `%` anywhere else is a plain character in all three.
 - A word that starts with `=`, or holds `==` or `:=`. zsh replaces `=name` with the
   path of a command at the start of a word and in the value of an assignment
   argument (`export a==ls`). This also refuses `pip install pkg==1.2.3`, which
@@ -599,6 +602,17 @@ would accept a registration this release made with one.
 A database from before migration 40 upgrades with no capabilities anywhere. Its
 members replay their spawn requests unchanged.
 
+The two migrations were numbered 32 and 33 while this work was in review, and
+took 40 and 41, the next free numbers, when it was merged with `main`. No release
+shipped them under the old numbers. A database that ran the branch then records
+versions 32 and 33 for these tables and none of `main`'s 27 to 31, so `migrate()`
+refuses it with `Migration 27 would apply after migration 33` and applies
+nothing. It needs a fresh database.
+
+[Frontend tools](frontend-tools.md#storage-and-rollout) plans its own migrations
+"after 039 (040 onward)". Those numbers are now these two, so that work starts
+at 042, or this one renumbers again if it lands second.
+
 ## Not built
 
 - **No engine offers or runs any tool in the catalog.** Nothing calls `classify`,
@@ -625,6 +639,13 @@ The executor:
 
 - Run the normalized arguments from the ledger, after `verifyStored`. Never the
   model's original text.
+- Start an admitted call once. `admit` answers `run: true` again to the execution
+  that already holds the call, because the ledger cannot tell a reply that was
+  lost from the same native call arriving a second time. So within one attempt
+  the executor must remember which calls it has started and never start a second
+  copy of one. The alternative, a ledger step that records the start, would turn
+  every lost `admit` reply into an `uncertain` effect; that choice is the
+  owner's (see the [open questions](#open-questions-for-the-repository-owner)).
 - Open every path beneath the workspace root and refuse a symbolic link that
   leaves it. The catalog's path checks are lexical.
 - Pass every path and query to a program after `--` or as the value of an option.
@@ -760,20 +781,27 @@ From the merge with `main`:
    39 as the newest schema version and now pins 41. That proof, which runs the
    accepted older application against the upgraded database, was not run with
    migrations 40 and 41 in place.
+7. **Migration numbers.** Frontend tools planned to start at 040. Whichever of
+   the two lands second renumbers (see [upgrade](#upgrade)).
+8. **A second `admit` by the same execution.** The ledger answers `run: true`
+   again, so that a lost reply does not strand an effect, and leaves it to the
+   executor not to start the call twice. A review suggested the ledger record
+   the start itself, at the price of an `uncertain` effect whenever an `admit`
+   reply is lost. Which is wanted?
 
 Raised when the foundation was built, and still open:
 
-7. The command splitter refuses `==` and `:=`, so `pip install pkg==1.2.3`
+9. The command splitter refuses `==` and `:=`, so `pip install pkg==1.2.3`
    always needs a card.
-8. A capability host pattern binds no scheme and no port, and a `GET` counts as
-   a read.
-9. A list of wrappers that a `command_prefix` must not end at, and binding the
-   working directory into a `command_prefix`, are described above and not built.
-10. Paths such as `.git`, `.github/workflows` and `.husky` get no special
+10. A capability host pattern binds no scheme and no port, and a `GET` counts as
+    a read.
+11. A list of wrappers that a `command_prefix` must not end at, and binding the
+    working directory into a `command_prefix`, are described above and not built.
+12. Paths such as `.git`, `.github/workflows` and `.husky` get no special
     treatment.
-11. What a restore does with a `waiting` call.
-12. How long private arguments and results are kept, and how they are erased.
-13. The ledger does not know a sealed conversation. This page now gives that
+13. What a restore does with a `waiting` call.
+14. How long private arguments and results are kept, and how they are erased.
+15. The ledger does not know a sealed conversation. This page now gives that
     check to the gate, with the turn's phase and the request's cancellation
     (see [what later work must hold to](#what-later-work-must-hold-to)). The
     owner may prefer the ledger to refuse it as well.
