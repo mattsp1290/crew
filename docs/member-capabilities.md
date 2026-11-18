@@ -148,14 +148,25 @@ than 32 patterns, still passes it.
 
 Triggers hold the rest:
 
-- A stored ceiling or set never changes.
-- A registration that has a ceiling is never deleted, truncated or renamed. A
-  member is checked against its ceiling once, at spawn; if the registration could
-  be removed, the same name could be registered again with a narrower ceiling, or
-  with none and a provider key, under members that keep their sets. A registration
-  without a ceiling can still be deleted.
+- A stored set never changes, and its row is never deleted.
 - A member's row is refused unless the member belongs to the row's owner and its
   profile registration has a ceiling.
+- A member's row is written with the member and never later: a member that has
+  opened a conversation is refused, as an instructions row is
+  ([member instructions](member-instructions.md)). Spawn writes the row in the
+  transaction that inserts the member, so this only stops a direct database
+  writer from giving an existing member a set its `member.spawned` row never
+  recorded.
+- A stored ceiling never changes, and a registration is never deleted, truncated
+  or renamed. A member is checked against its ceiling once, at spawn; if the
+  registration could be removed, the same name could be registered again with a
+  narrower ceiling, or with none and a provider key, under members that keep
+  their sets. Migration 40 adds no trigger for this. Migration 37
+  ([named child destinations](member-profiles.md#configure-named-child-destinations))
+  already keeps every registration for good, with or without a ceiling, and
+  refuses a change to any of its columns except the list of active child roles.
+  Its guard compares whole rows, so it covers the ceiling column, and
+  `capabilities.test.ts` pins that it does.
 
 Whether the set is within the ceiling is decided in TypeScript only, as for
 standing grants.

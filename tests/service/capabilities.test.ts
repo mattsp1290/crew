@@ -414,9 +414,14 @@ test("the database binds a stored set to its member and ceiling, checks its shap
   await assert.rejects(pool.query("UPDATE birbcrew_ts.member_capabilities SET capabilities=capabilities WHERE false"), { code: "23514" });
   await assert.rejects(pool.query("DELETE FROM birbcrew_ts.member_capabilities WHERE member_id=$1", [held.memberId]), { code: "23514" });
   await assert.rejects(pool.query("TRUNCATE birbcrew_ts.member_capabilities"), { code: "23514" });
+  // A set is written with its member: one that has opened a conversation never gains one.
+  const late = await store.spawn({ ownerId: g.ownerId, requestId: randomUUID(), engine: "pi", profile: bounded });
+  await store.openConversation({ ownerId: g.ownerId, memberId: late.memberId, conversationId: randomUUID() });
+  await assert.rejects(insert(g.ownerId, late.memberId, readOnly), { code: "23514", message: /before the member opens a conversation/ });
   // The registration's ceiling is as fixed as the member's set. Migration 37's guard on profiles
-  // answers first: it refuses a change to any column but the active child roles, and so to the
-  // ceiling, whether the change widens it, clears it or gives one to a registration that had none.
+  // holds this, not a trigger of this migration: it refuses a change to any column but the active
+  // child roles, and so to the ceiling, whether the change widens it, clears it or gives one to
+  // a registration that had none.
   const unchanged = { code: "23514", message: /Profile authority cannot grow or change identity/ };
   for (const widened of [JSON.stringify({ ...ceiling, webSearch: {} }), null]) {
     await assert.rejects(pool.query("UPDATE birbcrew_ts.profiles SET capabilities=$2 WHERE name=$1 AND engine='pi'", [bounded, widened]), unchanged);
@@ -569,7 +574,7 @@ test("migration 40 upgrades a v39 database without rewriting a table or waiting 
         AND c.relname<>'member_capabilities' ORDER BY 1,2`);
     assert.deepEqual(rows, [
       { relation: "members", mode: "AccessShareLock" }, { relation: "members", mode: "ShareRowExclusiveLock" },
-      { relation: "profiles", mode: "AccessExclusiveLock" }, { relation: "profiles", mode: "ShareRowExclusiveLock" },
+      { relation: "profiles", mode: "AccessExclusiveLock" },
       { relation: "tool_grants", mode: "ShareRowExclusiveLock" }, { relation: "turns", mode: "ShareRowExclusiveLock" },
     ]);
   } finally {

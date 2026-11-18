@@ -67,31 +67,19 @@ ALTER TABLE birbcrew_ts.profiles
         AND octet_length(capabilities::text) <= 16384
     ) IS TRUE) NOT VALID;
 
+-- A member is checked against its registration's ceiling once, at spawn. So a ceiling must
+-- never change, and a registration that has one must never be renamed or removed: otherwise
+-- the same name could be registered again with a narrower ceiling, or with none and a provider
+-- key, under members that keep the set they were given. This migration adds no trigger for
+-- that. guard_profile_child_authority (037-named-child-targets.sql) already keeps every
+-- registration for good and refuses a change to any of its columns but child_target_active,
+-- and it compares whole rows, so the new column is covered. capabilities.test.ts pins that.
+
 CREATE FUNCTION birbcrew_ts.reject_capability_change() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'Capabilities are fixed when they are first stored' USING ERRCODE = '23514';
 END;
 $$;
--- A member is checked against its registration's ceiling once, at spawn. So a ceiling never
--- changes, and a registration that has one is never renamed or removed: otherwise the same
--- name could be registered again with a narrower ceiling, or with none and a provider key,
--- under members that keep the set they were given.
-CREATE TRIGGER profiles_capabilities_fixed BEFORE UPDATE ON birbcrew_ts.profiles
-    FOR EACH ROW WHEN (OLD.capabilities IS DISTINCT FROM NEW.capabilities
-        OR (OLD.capabilities IS NOT NULL AND (OLD.name, OLD.engine) IS DISTINCT FROM (NEW.name, NEW.engine)))
-    EXECUTE FUNCTION birbcrew_ts.reject_capability_change();
-CREATE TRIGGER profiles_capabilities_kept BEFORE DELETE ON birbcrew_ts.profiles
-    FOR EACH ROW WHEN (OLD.capabilities IS NOT NULL) EXECUTE FUNCTION birbcrew_ts.reject_capability_change();
-CREATE FUNCTION birbcrew_ts.keep_profile_ceilings() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM birbcrew_ts.profiles WHERE capabilities IS NOT NULL) THEN
-        RAISE EXCEPTION 'A registration with a capability ceiling is kept' USING ERRCODE = '23514';
-    END IF;
-    RETURN NULL;
-END;
-$$;
-CREATE TRIGGER profiles_capabilities_not_truncated BEFORE TRUNCATE ON birbcrew_ts.profiles
-    FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_profile_ceilings();
 
 CREATE TABLE birbcrew_ts.member_capabilities (
     member_id uuid PRIMARY KEY,
@@ -122,17 +110,26 @@ CREATE TABLE birbcrew_ts.member_capabilities (
 -- The member must be visible to this lookup, belong to the row's owner, and name a profile
 -- registration that carries a ceiling. As in bind_audit_conversation (021-audit.sql), a
 -- member the lookup cannot see is refused here rather than left to the foreign key. Members
--- are immutable (001-members.sql), and a registration with a ceiling keeps it and stays, so
+-- are immutable (001-members.sql), and a registration keeps its ceiling and stays (037), so
 -- the binding holds. Whether the set is within the ceiling is decided by capabilities.ts in
 -- the transaction that inserts the member; no trigger repeats it.
+--
+-- A set is written with its member and never later: as for member instructions
+-- (029-member-instructions.sql), a member that has opened a conversation is refused. The row
+-- lock on the member makes a conversation opening at the same time wait for this insert, or
+-- this insert see it.
 CREATE FUNCTION birbcrew_ts.bind_member_capabilities() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM 1 FROM birbcrew_ts.members m
       JOIN birbcrew_ts.profiles p ON p.name = m.profile AND p.engine = m.engine
-     WHERE m.owner_id = NEW.owner_id AND m.member_id = NEW.member_id AND p.capabilities IS NOT NULL;
+     WHERE m.owner_id = NEW.owner_id AND m.member_id = NEW.member_id AND p.capabilities IS NOT NULL
+       FOR UPDATE OF m;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Member is missing, belongs to another owner, or its profile registers no capability ceiling'
             USING ERRCODE = '23503';
+    END IF;
+    IF EXISTS (SELECT 1 FROM birbcrew_ts.conversations WHERE owner_id = NEW.owner_id AND member_id = NEW.member_id) THEN
+        RAISE EXCEPTION 'Member capabilities are set before the member opens a conversation' USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
