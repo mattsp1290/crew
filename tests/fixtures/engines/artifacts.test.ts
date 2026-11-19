@@ -108,5 +108,5 @@ test("the locked official Codex packages launch the pinned Linux CLI", async () 
     assert.deepEqual([pkg.version, pkg.integrity, pkg.resolved, pkg.license], [pin.version, pin.integrity, pin.download, pin.license]);
   }
   const binary = new URL("node_modules/@openai/codex/bin/codex.js", root);
-  assert.equal(execFileSync(process.execPath, [binary.pathname,"--version"], {encoding:"utf8"}).trim(), "codex-cli 0.167.1");
+  assert.equal(execFileSync(process.execPath, [binary.pathname,"--version"], {encoding:"utf8"}).trim(), "codex-cli 0.169.0");
 });
