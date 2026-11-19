@@ -77,9 +77,15 @@ async function verify(s: Services, engines: Engine[], pass: (name: string) => vo
   const serviceFiles = engines.flatMap((e) => matrix[e].service.map((n) => "tests/service/" + n + ".test.ts"));
   await test(serviceFiles, env);
   // Closure, supervisor, and cancellation admit the engines their tests name, including Codex.
-  // A title filter drops the Pi closure tests, and a Codex filter matches nothing. Start the
-  // other workers for this stretch, then stop them before the selected engine's restart proof.
+  // A title filter drops the Pi closure tests, and a Codex filter matches nothing. The selected
+  // engine's BIRBCREW_PROOF_ENGINE would make fixture-profiles.mts omit the other drivers, so
+  // this process sees every driver, as the combined run does. Workers stay pinned to the engine
+  // they were started with. One file at a time: these files share that worker, and a streaming
+  // cancel would otherwise hold the provider while closure waits. Extra workers cover this
+  // stretch, then stop before the restart proof.
   const lane = ["tests/service/closure.test.ts", "tests/service/supervisor.test.ts", "tests/service/member-cancel.test.ts"];
+  const laneEnv = { ...env };
+  delete laneEnv.BIRBCREW_PROOF_ENGINE;
   const extras: Array<() => Promise<void>> = [];
   try {
     if (selected) {
@@ -91,7 +97,7 @@ async function verify(s: Services, engines: Engine[], pass: (name: string) => vo
         catch { return undefined; }
       }, "all member profiles");
     }
-    await test(lane, env);
+    for (const file of lane) await test([file], laneEnv);
   } finally { await Promise.all(extras.map((stop) => stop())); }
   pass("Selected service routes, native admission and recovery");
   const cases = [];
