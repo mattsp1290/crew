@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { verifyObserverProcesses } from "./member-observer-processes.mts";
@@ -30,8 +32,29 @@ async function execute(program: string, args: string[], env: NodeJS.ProcessEnv) 
   finally { process.off("SIGINT", kill); process.off("SIGTERM", kill); }
   if (code !== 0) throw new Error("Verification command failed: " + [program, ...args].join(" "));
 }
+function matchedTests(tap: string, files: readonly string[]) {
+  const ignored = new Set(files.flatMap((file) => [file, resolve(file)]));
+  const names = [];
+  for (const match of tap.matchAll(/^(?:ok|not ok) \d+ - (.*)$/gm)) {
+    const name = match[1].replace(/ # .*$/, "");
+    if (!ignored.has(name)) names.push(name);
+  }
+  return names;
+}
 async function test(paths: string[], env: NodeJS.ProcessEnv, pattern?: string) {
-  if (paths.length) await execute(process.execPath, ["--test", ...(pattern ? ["--test-name-pattern=" + pattern] : []), ...paths], env);
+  if (!paths.length) return;
+  if (!pattern) {
+    await execute(process.execPath, ["--test", ...paths], env);
+    return;
+  }
+  // A pattern that matches nothing still exits 0: Node reports the file itself as a passing test.
+  const report = join(tmpdir(), "crew-test-" + randomUUID() + ".tap");
+  try {
+    await execute(process.execPath, ["--test", "--test-name-pattern=" + pattern, "--test-reporter=spec", "--test-reporter=tap",
+      "--test-reporter-destination=stdout", "--test-reporter-destination=" + report, ...paths], env);
+    const names = matchedTests(await readFile(report, "utf8"), paths);
+    if (!names.length) throw new Error("Test name pattern matched no test: " + pattern);
+  } finally { await rm(report, { force: true }); }
 }
 
 async function verify(s: Services, engines: Engine[], pass: (name: string) => void, selected?: Engine, replayEvidence?: string) {
@@ -53,8 +76,23 @@ async function verify(s: Services, engines: Engine[], pass: (name: string) => vo
   pass("Locked packages, consumer clients, native SDK contracts and worker registration");
   const serviceFiles = engines.flatMap((e) => matrix[e].service.map((n) => "tests/service/" + n + ".test.ts"));
   await test(serviceFiles, env);
-  if (!selected) await test(["tests/service/closure.test.ts", "tests/service/supervisor.test.ts", "tests/service/member-cancel.test.ts"], env);
-  else if (selected !== "codex") await test(["tests/service/supervisor.test.ts"], env, "^" + selected + " ");
+  // Closure, supervisor, and cancellation admit the engines their tests name, including Codex.
+  // A title filter drops the Pi closure tests, and a Codex filter matches nothing. Start the
+  // other workers for this stretch, then stop them before the selected engine's restart proof.
+  const lane = ["tests/service/closure.test.ts", "tests/service/supervisor.test.ts", "tests/service/member-cancel.test.ts"];
+  const extras: Array<() => Promise<void>> = [];
+  try {
+    if (selected) {
+      for (const engine of ["pi", "claude", "codex"] as const) {
+        if (engine !== selected) extras.push(await s.worker(engine));
+      }
+      await until(async () => {
+        try { return await s.sql("SELECT count(*) FROM birbcrew_ts.profiles WHERE name='fixture.v1'") === "3" || undefined; }
+        catch { return undefined; }
+      }, "all member profiles");
+    }
+    await test(lane, env);
+  } finally { await Promise.all(extras.map((stop) => stop())); }
   pass("Selected service routes, native admission and recovery");
   const cases = [];
   for (const engine of engines) {
