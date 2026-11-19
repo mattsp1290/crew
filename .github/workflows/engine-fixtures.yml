@@ -9,6 +9,8 @@ on:
       - 'packages/pi-subagents/**'
       - 'scripts/build-native'
       - 'scripts/setup'
+      - 'scripts/verify'
+      - 'scripts/verify-members'
       - '.node-version'
       - 'tsconfig.json'
       - 'packages/client/**'
@@ -34,6 +36,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up the fixture toolchain
         run: scripts/setup --mode fixture
+      - name: Install pinned Beans
+        run: |
+          case "$(uname -m)" in
+            aarch64|arm64) asset=bn-linux-aarch64; sum=1781e4b56f7b323a6f509515895d6001edefb151f8a393f7d4004755b7e8ceed ;;
+            x86_64) asset=bn-linux-x86_64; sum=186a92639d957706c2a702c687dec6da22e916c0d6700e4e5cbcdce34b6e382e ;;
+            *) echo "Unsupported architecture" >&2; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/mattsp1290/beans/releases/download/v0.3.0/$asset" -o ".proof/bin/$asset"
+          echo "$sum  .proof/bin/$asset" | sha256sum -c -
+          install -m 755 ".proof/bin/$asset" .proof/bin/bn
+          rm -f ".proof/bin/$asset"
+          .proof/bin/bn --version | grep -qx 'bn v0.3.0'
       - name: Verify the fixture engine
         env:
           ENGINE: ${{ matrix.engine }}
