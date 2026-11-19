@@ -23,6 +23,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: engine-fixtures-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   fixture:
     name: fixture (${{ matrix.engine }})
@@ -33,7 +36,9 @@ jobs:
       matrix:
         engine: [claude, codex, pi]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Set up the fixture toolchain
         run: scripts/setup --mode fixture
       - name: Install pinned Beans
@@ -43,7 +48,7 @@ jobs:
             x86_64) asset=bn-linux-x86_64; sum=186a92639d957706c2a702c687dec6da22e916c0d6700e4e5cbcdce34b6e382e ;;
             *) echo "Unsupported architecture" >&2; exit 1 ;;
           esac
-          curl -fsSL "https://github.com/mattsp1290/beans/releases/download/v0.3.0/$asset" -o ".proof/bin/$asset"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "https://github.com/mattsp1290/beans/releases/download/v0.3.0/$asset" -o ".proof/bin/$asset"
           echo "$sum  .proof/bin/$asset" | sha256sum -c -
           install -m 755 ".proof/bin/$asset" .proof/bin/bn
           rm -f ".proof/bin/$asset"
@@ -51,6 +56,7 @@ jobs:
       - name: Verify the fixture engine
         env:
           ENGINE: ${{ matrix.engine }}
+          BIRBCREW_FIXTURE_EVIDENCE: ${{ runner.temp }}/fixture-evidence.json
         run: |
           case "$ENGINE" in
             claude|codex|pi) ;;

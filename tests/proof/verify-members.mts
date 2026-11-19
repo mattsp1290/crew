@@ -34,9 +34,13 @@ async function execute(program: string, args: string[], env: NodeJS.ProcessEnv) 
 }
 function matchedTests(tap: string, files: readonly string[]) {
   const ignored = new Set(files.flatMap((file) => [file, resolve(file)]));
+  const passed = Number(/^# pass (\d+)$/m.exec(tap)?.[1] ?? "0");
+  if (passed === 0) return [];
   const names = [];
   for (const match of tap.matchAll(/^(?:ok|not ok) \d+ - (.*)$/gm)) {
-    const name = match[1].replace(/ # .*$/, "");
+    const raw = match[1];
+    if (/ # (?:SKIP|TODO)\b/.test(raw)) continue;
+    const name = raw.replace(/ # .*$/, "");
     if (!ignored.has(name)) names.push(name);
   }
   return names;
@@ -44,7 +48,8 @@ function matchedTests(tap: string, files: readonly string[]) {
 async function test(paths: string[], env: NodeJS.ProcessEnv, pattern?: string) {
   if (!paths.length) return;
   if (!pattern) {
-    await execute(process.execPath, ["--test", ...paths], env);
+    const args = ["--test", ...(paths.length === 1 ? ["--test-concurrency=1"] : []), ...paths];
+    await execute(process.execPath, args, env);
     return;
   }
   // A pattern that matches nothing still exits 0: Node reports the file itself as a passing test.
@@ -86,19 +91,34 @@ async function verify(s: Services, engines: Engine[], pass: (name: string) => vo
   const lane = ["tests/service/closure.test.ts", "tests/service/supervisor.test.ts", "tests/service/member-cancel.test.ts"];
   const laneEnv = { ...env };
   delete laneEnv.BIRBCREW_PROOF_ENGINE;
+  const roster = ["pi", "claude", "codex"] as const;
   const extras: Array<() => Promise<void>> = [];
+  let laneError: unknown;
   try {
     if (selected) {
-      for (const engine of ["pi", "claude", "codex"] as const) {
+      for (const engine of roster) {
         if (engine !== selected) extras.push(await s.worker(engine));
       }
       await until(async () => {
-        try { return await s.sql("SELECT count(*) FROM birbcrew_ts.profiles WHERE name='fixture.v1'") === "3" || undefined; }
+        try { return await s.sql("SELECT count(*) FROM birbcrew_ts.profiles WHERE name='fixture.v1'") === String(roster.length) || undefined; }
         catch { return undefined; }
       }, "all member profiles");
     }
     for (const file of lane) await test([file], laneEnv);
-  } finally { await Promise.all(extras.map((stop) => stop())); }
+  } catch (error) { laneError = error; }
+  finally {
+    const stopped = await Promise.allSettled(extras.map((stop) => stop()));
+    const stopErrors = stopped.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (laneError !== undefined) {
+      if (stopErrors.length) {
+        const stopFailure = new AggregateError(stopErrors, "Extra fixture workers failed to stop");
+        if (laneError instanceof Error) laneError.cause = stopFailure;
+        else throw new AggregateError([laneError, stopFailure], "Lane failed and extra fixture workers failed to stop");
+      }
+      throw laneError;
+    }
+    if (stopErrors.length) throw new AggregateError(stopErrors, "Extra fixture workers failed to stop");
+  }
   pass("Selected service routes, native admission and recovery");
   const cases = [];
   for (const engine of engines) {
