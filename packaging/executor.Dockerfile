@@ -12,13 +12,13 @@ RUN case "$PYTHON_IMAGE" in *@sha256:*) ;; *) echo "Pin PYTHON_IMAGE by digest" 
 # The platform packages and their integrity values must match package-lock.json.
 RUN set -eu; \
     case "$TARGETARCH" in \
-      amd64) set -- linux-x64 x86_64-unknown-linux-musl qZteglyvMCj1QVymMyPyKdtw38HaXCv5gvw8WN+N0+JJstu3k/d8xiYj9ciL7OwFLhcujgP8bCGJgaREeqrHkw== ;; \
-      arm64) set -- linux-arm64 aarch64-unknown-linux-musl z13jj4X4GDk7CTd1kXHkhXC8Gj8zomd1jYsU2//0KjevbLelPxowWLSTqIcR1rarJCtzveBHsS8gR7B9pAWB0g== ;; \
+      amd64) set -- linux-x64 x86_64-unknown-linux-musl o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww== ;; \
+      arm64) set -- linux-arm64 aarch64-unknown-linux-musl NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg== ;; \
       *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     platform=$1; triple=$2; \
     python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
-      "https://registry.npmjs.org/@openai/codex/-/codex-0.167.1-$platform.tgz" /tmp/codex.tgz; \
+      "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-$platform.tgz" /tmp/codex.tgz; \
     printf '%s  /tmp/codex.tgz\n' "$(printf '%s' "$3" | base64 -d | od -An -v -tx1 | tr -d ' \n')" \
       | sha512sum -c -; \
     mkdir /opt/codex; \

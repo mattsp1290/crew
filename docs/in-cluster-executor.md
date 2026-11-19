@@ -60,7 +60,7 @@ Forge reads receipts through Crew's contract module, and its web client keeps it
 What the image contains:
 - The locked Python dependencies, installed under `/venv`.
 - Debian `git`, `gh`, `openssh-client` and `tini`. Their versions are not pinned; they are whatever the base image's Debian release serves when you build.
-- Codex, from the npm platform package that `package-lock.json` pins for `@openai/codex` 0.167.1. The build checks the package against the lock file's sha512 value. It leaves out the package's voice resources, and Node is not installed.
+- Codex, from the npm platform package that `package-lock.json` pins for `@openai/codex` 0.169.0. The build checks the package against the lock file's sha512 value. It leaves out the package's voice resources, and Node is not installed.
 
 The image runs as UID/GID 10001 (`crew`, home `/home/crew`), with `tini` as its entrypoint and the activity worker as its default command. The build context contains only `pyproject.toml`, `uv.lock` and `src/birbcrew`.
 
@@ -126,8 +126,8 @@ Kubernetes Secret volumes usually expose keys as root-owned symbolic links, whic
   - Settings: reviewer selection, the `claude` path rules, absolute paths, key-file permissions and contents, the existing `$HOME/.profile` reader, the startup checks (including that they do not echo file contents or configuration values), the socket wait (missing, regular file, stale and listening), and `--sock` reaching the proxy argv for authoring and interruption.
   - Worker wiring with a stand-in Temporal worker: SIGTERM ends the wait, and the 660-second grace period is passed. The drain itself is Temporal's `graceful_shutdown_timeout`; this repository does not test it.
   - Reviews, using a local scripted model and a local HTTP stub: approved; changes requested; malformed, missing or conflicting verdicts; provider HTTP and connection failures; timeouts; a missing or invalid key; a leftover attestation file that is absent, expired or invalid having no effect; a single request with no retry; closing the provider client; and heartbeats while a request is pending.
-- **Image runs.** The image was built for linux/arm64 and for linux/amd64 (emulated). Both were run with `--user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp`. Both reported `codex-cli 0.167.1`, git 2.47.3, gh 2.46.0 and OpenSSH 10.0p2, and imported `birbcrew.execution.worker`.
-- **Two-container Codex on linux/arm64.**
+- **Image runs.** The image was built for linux/arm64 and for linux/amd64 (emulated) at Codex 0.167.1. Both were run with `--user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp`. Both reported `codex-cli 0.167.1`, git 2.47.3, gh 2.46.0 and OpenSSH 10.0p2, and imported `birbcrew.execution.worker`. A later linux/arm64 build at `@openai/codex` 0.169.0 was run once with the same flags and reported `codex-cli 0.169.0`, git 2.47.3, gh 2.46.0 and OpenSSH 10.0p2, and imported `birbcrew.execution.worker`. The linux/amd64 image was not rebuilt at 0.169.0.
+- **Two-container Codex on linux/arm64 at Codex 0.167.1.**
   - A foreground `codex app-server --listen unix://` container served Crew's `Daemon` client from a second container. The containers shared `/tmp`.
   - With `CODEX_HOME` shared as well, the client worked through both the default link and `--sock`.
   - Without `CODEX_HOME`, it worked through `--sock` and failed through the default link.
@@ -135,12 +135,13 @@ Kubernetes Secret volumes usually expose keys as root-owned symbolic links, whic
   - Three server starts with fresh volumes and the same `CODEX_HOME` path used the same socket name.
   - The startup socket wait accepted a live server, and the `Daemon` client worked right after it. It rejected the socket file left behind when the server was SIGKILLed.
 - **SSH lookup.** With `HOME` pointed elsewhere, OpenSSH in the image still looked for identities under `/home/crew/.ssh`.
-- **Codex prototype.** A separate Codex 0.167.1 container prototype established three facts: what `daemon start` does, that the server rejects a volume mounted at `/tmp/codex-daemon-10001`, and where device sign-in stores its credential.
+- **Codex prototype.** A separate Codex 0.167.1 container prototype established three facts: what `daemon start` does, that the server rejects a volume mounted at `/tmp/codex-daemon-10001`, and where device sign-in stores its credential. That prototype was not repeated at 0.169.0.
 
 ## What is not verified
 
 - A live OpenCode Go review. In particular, it is unproven that `glm-5.3-flash` accepts the strict tool, `tool_choice: required` and `max_completion_tokens` through OpenCode Go.
 - A live Codex subscription turn in a container, including `codex login --device-auth` and authoring with the checkout mounted read-only.
+- The linux/amd64 executor image at Codex 0.169.0, and the two-container app-server checks at that version.
 - `git push`, `gh pr create` and `gh` authentication from the container.
 - Whether Codex's bundled bubblewrap sandbox can run tool commands with all capabilities dropped. The server logs that bubblewrap is not on `PATH` and falls back to its bundled copy.
 - Kubernetes scheduling, termination, volume ownership and Secret handling.
