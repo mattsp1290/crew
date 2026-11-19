@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { verifyObserverProcesses } from "./member-observer-processes.mts";
@@ -30,8 +32,34 @@ async function execute(program: string, args: string[], env: NodeJS.ProcessEnv) 
   finally { process.off("SIGINT", kill); process.off("SIGTERM", kill); }
   if (code !== 0) throw new Error("Verification command failed: " + [program, ...args].join(" "));
 }
+function matchedTests(tap: string, files: readonly string[]) {
+  const ignored = new Set(files.flatMap((file) => [file, resolve(file)]));
+  const passed = Number(/^# pass (\d+)$/m.exec(tap)?.[1] ?? "0");
+  if (passed === 0) return [];
+  const names = [];
+  for (const match of tap.matchAll(/^(?:ok|not ok) \d+ - (.*)$/gm)) {
+    const raw = match[1];
+    if (/ # (?:SKIP|TODO)\b/.test(raw)) continue;
+    const name = raw.replace(/ # .*$/, "");
+    if (!ignored.has(name)) names.push(name);
+  }
+  return names;
+}
 async function test(paths: string[], env: NodeJS.ProcessEnv, pattern?: string) {
-  if (paths.length) await execute(process.execPath, ["--test", ...(pattern ? ["--test-name-pattern=" + pattern] : []), ...paths], env);
+  if (!paths.length) return;
+  if (!pattern) {
+    const args = ["--test", ...(paths.length === 1 ? ["--test-concurrency=1"] : []), ...paths];
+    await execute(process.execPath, args, env);
+    return;
+  }
+  // A pattern that matches nothing still exits 0: Node reports the file itself as a passing test.
+  const report = join(tmpdir(), "crew-test-" + randomUUID() + ".tap");
+  try {
+    await execute(process.execPath, ["--test", "--test-name-pattern=" + pattern, "--test-reporter=spec", "--test-reporter=tap",
+      "--test-reporter-destination=stdout", "--test-reporter-destination=" + report, ...paths], env);
+    const names = matchedTests(await readFile(report, "utf8"), paths);
+    if (!names.length) throw new Error("Test name pattern matched no test: " + pattern);
+  } finally { await rm(report, { force: true }); }
 }
 
 async function verify(s: Services, engines: Engine[], pass: (name: string) => void, selected?: Engine, replayEvidence?: string) {
@@ -53,8 +81,44 @@ async function verify(s: Services, engines: Engine[], pass: (name: string) => vo
   pass("Locked packages, consumer clients, native SDK contracts and worker registration");
   const serviceFiles = engines.flatMap((e) => matrix[e].service.map((n) => "tests/service/" + n + ".test.ts"));
   await test(serviceFiles, env);
-  if (!selected) await test(["tests/service/closure.test.ts", "tests/service/supervisor.test.ts", "tests/service/member-cancel.test.ts"], env);
-  else if (selected !== "codex") await test(["tests/service/supervisor.test.ts"], env, "^" + selected + " ");
+  // Closure, supervisor, and cancellation admit the engines their tests name, including Codex.
+  // A title filter drops the Pi closure tests, and a Codex filter matches nothing. The selected
+  // engine's BIRBCREW_PROOF_ENGINE would make fixture-profiles.mts omit the other drivers, so
+  // this process sees every driver, as the combined run does. Workers stay pinned to the engine
+  // they were started with. One file at a time: these files share that worker, and a streaming
+  // cancel would otherwise hold the provider while closure waits. Extra workers cover this
+  // stretch, then stop before the restart proof.
+  const lane = ["tests/service/closure.test.ts", "tests/service/supervisor.test.ts", "tests/service/member-cancel.test.ts"];
+  const laneEnv = { ...env };
+  delete laneEnv.BIRBCREW_PROOF_ENGINE;
+  const roster = ["pi", "claude", "codex"] as const;
+  const extras: Array<() => Promise<void>> = [];
+  let laneError: unknown;
+  try {
+    if (selected) {
+      for (const engine of roster) {
+        if (engine !== selected) extras.push(await s.worker(engine));
+      }
+      await until(async () => {
+        try { return await s.sql("SELECT count(*) FROM birbcrew_ts.profiles WHERE name='fixture.v1'") === String(roster.length) || undefined; }
+        catch { return undefined; }
+      }, "all member profiles");
+    }
+    for (const file of lane) await test([file], laneEnv);
+  } catch (error) { laneError = error; }
+  finally {
+    const stopped = await Promise.allSettled(extras.map((stop) => stop()));
+    const stopErrors = stopped.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (laneError !== undefined) {
+      if (stopErrors.length) {
+        const stopFailure = new AggregateError(stopErrors, "Extra fixture workers failed to stop");
+        if (laneError instanceof Error) laneError.cause = stopFailure;
+        else throw new AggregateError([laneError, stopFailure], "Lane failed and extra fixture workers failed to stop");
+      }
+      throw laneError;
+    }
+    if (stopErrors.length) throw new AggregateError(stopErrors, "Extra fixture workers failed to stop");
+  }
   pass("Selected service routes, native admission and recovery");
   const cases = [];
   for (const engine of engines) {
