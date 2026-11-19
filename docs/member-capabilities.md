@@ -718,7 +718,7 @@ were not read again then. Codex is now `@openai/codex` and `@openai/codex-sdk`
 | Several calls in one batch can be denied while one is deferred | **The recorded "Refuted" does not hold.** One deferred call with an allowed or a denied sibling is deferred, reported and resumed, and both results reach the next model request once. Two deferred calls in one message drop the first, with no result and no error | The Claude binary still holds `returned permissionDecision=defer but ... tool calls are in this batch; ignoring (defer is solo-only — siblings would be orphaned on resume)`. No probe reached that line. `@ag-ui/claude-agent-sdk/README.md:142` still says durable deferral supports one tool call at a time. The runs are Switchboard pull request 69, assumption A6, at CLI 2.1.323 and at 2.1.306 | Three or more calls in one message were not run. The handler of a gated tool must still refuse to run when no decision reached it |
 | A deferred call of an in-process SDK MCP tool can be resumed | **Refuted** | The binary holds `tool_deferred_unavailable`; `@ag-ui/claude-agent-sdk/dist/index.mjs:2309` throws "This SDK cannot restore a deferred in-process MCP tool before startup"; `README.md:141`: such servers "register too late for replay" | This is why the design uses a loopback MCP server for Claude |
 | The Codex app-server can hold a dynamic tool call | **Confirmed** for the protocol: `item/tool/call` is a request with an id that the client answers. It is experimental and is not reachable through `@openai/codex-sdk` | Types generated from the installed binary with `codex app-server generate-ts --experimental`: `ServerRequest.ts`, `v2/DynamicToolCallParams.ts`, `v2/ThreadStartParams.ts` (`dynamicTools`). `@openai/codex-sdk/dist/index.js:178` runs `exec --experimental-json`, and the binary holds `dynamic tool calls are not supported in exec mode`. Crew's trusted lane already uses the app-server: `src/service/trusted-codex.ts:137-139` | |
-| The Codex app-server has no timeout shorter than Crew's | **Answered for holds up to 171 s** at Codex 0.169.0. Holds of 121, 151 and 171 seconds completed the turn, including 171 seconds after resume with the tool in a namespace. A 15-second handler bound ended the transport with `handler-timeout`. No dynamic-tool type has a timeout field | The binary still holds only `dynamic tool call was cancelled before receiving a response`. Crew waits 120 s for a live approval (`src/service/codex-live.ts:35`) and lets a live call last at most 170 s (`src/service/codex-calls.ts:60`). The runs are Switchboard pull request 69, assumption A1, linux/arm64, one run each | Holds longer than 171 seconds, and Linux x64, were not run. The member lane still uses `exec`, not this app-server hold |
+| The Codex app-server has no timeout shorter than Crew's | **Answered for holds up to 171 s** at Codex 0.169.0. Holds of 121, 151 and 171 seconds completed the turn, including 171 seconds after resume with the tool in a namespace. The probe transport, given its own 15-second handler bound, ended that control with `handler-timeout`; that bound is the probe's, and the 0.169.0 dynamic-tool types have no timeout field. | The binary still holds only `dynamic tool call was cancelled before receiving a response`. Crew waits 120 s for a live approval (`src/service/codex-live.ts:35`) and lets a live call last at most 170 s (`src/service/codex-calls.ts:60`). The runs are Switchboard pull request 69, assumption A1, linux/arm64, one run each | Holds longer than 171 seconds, and Linux x64, were not run. The member lane still uses `exec`, not this app-server hold |
 | Pi has no blocking hook for built-in tools | **Refuted**: Pi has one | `@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts:999` ("Fired before a tool executes. Can block."), `:1109` (`ToolCallEventResult` with `block`), `:1266` (`on("tool_call", ...)`); `docs/extensions.md:975`, `:3253` ("`tool_call` errors block the tool (fail-safe)"); `@earendil-works/pi-agent-core/dist/types.d.ts:279` (`beforeToolCall`) | Whether a handler that waits for minutes is cut off |
 | Landlock does not restrict UDP | **Confirmed** for the launcher and for one kernel | `native/member-launch.c:228` handles network rights `3` (TCP bind and connect) for Codex and none for Claude or Pi; its seccomp filter refuses `setsid` and `setpgid` for every engine and, for Pi alone, every socket (`:158-163`). A probe on Linux 6.8.0 (Landlock ABI 4) with those rights handled and no rule: TCP connect failed with `EACCES`; UDP bind, send, receive and connect succeeded | Other kernels. The executor's sandbox must refuse UDP itself, as the design says |
 
@@ -738,8 +738,9 @@ Three answers change the design's reasons, not its direction:
   ([native confinement](verification.md#native-confinement)), so a built-in
   shell could not run there at all.
 - Claude can defer one call in a message while a sibling is allowed or denied,
-  and both results reach the model. Two deferred calls in one message lose the
-  first. The earlier statement that any sibling blocks deferral does not hold.
+  and each result reaches the next model request once. Two deferred calls in
+  one message lose the first. The earlier statement that any sibling blocks
+  deferral does not hold.
 - A dynamic tool call needs the Codex app-server, not the SDK that members use
   today. Members do reach Crew's one profile tool through an MCP server in exec
   mode (`src/service/codex.ts`, `mcp_servers`), where a call can be held for as
@@ -747,9 +748,13 @@ Three answers change the design's reasons, not its direction:
 
 Switchboard's host-tool probes (pull request 69,
 `docs/qualification/host-tool-probes.md`; linux/arm64, one run per scenario,
-synthetic model servers) re-read the cited SDK places at Claude SDK 0.3.323 and
-Codex 0.169.0, and repeated the Claude runs at 0.3.306. Four differences from
-the 2026-11-12 record:
+synthetic model servers) re-read the cited Claude and Codex SDK places at
+Claude SDK 0.3.323 and Codex 0.169.0. At 0.3.323 the `sdk.d.ts` line numbers
+moved; the line numbers in the table remain the 2026-11-12 read of Crew's
+0.3.306 pin. The vendored AG-UI adapter lines and the Landlock row were not
+re-read. The Claude runs were repeated at SDK 0.3.306 / CLI 2.1.306 with MCP
+SDK 1.32.2, where Crew pins MCP SDK 1.29.0. Four differences from the
+2026-11-12 record:
 
 1. An SDK `query()` counts as print mode. A deferring hook ends the query with
    `stop_reason: "tool_deferred"`. This was open above. It held at 0.3.323 and
@@ -767,15 +772,17 @@ the 2026-11-12 record:
 The published `@openai/codex-sdk` 0.169.0 `dist/index.js` and `dist/index.d.ts`
 are the same bytes as 0.167.1. The SDK still starts `codex exec --experimental-json`
 at `dist/index.js:178` and does not pass `--trust`. The 0.169.0 CLI adds
-`--trust` (openai/codex pull request 60041): `codex exec` keeps project-local
-configuration and project MCP servers disabled in an untrusted directory even
-with `--sandbox workspace-write`, and it warns when a project-local layer is
-disabled. `--trust` saves that project's trust for later chats, including MCP
-commands outside the sandbox. Members already pass `sandboxMode: "read-only"`
-and their MCP server through `--config` overrides, and they refuse ambient
-project files, so this bump does not change `src/service/codex.ts`. The 0.169.0
-release also bundles SQLite 3.54. Rollout and `state_5.sqlite` bytes were not
-compared between the two binaries.
+`--trust` on `codex exec` and `codex review` (openai/codex pull request 60041).
+`codex exec` keeps project-local configuration and the project's MCP servers
+disabled in an untrusted directory even with `--sandbox workspace-write`, and
+it warns when that project layer is disabled. `--trust` saves trust for this
+project and for future chats, including MCP commands outside the sandbox. The
+grant persists with `--ephemeral`, does not override a project already marked
+untrusted, and cannot be combined with `--ignore-user-config`. Members already
+pass `sandboxMode: "read-only"` and their MCP server through `--config`
+overrides, and they refuse ambient project files, so this bump does not change
+`src/service/codex.ts`. The 0.169.0 release also bundles SQLite 3.54. Rollout
+and `state_5.sqlite` bytes were not compared between the two binaries.
 
 These are engine seams, and the engines are to move behind Switchboard adapters
 (see [beside what else is on main](#beside-what-else-is-on-main)). Whoever wires a

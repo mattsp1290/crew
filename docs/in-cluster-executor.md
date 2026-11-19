@@ -127,7 +127,7 @@ Kubernetes Secret volumes usually expose keys as root-owned symbolic links, whic
   - Worker wiring with a stand-in Temporal worker: SIGTERM ends the wait, and the 660-second grace period is passed. The drain itself is Temporal's `graceful_shutdown_timeout`; this repository does not test it.
   - Reviews, using a local scripted model and a local HTTP stub: approved; changes requested; malformed, missing or conflicting verdicts; provider HTTP and connection failures; timeouts; a missing or invalid key; a leftover attestation file that is absent, expired or invalid having no effect; a single request with no retry; closing the provider client; and heartbeats while a request is pending.
 - **Image runs.** The image was built for linux/arm64 and for linux/amd64 (emulated) at Codex 0.167.1. Both were run with `--user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp`. Both reported `codex-cli 0.167.1`, git 2.47.3, gh 2.46.0 and OpenSSH 10.0p2, and imported `birbcrew.execution.worker`. A later linux/arm64 build at `@openai/codex` 0.169.0 was run once with the same flags and reported `codex-cli 0.169.0`, git 2.47.3, gh 2.46.0 and OpenSSH 10.0p2, and imported `birbcrew.execution.worker`. The linux/amd64 image was not rebuilt at 0.169.0.
-- **Two-container Codex on linux/arm64.**
+- **Two-container Codex on linux/arm64 at Codex 0.167.1.**
   - A foreground `codex app-server --listen unix://` container served Crew's `Daemon` client from a second container. The containers shared `/tmp`.
   - With `CODEX_HOME` shared as well, the client worked through both the default link and `--sock`.
   - Without `CODEX_HOME`, it worked through `--sock` and failed through the default link.
