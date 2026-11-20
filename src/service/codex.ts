@@ -346,10 +346,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       if (subscriptionHandle?.kind === "ok") subscriptionHandle.value.dispose();
       await adapter?.close();
     } finally {
-      for (const start of launched) {
-        start.child.kill("SIGKILL");
-        start.child.stdin?.end();
-      }
+      for (const start of launched) start.child.kill("SIGKILL");
       await Promise.all(launched.map((start) => start.processExit));
     }
   }
@@ -380,7 +377,7 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
   });
   const stdin = child.stdin, stdout = child.stdout, stderr = child.stderr;
   if (!stdin || !stdout || !stderr) throw new Error("The host launcher returned no channel");
-  // Abort kills the process. stdin stays open until close() returns, and a late EPIPE must not escape.
+  // The turn never ends stdin. Closing it races a frame the adapter has already queued. A dead process returns EPIPE, which stays on the stream.
   for (const stream of [stdin, stdout, stderr]) stream.on("error", () => {});
   const stopChild = () => { child.kill("SIGKILL"); };
   const onAbort = () => stopChild();
@@ -402,13 +399,19 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
       },
       write(frame: Uint8Array, writeSignal: AbortSignal) {
         if (writeSignal.aborted) return Promise.reject(writeSignal.reason);
+        if (!stdin.writable) return Promise.reject(new Error("Codex launcher stdin is closed"));
         return new Promise<void>((resolve, reject) => {
           const abort = () => reject(writeSignal.reason);
           writeSignal.addEventListener("abort", abort, { once: true });
-          stdin.write(frame, (error) => {
+          try {
+            stdin.write(frame, (error) => {
+              writeSignal.removeEventListener("abort", abort);
+              if (error) reject(error); else resolve();
+            });
+          } catch (error) {
             writeSignal.removeEventListener("abort", abort);
-            if (error) reject(error); else resolve();
-          });
+            reject(error);
+          }
         });
       },
     },
