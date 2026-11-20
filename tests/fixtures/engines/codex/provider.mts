@@ -19,6 +19,15 @@ function send(response: ServerResponse, type: string, value: Record<string, unkn
   response.write("event: " + type + "\ndata: " + JSON.stringify({ type, ...value }) + "\n\n");
 }
 
+/** The app-server records assistant text only from output_text deltas. A done item alone completes the turn with no text. */
+function assistantMessage(response: ServerResponse, text: string, phase: "commentary" | "final_answer", outputIndex = 0) {
+  const id = "msg_" + randomUUID();
+  const item = { type: "message", id, role: "assistant", phase, content: [{ type: "output_text", text }] };
+  send(response, "response.output_item.added", { output_index: outputIndex, item: { ...item, content: [] } });
+  send(response, "response.output_text.delta", { output_index: outputIndex, item_id: id, content_index: 0, delta: text });
+  send(response, "response.output_item.done", { output_index: outputIndex, item });
+}
+
 export async function startProvider(onFailure = () => {},
   onRequest?: (prompt:string, instructions:string, messages:string, continuation:boolean) => void,
   dynamicNamespace?: string, usage?: (request: number) => Record<string, unknown>) {
@@ -68,9 +77,9 @@ export async function startProvider(onFailure = () => {},
       }
       const gate = streamGate(prompt);
       const echoCall = prompt?.startsWith("review ") === true;
+      let messageIndex = 0;
       const commentary = (text: string, phase: "commentary" | "final_answer") =>
-        send(response,"response.output_item.done",{item:{type:"message",id:"msg_" + randomUUID(),role:"assistant",
-          phase,content:[{type:"output_text",text}]}});
+        assistantMessage(response, text, phase, messageIndex++);
       if (gate) {
         for (const [index,text] of ["first"," second"].entries()) {
           const item = {type:"message",id:"msg_" + randomUUID(),role:"assistant",
@@ -107,8 +116,7 @@ export async function startProvider(onFailure = () => {},
         else if (prompt === "recall") text = "recalled " + (memory ?? "none");
         else if (prompt === "wait") text = "waiting";
         else throw new Error("Unexpected Codex fixture input");
-        send(response, "response.output_item.done", { item: { type:"message", id:"msg_" + randomUUID(),
-          role:"assistant", phase:prompt === "wait" ? "commentary" : "final_answer", content:[{type:"output_text", text}] } });
+        commentary(text, prompt === "wait" ? "commentary" : "final_answer");
         if (prompt === "wait") return;
       }
       send(response, "response.completed", { response: { id,

@@ -60,6 +60,14 @@ test("Codex resumes the pinned rollout, rejects damaged or untrusted native stor
 
 const request = z.object({ tools: z.array(z.looseObject({ type: z.string(), name: z.string().optional() })).default([]),
   input: z.array(z.looseObject({ type: z.string(), call_id: z.string().optional(), output: z.unknown().optional() })) });
+function assistantText(res: ServerResponse, text: string) {
+  const id = "msg_" + randomUUID();
+  const item = { type: "message", id, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text }] };
+  send(res, "response.output_item.added", { output_index: 0, item: { ...item, content: [] } });
+  send(res, "response.output_text.delta", { output_index: 0, item_id: id, content_index: 0, delta: text });
+  send(res, "response.output_item.done", { output_index: 0, item });
+}
+
 function send(res: ServerResponse, type: string, value: object) {
   res.write("event: " + type + "\ndata: " + JSON.stringify({ type, ...value }) + "\n\n");
 }
@@ -99,8 +107,7 @@ test("Codex uses per-turn subscription credentials for the same native thread wi
       const id = "resp_" + randomUUID();
       res.writeHead(200, { "content-type": "text/event-stream" });
       send(res, "response.created", { response: { id } });
-      send(res, "response.output_item.done", { item: { type: "message", id: "msg_" + randomUUID(),
-        role: "assistant", phase: "final_answer", content: [{type: "output_text", text: marker}] } });
+      assistantText(res, marker);
       send(res, "response.completed", { response: { id, usage: {input_tokens: 1, output_tokens: 1, total_tokens: 2} } });
       res.end();
     } catch (error) { res.destroy(); t.diagnostic(error instanceof Error ? error.message : "Bad subscription request"); }
@@ -162,8 +169,7 @@ test("actual Codex image reads are confined to the conversation on first invocat
           arguments: JSON.stringify({ path: target }) } });
       } else {
         outputs.push(result.output);
-        send(res, "response.output_item.done", { item: { type: "message", id: "msg_" + randomUUID(), role: "assistant",
-          phase: "final_answer", content: [{ type: "output_text", text: "inspected" }] } });
+        assistantText(res, "inspected");
       }
       send(res, "response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
       res.end();
@@ -223,8 +229,7 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
         name: tool, call_id, arguments: JSON.stringify({ operation_id: operation }) } });
       else {
         captured.push(JSON.stringify(result.output));
-        send(res, "response.output_item.done", { item: { type: "message", role: "assistant", phase: "final_answer", id: "msg_" + randomUUID(),
-          content: [{ type: "output_text", text: "settled" }] } });
+        assistantText(res, "settled");
       }
       send(res, "response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
       res.end();
@@ -279,8 +284,7 @@ test("request_user_input is declined when no person is attached", { timeout: 40_
           arguments: JSON.stringify([{ id: "q1", question: "Continue?" }]) } });
       } else {
         assert.match(JSON.stringify(answered.output), /No person is attached/);
-        send(res, "response.output_item.done", { item: { type: "message", role: "assistant", phase: "final_answer", id: "msg_" + randomUUID(),
-          content: [{ type: "output_text", text: "declined" }] } });
+        assistantText(res, "declined");
       }
       send(res, "response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
       res.end();

@@ -86,10 +86,20 @@ for (const provider of ["anthropic-api", "openai-api", "chatgpt-subscription"] a
         ["content_block_stop", { index: 0 }], ["message_delta", { delta: { stop_reason: answer ? "end_turn" : "tool_use" }, usage: { output_tokens: 10 } }], ["message_stop", {}],
       ]);
       const id = "resp_" + randomUUID();
-      const response = stream([["response.created", { response: { id } }], ["response.output_item.done", { item: answer ?
-        { type: "message", id: "msg_" + randomUUID(), role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: answer }] } :
-        { type: "function_call", call_id: "call_" + operation, namespace: "mcp__birbcrew", name: "record_work_item", arguments: JSON.stringify(args) } }],
-        ["response.completed", { response: { id, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } }]], answer ? undefined : () => { proposalReaderClosed = true; });
+      const messageId = "msg_" + randomUUID();
+      const item = answer
+        ? { type: "message", id: messageId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: answer }] }
+        : { type: "function_call", call_id: "call_" + operation, namespace: "mcp__birbcrew", name: "record_work_item", arguments: JSON.stringify(args) };
+      const frames: [string, object][] = [["response.created", { response: { id } }]];
+      if (answer) frames.push(
+        ["response.output_item.added", { output_index: 0, item: { ...item, content: [] } }],
+        ["response.output_text.delta", { output_index: 0, item_id: messageId, content_index: 0, delta: answer }],
+      );
+      frames.push(
+        ["response.output_item.done", { output_index: 0, item }],
+        ["response.completed", { response: { id, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } }],
+      );
+      const response = stream(frames, answer ? undefined : () => { proposalReaderClosed = true; });
       if (subscription && !answer) response.headers.set("x-codex-turn-state", turnState);
       return response;
     };
