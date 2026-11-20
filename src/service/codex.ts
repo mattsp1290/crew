@@ -29,7 +29,7 @@ const legacyCheckpoint = z.strictObject({
   state: z.strictObject({ rollout: z.string() }).passthrough(),
 });
 const checkpointSchema = z.strictObject({
-  version: z.literal(2), engine: z.literal("codex"), state: z.strictObject({
+  version: z.literal(1), engine: z.literal("codex"), state: z.strictObject({
     threadId: uuid, nativeId: uuid, memberId: uuid, ownerDigest: z.hash("sha256"), model: z.string(),
     requestId: uuid, session: sessionSchema, fingerprint: fingerprintSchema.nullable(),
     priorTotal: z.record(z.string(), z.unknown()).nullable(),
@@ -159,6 +159,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   const threadId = uuid.parse(input.threadId), requestId = uuid.parse(input.runId), memberId = uuid.parse(profile.memberId);
   const ownerDigest = hash(profile.ownerId);
   if (!isAbsolute(profile.stateDir) || !profile.model || !input.text || Buffer.byteLength(input.text) > turnTextBytes) throw new Error("Invalid Codex member input");
+  // The stored envelope stays version 1: domain.checkpointSchema rejects any other version, so a
+  // host-adapter turn would never commit. A pre-adapter checkpoint is the one whose state names a rollout.
   if (input.checkpoint !== null && legacyCheckpoint.safeParse(input.checkpoint).success) {
     throw new Error("Codex checkpoint predates the host adapter");
   }
@@ -318,7 +320,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     const priorUsage = prior ? (prior.priorTotal === null || baseline === null ? undefined : baseline) : null;
     return {
       text,
-      checkpoint: { version: 2, engine: "codex", state: {
+      checkpoint: { version: 1, engine: "codex", state: {
         threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
         session: segment.session, fingerprint: fingerprint.value, priorTotal: total,
       } },

@@ -14,7 +14,7 @@ await runCodexTurn({
       const answered = Promise.withResolvers<{ text: string; isError: boolean }>();
       process.send?.({
         kind: "call", threadId: call.pending.target.session.opaque, arguments: call.arguments,
-        resume: { version: 2, engine: "codex", state: {
+        resume: { version: 1, engine: "codex", state: {
           threadId, nativeId: call.pending.target.session.opaque, memberId, ownerDigest, model: "gpt-5.4", requestId: runId,
           session: call.pending.target.session, fingerprint: null, priorTotal: null,
         } },

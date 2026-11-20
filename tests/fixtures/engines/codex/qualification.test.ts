@@ -15,7 +15,7 @@ const callMessage = z.object({
   kind: z.literal("call"),
   threadId: z.uuid(),
   arguments: z.strictObject({ operation_id: z.uuid(), note: z.literal("private fixture note") }),
-  resume: z.object({ version: z.literal(2), engine: z.literal("codex") }).passthrough(),
+  resume: z.object({ version: z.literal(1), engine: z.literal("codex") }).passthrough(),
 });
 
 for (const decision of ["approve", "deny", "interrupt"] as const) {

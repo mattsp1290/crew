@@ -19,14 +19,22 @@ export async function createFixture(onFailure: () => void) {
           subscriber.next({ type: E.RUN_STARTED, threadId, runId });
           const prompt = messages.at(-1)?.content;
           if (typeof prompt !== "string") throw new Error("Invalid fixture prompt");
+          const messageId = runId + "/reply";
+          let started = false;
+          // Publish each delta as it arrives. The wait prompt never finishes the native turn, and the
+          // consumer cancels only after it has seen the text.
           const result = await runCodexTurn({
             threadId, runId, text: prompt, checkpoint: sessions.get(threadId) ?? null, signal,
+            onText(delta) {
+              if (!started) {
+                subscriber.next({ type: E.TEXT_MESSAGE_START, messageId, role: "assistant" });
+                started = true;
+              }
+              subscriber.next({ type: E.TEXT_MESSAGE_CONTENT, messageId, delta });
+            },
           }, { ownerId: "fixture-owner", memberId, stateDir: root, model: "gpt-5.4", baseUrl: provider.url });
           sessions.set(threadId, result.checkpoint);
-          const messageId = runId + "/reply";
-          subscriber.next({ type: E.TEXT_MESSAGE_START, messageId, role: "assistant" });
-          subscriber.next({ type: E.TEXT_MESSAGE_CONTENT, messageId, delta: result.text });
-          subscriber.next({ type: E.TEXT_MESSAGE_END, messageId });
+          if (started) subscriber.next({ type: E.TEXT_MESSAGE_END, messageId });
           subscriber.next({ type: E.RUN_FINISHED, threadId, runId });
         }
         void respond().catch(() => subscriber.next({ type: E.RUN_ERROR, message: signal.aborted ? "Cancelled" : "Native turn failed" }))
