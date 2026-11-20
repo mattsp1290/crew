@@ -248,6 +248,8 @@ int main(int argc, char **argv) {
         permit(rules, home, private, 0);
         permit(rules, scratch, read | list, 0);
         const char *sqlite = getenv("BIRBCREW_NATIVE_SQLITE_HOME"), *logs = getenv("BIRBCREW_NATIVE_LOG_DIR");
+        if (sqlite && sqlite[0] != '/') return 126;
+        if (logs && logs[0] != '/') return 126;
         if (sqlite) permit(rules, sqlite, private, 0);
         if (logs) permit(rules, logs, private, 0);
         port(rules, getenv("BIRBCREW_NATIVE_PROVIDER_PORT"));

@@ -23,19 +23,21 @@ export async function runLiveTool(
   const signal = AbortSignal.any([input.signal, stopped.signal]);
   const nativeThread = Promise.withResolvers<string>();
   const workflowId = "birbcrew-ts/member/" + member.memberId + "/conversation/" + member.conversationId;
-  let delivery: { approvalId: string; text: string } | undefined;
+  const deliveries = new Map<string, { approvalId: string; text: string }>();
   let active = false;
   const hold: CodexHold = {
     tool,
-    answer: (call, turn) => answer(pool, temporal, launch, workflowId, tool, signal, turn, nativeThread.promise, discloseCallId, call, () => active, (value) => { active = value; }, (value) => { delivery = value; }, () => stopped.abort()),
+    answer: (call, turn) => answer(pool, temporal, launch, workflowId, tool, signal, turn, nativeThread.promise, discloseCallId, call, () => active, (value) => { active = value; }, deliveries, () => stopped.abort()),
   };
   try {
     return await run({
       ...input, signal, hold,
       onThreadStarted(id) { nativeThread.resolve(id); },
-      async onToolDelivered(text) {
-        if (!delivery || delivery.text !== text) throw new Error("Native SDK result differs from the returned tool result");
-        await confirmDelivery(pool, launch, delivery.approvalId);
+      async onToolDelivered(nativeCallId, text) {
+        const pending = deliveries.get(nativeCallId);
+        if (!pending || pending.text !== text) throw new Error("Native SDK result differs from the returned tool result");
+        await confirmDelivery(pool, launch, pending.approvalId);
+        deliveries.delete(nativeCallId);
       },
     });
   } finally {
@@ -48,7 +50,7 @@ async function answer(
   pool: Pool, temporal: TemporalSettings, launch: Launch, workflowId: string, tool: DeferredTool,
   signal: AbortSignal, turn: AbortSignal, nativeThread: Promise<string>, discloseCallId: (id: string) => Promise<void>,
   call: CodexToolCall, isActive: () => boolean, setActive: (value: boolean) => void,
-  setDelivery: (value: { approvalId: string; text: string }) => void, stop: () => void,
+  deliveries: Map<string, { approvalId: string; text: string }>, stop: () => void,
 ) {
   if (isActive()) throw new Error("This invocation already has a tool call");
   setActive(true);
@@ -58,6 +60,8 @@ async function answer(
     if (threadId !== call.pending.target.session.opaque) throw new Error("Unexpected native thread");
     if (call.name !== tool) throw new Error("Unexpected native Codex tool");
     await discloseCallId(call.pending.target.nativeToolCallId);
+    const visible = modelVisibleCallId(call.pending.target.nativeToolCallId);
+    if (visible) await discloseCallId(visible);
     const deadline = Date.now() + 120_000;
     const approval = await proposeLive(pool, launch, {
       threadId, nativeCallId: call.pending.target.nativeToolCallId, toolName: tool, args: call.arguments,
@@ -79,15 +83,23 @@ async function answer(
       if (result.kind === "interrupted") break;
       if (result.kind !== "pending" && "nativeCallId" in result) {
         const text = resultText(result);
-        setDelivery({ approvalId: approval.approvalId, text });
+        deliveries.set(call.pending.target.nativeToolCallId, { approvalId: approval.approvalId, text });
         return codexToolContinuation(call.pending.target, text, result.kind !== "recorded" && result.kind !== "answered");
       }
       await delay(75, undefined, { signal: callSignal });
     }
     throw new Error("Native tool decision expired or interrupted");
-  } catch {
+  } catch (error) {
     await interruptLive(pool, launch);
     stop();
-    throw new Error("Native tool call interrupted");
+    throw new Error("Native tool call interrupted", { cause: error });
   } finally { setActive(false); }
+}
+
+/** The adapter's ledger id is a JSON list whose third entry is the id the model can write back. */
+function modelVisibleCallId(id: string) {
+  try {
+    const parts = JSON.parse(id);
+    return Array.isArray(parts) && typeof parts[2] === "string" && parts[2] !== "" ? parts[2] : undefined;
+  } catch { return undefined; }
 }

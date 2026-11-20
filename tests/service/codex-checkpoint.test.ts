@@ -4,7 +4,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runCodexTurn } from "../../src/service/codex.ts";
+import { codexPinnedConfigArgs, runCodexTurn } from "../../src/service/codex.ts";
+
+test("Codex launcher config keeps plugins, apps, goals, and image generation off", () => {
+  assert.deepEqual([...codexPinnedConfigArgs], [
+    "-c", "features.plugins=false", "-c", "features.apps=false", "-c", "features.goals=false",
+    "-c", "features.image_generation=false", "-c", "features.code_mode=false",
+    "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
+  ]);
+});
 
 test("a pre-switch Codex checkpoint closes before the host adapter opens", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-checkpoint-"));

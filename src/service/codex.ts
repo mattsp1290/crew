@@ -9,7 +9,7 @@ import { codexSubscriptionEndpoint } from "./accounts.ts";
 import { codexExecutable } from "./codex-executable.ts";
 import { redact } from "./diagnostics.ts";
 import { turnTextBytes } from "./domain.ts";
-import { codexUsage, type SegmentUsage } from "./usage-capture.ts";
+import { codexAdapterTotal, codexUsage, type SegmentUsage } from "./usage-capture.ts";
 
 const uuid = z.uuid();
 const hash = (data: string) => createHash("sha256").update(data).digest("hex");
@@ -48,7 +48,7 @@ interface CodexInput {
   projectContext?: string;
   onText?: (text: string) => void | Promise<void>;
   onThreadStarted?: (nativeId: string) => void | Promise<void>;
-  onToolDelivered?: (text: string) => void | Promise<void>;
+  onToolDelivered?: (nativeCallId: string, text: string) => void | Promise<void>;
   hold?: CodexHold;
 }
 export interface CodexProfile {
@@ -75,14 +75,15 @@ export function codexToolContinuation(target: CodexToolCall["pending"]["target"]
   };
 }
 
-/** Today's exec lane does not intercept `request_user_input`; the binary owns it. The host lane declines it. */
+/** The host lane declines `request_user_input`. A payload that is not a list of identified questions is refused. */
 function declineUserInput(call: CodexToolCall) {
-  const questions = Array.isArray(call.arguments) ? call.arguments : [];
+  if (!Array.isArray(call.arguments) || call.arguments.length === 0) throw new Error("Unexpected native Codex tool");
   const answers: Record<string, { answers: string[] }> = {};
-  for (const question of questions) {
-    if (question && typeof question === "object" && "id" in question && typeof question.id === "string") {
-      answers[question.id] = { answers: ["No person is attached."] };
+  for (const question of call.arguments) {
+    if (!question || typeof question !== "object" || !("id" in question) || typeof question.id !== "string" || question.id === "") {
+      throw new Error("Unexpected native Codex tool");
     }
+    answers[question.id] = { answers: ["No person is attached."] };
   }
   return {
     formatVersion: 1 as const, kind: "tool" as const,
@@ -171,7 +172,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   const endpoint = canonicalEndpoint(profile.baseUrl ?? (profile.apiKey ? "https://api.openai.com/v1" : codexSubscriptionEndpoint));
   const url = new URL(endpoint);
   const loopbackRelay = url.hostname === "127.0.0.1";
-  if (profile.baseUrl && !loopbackRelay) throw new Error("Expected a scoped loopback endpoint");
+  if (profile.baseUrl && (!loopbackRelay || url.protocol !== "http:" || url.port === "")) throw new Error("Expected a scoped loopback endpoint");
   const form = profile.apiKey || subscription ? "bearer" as const : "none" as const;
   const envKey = subscription ? "BIRBCREW_CODEX_BEARER" : "CODEX_API_KEY";
   const variables: Record<string, string> = {
@@ -217,6 +218,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   if (opened.kind === "error") throw codexTurnFailure(opened.error.code, opened.error.message);
   const adapter = opened.value;
   const answered = new Map<string, string>();
+  const observerStop = new AbortController();
+  const turnSignal = AbortSignal.any([input.signal, observerStop.signal]);
   let published = 0, observerError: unknown, observed = Promise.resolve();
   const subscriptionHandle = adapter.events.subscribe((event) => {
     observed = observed.then(async () => {
@@ -227,15 +230,18 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       }
       if (event.kind !== "tool-delivery") return;
       const text = answered.get(event.target.nativeToolCallId);
-      if (text !== undefined) await input.onToolDelivered?.(text);
-    }).catch((error: unknown) => { observerError ??= error; });
+      if (text === undefined) return;
+      await input.onToolDelivered?.(event.target.nativeToolCallId, text);
+    }).catch((error: unknown) => { observerError ??= error; observerStop.abort(); });
   });
   const recordIntent = (_identity: unknown, signal: AbortSignal) => { signal.throwIfAborted(); };
+  const failedObserver = () => { if (observerError) throw observerError; };
   try {
     if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
-    let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: input.signal });
+    let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: turnSignal });
     let announced = false;
     while (segment.kind === "pending" || (segment.kind === "complete" && !announced)) {
+      failedObserver();
       if (!announced && (segment.kind === "pending" || segment.kind === "complete")) {
         announced = true;
         if (prior && segment.session.opaque !== prior.nativeId) throw new Error("Unexpected Codex thread identity");
@@ -244,33 +250,37 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       if (segment.kind !== "pending") break;
       const answers = [];
       for (const call of segment.calls) {
+        failedObserver();
         if (call.name === "request_user_input") answers.push(declineUserInput(call));
         else if (input.hold && call.name === input.hold.tool) {
-          const answer = await input.hold.answer(call, input.signal);
+          const answer = await input.hold.answer(call, turnSignal);
           const data = answer.outcome.result.kind === "ok" ? answer.outcome.result.value.data : answer.outcome.result.error.data;
           const text = data && typeof data === "object" && "text" in data && typeof data.text === "string" ? data.text : undefined;
           if (text !== undefined) answered.set(call.pending.target.nativeToolCallId, text);
           answers.push(answer);
         } else throw new Error("Unexpected native Codex tool");
       }
-      segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: input.signal });
+      failedObserver();
+      segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: turnSignal });
     }
     await observed;
-    if (observerError) throw observerError;
+    failedObserver();
     if (segment.kind !== "complete") throw codexTurnFailure(segment.error.code, segment.error.message);
     if (!segment.text || Buffer.byteLength(segment.text) > 65_536) throw new Error("Incomplete native Codex turn");
     const fingerprintApi = adapter.capabilities.fingerprint;
     if (fingerprintApi.kind !== "supported" || fingerprintApi.api.validity !== "segment-end") throw new Error("Codex history fingerprint is unavailable");
-    const fingerprint = await fingerprintApi.api.read(input.signal);
+    const fingerprint = await fingerprintApi.api.read(turnSignal);
     if (fingerprint.kind === "error") throw codexTurnFailure(fingerprint.error.code, fingerprint.error.message);
-    const total = usageTotal(segment.usage.native.data);
+    const total = codexAdapterTotal(segment.usage.native.data);
+    const baseline = prior ? codexAdapterTotal(prior.priorTotal) : null;
+    const priorUsage = prior && prior.priorTotal !== null && baseline === null ? undefined : baseline;
     return {
       text: segment.text,
       checkpoint: { version: 2, engine: "codex", state: {
         threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
         session: segment.session, fingerprint: fingerprint.value, priorTotal: total,
       } },
-      usage: codexUsage(total, prior?.priorTotal ?? null, profile.model),
+      usage: codexUsage(total, priorUsage, profile.model),
     };
   } finally {
     if (subscriptionHandle.kind === "ok") subscriptionHandle.value.dispose();
@@ -278,16 +288,17 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   }
 }
 
-function usageTotal(data: unknown): Record<string, unknown> | null {
-  if (!data || typeof data !== "object" || !("total" in data)) return null;
-  const total = data.total;
-  return total && typeof total === "object" ? { ...total } : null;
-}
+/** Features the previous driver forced off. The host adapter does not emit these, and 0.169.0 defaults the first four on. */
+export const codexPinnedConfigArgs = [
+  "-c", "features.plugins=false", "-c", "features.apps=false", "-c", "features.goals=false",
+  "-c", "features.image_generation=false", "-c", "features.code_mode=false",
+  "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
+] as const;
 
 function borrowLauncher(launcher: string, request: { executable: string; args: readonly string[]; cwd: string; env: Readonly<Record<string, string>> },
   signal: AbortSignal, port: string, sqliteHome: string, logDir: string) {
   if (signal.aborted) throw signal.reason;
-  const child = spawn(launcher, request.args.slice(1), {
+  const child = spawn(launcher, [...request.args.slice(1), ...codexPinnedConfigArgs], {
     cwd: request.cwd, stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...request.env, BIRBCREW_NATIVE_BINARY: request.executable, BIRBCREW_NATIVE_PARENT: String(process.pid),
@@ -297,6 +308,11 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
   });
   const stdin = child.stdin, stdout = child.stdout, stderr = child.stderr;
   if (!stdin || !stdout || !stderr) throw new Error("The host launcher returned no channel");
+  const stopChild = () => { child.kill("SIGKILL"); stdin.end(); };
+  const onAbort = () => stopChild();
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  child.once("exit", () => signal.removeEventListener("abort", onAbort));
   return {
     processExit: new Promise((resolve) => { child.once("exit", resolve); child.once("error", resolve); }),
     channel: {

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
 import { z } from "zod";
-import { codexToolContinuation, runCodexTurn, type CodexToolCall } from "../../../../src/service/codex.ts";
+import { codexPinnedConfigArgs, codexToolContinuation, runCodexTurn, type CodexToolCall } from "../../../../src/service/codex.ts";
 import { startProvider } from "./provider.mts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==", "base64");
@@ -86,6 +86,10 @@ test("Codex uses per-turn subscription credentials for the same native thread wi
       for (const child of children) {
         const args = await readFile(`/proc/${child}/cmdline`);
         assert.ok(tokens.every(token => !args.includes(token)), "Subscription credential exposed in native argv");
+        for (let i = 0; i < codexPinnedConfigArgs.length; i += 2) {
+          assert.ok(args.includes(codexPinnedConfigArgs[i + 1]), "Pinned Codex config missing from native argv");
+        }
+        assert.ok(tokens.every(token => !codexPinnedConfigArgs.some(arg => arg.includes(token))));
       }
       const body = z.object({
         store: z.literal(false), stream: z.literal(true), model: z.literal("gpt-5.4"), input: z.array(z.unknown()).min(1),
@@ -243,7 +247,7 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
     operation = randomUUID();
     outcome = value;
     const r = await runCodexTurn({ threadId, runId: operation, text: "record " + operation, checkpoint, signal: t.signal,
-      hold, onToolDelivered: text => { confirmation.push(text); } }, profile);
+      hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile);
     checkpoint = r.checkpoint;
     assert.equal(r.text, "settled");
     assert.equal(calls.at(-1)?.thread, r.checkpoint.state.nativeId);
@@ -255,7 +259,7 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   operation = randomUUID();
   tool = "undeclared_private_tool";
   await assert.rejects(runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
-    checkpoint, signal: t.signal, hold, onToolDelivered: text => { confirmation.push(text); } }, profile), /Codex native turn failed|Unexpected native Codex tool/);
+    checkpoint, signal: t.signal, hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile), /Codex native turn failed|Unexpected native Codex tool/);
   assert.equal(calls.length, 2);
   assert.deepEqual(confirmation, [receipt, denied]);
 });

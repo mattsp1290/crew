@@ -41,14 +41,12 @@ fixture providers (`tests/service/usage-capture.test.ts`).
 
 Two of these needed a correction:
 
-- **Codex reports a running total, not the turn's usage.** The SDK's type comment
-  says the usage is "during the turn", but CLI 0.167.1 reports the total for the whole
-  native thread, carried across resumed turns. Against a fixture whose calls used 100,
-  200 and 300 input tokens, three turns reported 100, 300 and 600. The rollout that the
-  Codex checkpoint pins by SHA-256 holds the same total in its last `token_count`
-  event. So before a turn, Crew reads that total from the prior rollout, and after the
-  turn it records the new total minus the old one. If the prior rollout cannot be read,
-  or any count goes down, the segment is `unknown`.
+- **Codex reports a running total, not the turn's usage.** The host adapter's
+  cumulative `token-usage.total` counts the whole native thread, carried across resumed
+  turns. Against a fixture whose calls used 100, 200 and 300 input tokens, three turns
+  reported 100, 300 and 600. Crew stores that total on the checkpoint as `priorTotal`
+  and records the new total minus the previous one. A missing total, or any count that
+  goes down, leaves the segment `unknown`.
 - **A count of zero input means nothing was reported.** pi-ai and the Codex CLI fill
   usage with zeros when a provider sends none. A model call always reads some input, so
   a segment whose input total is zero is recorded as `unknown`, never as zero. Pi's
@@ -265,11 +263,8 @@ Which model is priced matters, so each engine's model was checked:
 
 - **Claude.** The CLI's `system:init` message names the model the main loop runs, which
   is the profile's model. Usage covers that loop only, so the two match.
-- **Codex.** `turn.completed` names no model. The rollout that Crew already reads and pins
-  by SHA-256 after each turn has a `turn_context` entry after each `task_started`
-  naming the model the CLI requested; Crew takes the turn's, and none when the turn's
-  entries disagree. The CLI keeps no record of the model name the API answered with, so
-  the requested name is the one the operator prices.
+- **Codex.** The host adapter does not name the model that answered. Crew prices the
+  profile model, which is the name the member was launched with.
 - **Pi.** pi-ai sets `responseModel` when the provider names a model other than the one
   requested, as a router or a fallback does. Crew records the model that answered, and
   none when the segment's calls disagree, so a routed call is priced as the model that
@@ -293,7 +288,7 @@ The [trusted-context lane](trusted-application-context.md) recorded no usage bef
 change, for three reasons:
 
 - Its drivers returned only text and a checkpoint (`trusted-native.ts`, `trusted-pi.ts`,
-  `trusted-claude.ts`, `trusted-codex.ts`).
+  `trusted-claude.ts`). The Codex trusted lane has been removed.
 - Its runner, `runTrustedRequest`, runs in the embedding backend's process, not the
   supervisor host, which was the one place rows were written.
 - A ledger row needed a `native_launches` row (migration 31's foreign key), which
@@ -303,9 +298,7 @@ change, for three reasons:
 Each trusted driver now returns what its SDK reported, through the same capture
 functions as the member lane: Pi the replies the host relayed to its confined worker for
 the request; Claude the sum of the request's queries, one per tool round trip, and
-`unknown` if any query reported nothing usable; Codex the running total in the rollout
-before and after the turn, since the app-server reports no per-turn usage, and the
-turn's model from the same rollout. `runTrustedRequest` writes one row per trusted
+`unknown` if any query reported nothing usable. `runTrustedRequest` writes one row per trusted
 request with the same writer, after the native turn returns and before the reply
 commits, priced from the operator's table like any other row. It reads
 `BIRBCREW_USAGE_PRICES_PATH` in the embedding process, once; pass a table as its fifth
