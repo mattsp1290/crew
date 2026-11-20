@@ -129,6 +129,31 @@ export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Pr
   } finally { await transport.close(); }
 }
 
+/** Publishes the first delta of an assistant item immediately and holds the rest until the item changes. */
+function codexTranscript(onText?: (text: string) => void | Promise<void>) {
+  let transcript = "", itemId = "", pending = "", opened = false;
+  const publish = async (text: string) => {
+    if (!text) return;
+    transcript += text;
+    if (Buffer.byteLength(transcript) > 65_536) throw new Error("Codex reply exceeds limit");
+    await onText?.(text);
+  };
+  return {
+    async delta(id: string, text: string) {
+      if (id !== itemId) {
+        if (opened) await publish(pending);
+        itemId = id;
+        pending = "";
+        opened = false;
+      }
+      if (!opened) { opened = true; await publish(text); }
+      else pending += text;
+    },
+    async finish() { await publish(pending); pending = ""; },
+    text: () => transcript,
+  };
+}
+
 async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
   input.signal.throwIfAborted();
   const threadId = uuid.parse(input.threadId), requestId = uuid.parse(input.runId), memberId = uuid.parse(profile.memberId);
@@ -200,78 +225,58 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   let adapter: OpenedAdapter | undefined;
   let subscriptionHandle: ReturnType<OpenedAdapter["events"]["subscribe"]> | undefined;
   try {
-  const opened = await codexHostAdapter.open({
-    launch: { kind: "spawn", spawn: (request, signal) => {
-      const started = borrowLauncher(launcher, request, signal, port, sqliteHome, logDir);
-      launched.push(started);
-      return { processExit: started.processExit, channel: started.channel };
-    } },
-    environment: {
-      variables,
-      nativeConfig: {
-        home, cwd: scratch, executable: codexExecutable(), sqliteHome, logDir, providerId: "crew",
-        loopbackRelay, sandbox: "read-only",
-        ...(form === "bearer" && { envKey, ...(subscription && { headerEnv: { "ChatGPT-Account-Id": "BIRBCREW_CODEX_ACCOUNT" } }) }),
+    const opened = await codexHostAdapter.open({
+      launch: { kind: "spawn", spawn: (request, signal) => {
+        const started = borrowLauncher(launcher, request, signal, port, sqliteHome, logDir);
+        launched.push(started);
+        return { processExit: started.processExit, channel: started.channel };
+      } },
+      environment: {
+        variables,
+        nativeConfig: {
+          home, cwd: scratch, executable: codexExecutable(), sqliteHome, logDir, providerId: "crew",
+          loopbackRelay, sandbox: "read-only",
+          ...(form === "bearer" && { envKey, ...(subscription && { headerEnv: { "ChatGPT-Account-Id": "BIRBCREW_CODEX_ACCOUNT" } }) }),
+        },
       },
-    },
-    instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
-    ...(input.hold && { tools: [{
-      name: input.hold.tool,
-      description: input.hold.tool === "record_work_item" ? "Ask the owner to record a work item." : "Ask the owner to choose the next step.",
-      inputSchema: toolSchema(input.hold.tool, requestId),
-    }] }),
-    builtInTools: ["view_image", "request_user_input"],
-    subagents: "off",
-    route,
-    ...(prior && { resume: { session: prior.session, ...(prior.fingerprint && { expectedHistory: prior.fingerprint }) } }),
-  }, input.signal);
-  if (opened.kind === "error") throw codexTurnFailure(opened.error.code, opened.error.message);
-  adapter = opened.value;
-  const answered = new Map<string, string>();
-  const observerStop = new AbortController();
-  const turnSignal = AbortSignal.any([input.signal, observerStop.signal]);
-  let transcript = "", itemId = "", pending = "", observerError: unknown, observed = Promise.resolve();
-  let openedItem = false;
-  const publishText = async (text: string) => {
-    if (!text) return;
-    transcript += text;
-    if (Buffer.byteLength(transcript) > 65_536) throw new Error("Codex reply exceeds limit");
-    await input.onText?.(text);
-  };
-  subscriptionHandle = adapter.events.subscribe((event) => {
-    observed = observed.then(async () => {
-      if (event.kind === "text-delta" && event.text) {
-        if (event.nativeItemId !== itemId) {
-          if (openedItem) await publishText(pending);
-          itemId = event.nativeItemId;
-          pending = "";
-          openedItem = false;
-        }
-        // The first delta is published immediately. A turn that never completes, such as a
-        // cancellation fixture, still reaches the observer. Later deltas of the same item are one
-        // further item, so a long reply does not store one native item per token.
-        if (!openedItem) {
-          openedItem = true;
-          await publishText(event.text);
-        } else pending += event.text;
-      }
-      if (event.kind !== "tool-delivery") return;
-      const text = answered.get(event.target.nativeToolCallId);
-      if (text === undefined) return;
-      await input.onToolDelivered?.(event.target.nativeToolCallId, text);
-      await input.hold?.delivered?.(event.target.nativeToolCallId, text);
-    }).catch((error: unknown) => { observerError ??= error; observerStop.abort(); });
-  });
-  const recordIntent = (_identity: unknown, signal: AbortSignal) => { signal.throwIfAborted(); };
-  const failedObserver = () => { if (observerError) throw observerError; };
-  if (subscriptionHandle.kind === "ok") {
-    void subscriptionHandle.value.ended.then((reason) => {
-      if (reason === "overflow" || reason === "listener-error") {
-        observerError ??= new Error("Codex event stream ended");
-        observerStop.abort();
-      }
+      instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
+      ...(input.hold && { tools: [{
+        name: input.hold.tool,
+        description: input.hold.tool === "record_work_item" ? "Ask the owner to record a work item." : "Ask the owner to choose the next step.",
+        inputSchema: toolSchema(input.hold.tool, requestId),
+      }] }),
+      builtInTools: ["view_image", "request_user_input"],
+      subagents: "off",
+      route,
+      ...(prior && { resume: { session: prior.session, ...(prior.fingerprint && { expectedHistory: prior.fingerprint }) } }),
+    }, input.signal);
+    if (opened.kind === "error") throw codexTurnFailure(opened.error.code, opened.error.message);
+    adapter = opened.value;
+    const answered = new Map<string, string>();
+    const observerStop = new AbortController();
+    const turnSignal = AbortSignal.any([input.signal, observerStop.signal]);
+    const reply = codexTranscript(input.onText);
+    let observerError: unknown, observed = Promise.resolve();
+    subscriptionHandle = adapter.events.subscribe((event) => {
+      observed = observed.then(async () => {
+        if (event.kind === "text-delta" && event.text) await reply.delta(event.nativeItemId, event.text);
+        if (event.kind !== "tool-delivery") return;
+        const text = answered.get(event.target.nativeToolCallId);
+        if (text === undefined) return;
+        await input.onToolDelivered?.(event.target.nativeToolCallId, text);
+        await input.hold?.delivered?.(event.target.nativeToolCallId, text);
+      }).catch((error: unknown) => { observerError ??= error; observerStop.abort(); });
     });
-  }
+    const recordIntent = (_identity: unknown, signal: AbortSignal) => { signal.throwIfAborted(); };
+    const failedObserver = () => { if (observerError) throw observerError; };
+    if (subscriptionHandle.kind === "ok") {
+      void subscriptionHandle.value.ended.then((reason) => {
+        if (reason === "overflow" || reason === "listener-error") {
+          observerError ??= new Error("Codex event stream ended");
+          observerStop.abort();
+        }
+      });
+    }
     if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
     let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: turnSignal });
     let announced = false;
@@ -298,12 +303,12 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       failedObserver();
       segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: turnSignal });
     }
-    await publishText(pending);
-    pending = "";
+    await reply.finish();
     await observed;
     failedObserver();
     if (segment.kind !== "complete") throw codexTurnFailure(segment.error.code, segment.error.message);
-    if (!transcript || !transcript.endsWith(segment.text) || Buffer.byteLength(transcript) > 65_536) throw new Error("Incomplete native Codex turn");
+    const text = reply.text();
+    if (!text || !text.endsWith(segment.text) || Buffer.byteLength(text) > 65_536) throw new Error("Incomplete native Codex turn");
     const fingerprintApi = adapter.capabilities.fingerprint;
     if (fingerprintApi.kind !== "supported" || fingerprintApi.api.validity !== "segment-end") throw new Error("Codex history fingerprint is unavailable");
     const fingerprint = await fingerprintApi.api.read(turnSignal);
@@ -312,7 +317,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     const baseline = prior ? codexAdapterTotal(prior.priorTotal) : null;
     const priorUsage = prior ? (prior.priorTotal === null || baseline === null ? undefined : baseline) : null;
     return {
-      text: transcript,
+      text,
       checkpoint: { version: 2, engine: "codex", state: {
         threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
         session: segment.session, fingerprint: fingerprint.value, priorTotal: total,
