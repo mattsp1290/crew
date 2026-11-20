@@ -14,8 +14,8 @@ import { overBudget } from "./usage.ts";
  * user turn through the normal request path. */
 export const handoffLimits = {
   // Every engine takes the prompt outside its command line: Codex on stdin (the Codex SDK writes it
-  // there), Claude over IPC to the worker and then on the Claude CLI's stdin, Pi in process. So one
-  // budget fits every target engine.
+  // there), Claude over IPC to the worker and then on the Claude CLI's stdin, Pi in the first frame
+  // on its confined worker's channel. So one budget fits every target engine.
   transcriptBytes: turnTextBytes,
 } as const;
 
