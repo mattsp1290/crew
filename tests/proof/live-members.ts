@@ -91,16 +91,19 @@ async function journey(account: LiveAccount, services: Services, signal: AbortSi
           nativeId: z.uuid(), ownerDigest: z.hash("sha256"),
           session: z.object({ formatVersion: z.literal(1), opaque: z.uuid() }),
           fingerprint: z.object({ kind: z.literal("checkpoint"), formatVersion: z.literal(1), sessionOpaque: z.string(), opaque: z.string() }),
+          priorTotal: z.object({ input_tokens: z.number().nonnegative() }).passthrough().nullable(),
         }),
       }).parse(row.checkpoint);
       assert.equal(stored.state.session.opaque, stored.state.nativeId);
       assert.equal(stored.state.fingerprint.sessionOpaque, stored.state.nativeId);
-      const [, bytes, digest] = history.parse(JSON.parse(stored.state.fingerprint.opaque));
-      return { nativeId: stored.state.nativeId, ownerDigest: stored.state.ownerDigest, bytes, digest };
+      const [, bytes, digest, turnId] = history.parse(JSON.parse(stored.state.fingerprint.opaque));
+      return { nativeId: stored.state.nativeId, ownerDigest: stored.state.ownerDigest, bytes, digest, turnId, priorTotal: stored.state.priorTotal };
     });
     const [a, b] = checkpoints;
     assert.equal(a.nativeId, b.nativeId);
     assert.equal(a.ownerDigest, b.ownerDigest);
+    assert.ok(a.priorTotal && b.priorTotal);
+    assert.ok(a.priorTotal.input_tokens <= b.priorTotal.input_tokens);
     const home = join(services.native, "codex", a.ownerDigest, memberId, cid, "home");
     const found: string[] = [];
     const walk = async (dir: string, depth: number) => {
@@ -116,7 +119,18 @@ async function journey(account: LiveAccount, services: Services, signal: AbortSi
     const rollout = await readFile(found[0]);
     assert.equal(rollout.length, b.bytes);
     assert.ok(a.bytes < b.bytes);
-    for (const checkpoint of checkpoints) assert.equal(sha(rollout.subarray(0, checkpoint.bytes)), checkpoint.digest);
+    for (const checkpoint of checkpoints) {
+      const prefix = rollout.subarray(0, checkpoint.bytes);
+      assert.equal(sha(prefix), checkpoint.digest);
+      let turnId: string | undefined;
+      for (const line of prefix.toString("utf8").split("\n")) {
+        try {
+          const value = JSON.parse(line);
+          if (value?.type === "event_msg" && value.payload?.type === "task_complete" && typeof value.payload.turn_id === "string") turnId = value.payload.turn_id;
+        } catch { /* a partial last line is not a turn */ }
+      }
+      assert.equal(turnId, checkpoint.turnId);
+    }
     const input = (data: Buffer) => data.toString("utf8").trim().split("\n").map(line => JSON.parse(line))
       .filter(({ type, payload }) => type === "response_item" && payload.type === "message" && ["user", "developer"].includes(payload.role));
     const initial = input(rollout.subarray(0, a.bytes));

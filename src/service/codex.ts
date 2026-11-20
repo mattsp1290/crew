@@ -10,7 +10,7 @@ import { exitGraceMs } from "./codex-subscription.ts";
 import { codexExecutable } from "./codex-executable.ts";
 import { redact } from "./diagnostics.ts";
 import { turnTextBytes } from "./domain.ts";
-import { codexAdapterTotal, codexUsage, type SegmentUsage } from "./usage-capture.ts";
+import { codexAdapterTotal, codexUsage, modelName, type SegmentUsage } from "./usage-capture.ts";
 
 const uuid = z.uuid();
 const hash = (data: string) => createHash("sha256").update(data).digest("hex");
@@ -341,15 +341,16 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
         threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
         session: segment.session, fingerprint: fingerprint.value, priorTotal: cumulative ? total : null,
       } },
-      usage: codexUsage(cumulative ? total : undefined, cumulative ? priorUsage : undefined, profile.model),
+      usage: codexUsage(cumulative ? total : undefined, cumulative ? priorUsage : undefined, modelName.safeParse(profile.model).data ?? null),
     };
   } finally {
     try {
       if (subscriptionHandle?.kind === "ok") subscriptionHandle.value.dispose();
-      await adapter?.close();
     } finally {
       for (const start of launched) start.child.kill("SIGKILL");
       await Promise.all(launched.map((start) => start.processExit));
+      await new Promise((resolve) => setTimeout(resolve, exitGraceMs));
+      await adapter?.close();
     }
   }
 }
@@ -402,16 +403,19 @@ export function codexProcessChannel(child: ChildProcess) {
   const whenReported = new Promise<void>((resolve) => { markReported = resolve; });
   let sink: { ended: (reason: "process-exit") => void } | undefined;
   const exited = () => child.exitCode !== null || child.signalCode !== null;
+  let detach = () => {};
   const report = (releasePipes: boolean) => {
     if (reported || !sink) return;
     reported = true;
     clearTimeout(grace);
+    grace = undefined;
     if (releasePipes) {
       stdout.destroy();
       stderr.destroy();
     }
     sink.ended("process-exit");
     markReported();
+    detach();
   };
   const armGrace = () => {
     if (reported || grace) return;
@@ -428,13 +432,16 @@ export function codexProcessChannel(child: ChildProcess) {
       child.on("exit", armGrace);
       child.on("close", onClose);
       if (exited()) armGrace();
-      return () => {
+      detach = () => {
+        if (!reported) return;
         clearTimeout(grace);
+        grace = undefined;
         stdout.off("data", onData);
         stderr.off("data", onError);
         child.off("exit", armGrace);
         child.off("close", onClose);
       };
+      return () => detach();
     },
     write(frame: Uint8Array, writeSignal: AbortSignal) {
       if (writeSignal.aborted) return Promise.reject(writeSignal.reason);

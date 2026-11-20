@@ -45,8 +45,9 @@ Two of these needed a correction:
   cumulative `token-usage.total` counts the whole native thread, carried across resumed
   turns. Against a fixture whose calls used 100, 200 and 300 input tokens, three turns
   reported 100, 300 and 600. Crew stores that total on the checkpoint as `priorTotal`
-  and records the new total minus the previous one. A missing total, or any count that
-  goes down, leaves the segment `unknown`.
+  and records the new total minus the previous one. A missing total, or an input or
+  output count that goes down, leaves the segment `unknown`. A cached, cache-write, or
+  reasoning count that cannot be read stays null on a reported segment.
 - **A count of zero input means nothing was reported.** pi-ai and the Codex CLI fill
   usage with zeros when a provider sends none. A model call always reads some input, so
   a segment whose input total is zero is recorded as `unknown`, never as zero. Pi's
