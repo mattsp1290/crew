@@ -380,7 +380,9 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
   });
   const stdin = child.stdin, stdout = child.stdout, stderr = child.stderr;
   if (!stdin || !stdout || !stderr) throw new Error("The host launcher returned no channel");
-  const stopChild = () => { child.kill("SIGKILL"); stdin.end(); };
+  // Abort kills the process. stdin stays open until close() returns, and a late EPIPE must not escape.
+  for (const stream of [stdin, stdout, stderr]) stream.on("error", () => {});
+  const stopChild = () => { child.kill("SIGKILL"); };
   const onAbort = () => stopChild();
   signal.addEventListener("abort", onAbort, { once: true });
   if (signal.aborted) onAbort();
