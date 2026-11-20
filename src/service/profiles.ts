@@ -51,7 +51,7 @@ export function memberProfiles(config: ReadonlyMap<string, MemberProfile>, state
     if (codex) drivers.codex = async (input, { ownerId, memberId }) => {
       if (input.childProfile) throw new ChildTargetError("unsupported_engine");
       const turn: Parameters<typeof runCodexTurn>[0] = input;
-      if (input.childResults || input.continuation || turn.mcp?.tool !== tool) {
+      if (input.childResults || input.continuation || turn.hold?.tool !== tool) {
         throw new Error("Codex invocation differs from the member profile");
       }
       return { kind: "complete", ...await runCodexTurn(turn, { ...codex, ownerId, memberId, stateDir }) };

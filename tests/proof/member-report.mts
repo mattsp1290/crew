@@ -102,7 +102,7 @@ export function attributable(source: Awaited<ReturnType<typeof sourceFingerprint
 export async function lockedPackages(engines: Engine[]) {
   const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
   const native = ["@temporalio/worker", "@ag-ui/core", "@ag-ui/client", "@ag-ui/encoder", "@mattsp1290/switchboard",
-    ...(engines.includes("codex") ? ["@openai/codex-sdk", "@openai/codex", "@openai/codex-linux-" + process.arch] : []),
+    ...(engines.includes("codex") ? ["@openai/codex", "@openai/codex-linux-" + process.arch] : []),
     ...(engines.includes("claude") ? ["@ag-ui/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk-linux-" + process.arch] : []),
     ...(engines.includes("pi") ? ["@ag-ui/pi", "@earendil-works/pi-coding-agent", "@birbcrew/pi-subagents"] : [])];
   return native.map((name) => {

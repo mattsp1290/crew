@@ -8,10 +8,25 @@ import { join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
 import { z } from "zod";
-import { runCodexTurn } from "../../../../src/service/codex.ts";
+import { codexToolContinuation, runCodexTurn, type CodexToolCall } from "../../../../src/service/codex.ts";
 import { startProvider } from "./provider.mts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==", "base64");
+
+async function rolloutFile(home: string, nativeId: string) {
+  const found: string[] = [];
+  async function walk(dir: string, depth: number) {
+    if (depth > 6) return;
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path, depth + 1);
+      else if (entry.isFile() && entry.name.endsWith(`-${nativeId}.jsonl`)) found.push(path);
+    }
+  }
+  await walk(join(home, "sessions"), 0);
+  assert.equal(found.length, 1);
+  return found[0]!;
+}
 
 test("Codex resumes the pinned rollout, rejects damaged or untrusted native storage before inference", { timeout: 40_000 }, async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-ready-"));
@@ -35,7 +50,7 @@ test("Codex resumes the pinned rollout, rejects damaged or untrusted native stor
   await writeFile(join(home, "config.toml"), '[mcp_servers.ambient]\nurl="http://127.0.0.1:1"\n');
   await assert.rejects(runCodexTurn(again, profile), /configuration/);
   await rm(join(home, "config.toml"));
-  const history = join(home, second.checkpoint.state.rollout);
+  const history = await rolloutFile(home, second.checkpoint.state.nativeId);
   await truncate(history, 31);
   await assert.rejects(runCodexTurn(again, profile));
   await rm(home, { recursive: true });
@@ -177,51 +192,30 @@ test("actual Codex image reads are confined to the conversation on first invocat
   assert.ok(auth.every((header) => header === undefined));
 });
 
-for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each scoped MCP response on its original live call`, { timeout: 45_000 }, async t => {
-  const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-mcp-"));
+for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each host tool response on its original live call`, { timeout: 45_000 }, async t => {
+  const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-host-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
-  const token = randomUUID(), receipt = randomUUID(), denied = "denied-" + randomUUID();
+  const receipt = randomUUID(), denied = "denied-" + randomUUID();
   const calls: { id: string; thread: string }[] = [];
-  let operation = randomUUID(), outcome: string = receipt, tool = "record_work_item", forbiddenCalls = 0;
-  const mcp = createServer(async (req, res) => {
-    try {
-      assert.equal(req.headers.authorization, "Bearer " + token);
-      const rpc = z.object({ method: z.string(), id: z.union([z.string(), z.number()]).optional(), params: z.any().optional() }).parse(await json(req));
-      if (rpc.id === undefined) { res.writeHead(202).end(); return; }
-      let result: unknown;
-      if (rpc.method === "initialize") result = { protocolVersion: rpc.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "proof", version: "1" } };
-      else if (rpc.method === "tools/list") result = { tools: ["record_work_item", "undeclared_private_tool"].map((name) => ({
-        name, description: "A fixture tool", inputSchema: { type: "object", properties: { operation_id: { type: "string" } }, required: ["operation_id"] },
-      })) };
-      else if (rpc.method === "tools/call") {
-        if (rpc.params.name !== "record_work_item") forbiddenCalls++;
-        assert.equal(rpc.params.name, "record_work_item");
-        assert.deepEqual(rpc.params.arguments, { operation_id: operation });
-        calls.push({ id: rpc.params._meta.callId, thread: rpc.params._meta.threadId });
-        result = { content: [{ type: "text", text: outcome }], isError: outcome === denied };
-      } else result = {};
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
-    } catch { res.destroy(); }
-  });
+  let operation = randomUUID(), outcome: string = receipt, tool = "record_work_item";
   const captured: string[] = [], shapes: string[][] = [];
   const provider = createServer(async (req, res) => {
     try {
       const parsed = request.parse(await json(req));
       const surface = JSON.stringify([parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")]);
-      assert.ok(!surface.includes(token) && !surface.includes("undeclared_private_tool"));
+      assert.ok(!surface.includes("undeclared_private_tool"));
       const tools = [...parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")
         .flatMap((row) => request.shape.tools.parse(row.tools))];
-      const names = tools.map((tool) => tool.name ?? tool.type);
-      const visibleMcp = z.object({ tools: z.array(z.object({ name: z.string() })) })
-        .parse(tools.find((tool) => tool.name === "mcp__birbcrew"));
-      assert.deepEqual(visibleMcp.tools.map((tool) => tool.name), ["record_work_item"],
-        "Only the allowed MCP tool must be directly visible to the model");
+      const names = tools.map((item) => item.name ?? item.type);
+      const application = z.object({ name: z.literal("application"), tools: z.array(z.object({ name: z.string() })) })
+        .parse(tools.find((item) => item.name === "application"));
+      assert.deepEqual(application.tools.map((item) => item.name), ["record_work_item"]);
       shapes.push(names);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const id = "resp_" + randomUUID(), call_id = "call_" + operation;
       send(res, "response.created", { response: { id } });
       const result = parsed.input.find((item) => item.type === "function_call_output" && item.call_id === call_id);
-      if (!result) send(res, "response.output_item.done", { item: { type: "function_call", namespace: "mcp__birbcrew",
+      if (!result) send(res, "response.output_item.done", { item: { type: "function_call", namespace: "application",
         name: tool, call_id, arguments: JSON.stringify({ operation_id: operation }) } });
       else {
         captured.push(JSON.stringify(result.output));
@@ -232,26 +226,27 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each sco
       res.end();
     } catch { res.destroy(); }
   });
-  const ports = [];
-  for (const server of [mcp, provider]) {
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(() => { server.closeAllConnections(); return new Promise<void>((done) => server.close(() => done())); });
-    const addr = server.address();
-    assert.ok(addr && typeof addr === "object");
-    ports.push("http://127.0.0.1:" + addr.port);
-  }
-  const profile = { ownerId: randomUUID(), memberId: randomUUID(), stateDir, model, baseUrl: ports[1] };
+  provider.listen(0, "127.0.0.1");
+  await once(provider, "listening");
+  t.after(() => { provider.closeAllConnections(); return new Promise<void>((done) => provider.close(() => done())); });
+  const addr = provider.address();
+  assert.ok(addr && typeof addr === "object");
+  const profile = { ownerId: randomUUID(), memberId: randomUUID(), stateDir, model, baseUrl: "http://127.0.0.1:" + addr.port };
   const threadId = randomUUID(), confirmation: string[] = [];
   let checkpoint = null;
+  const hold = { tool: "record_work_item" as const, async answer(call: CodexToolCall) {
+    calls.push({ id: call.pending.target.nativeToolCallId, thread: call.pending.target.session.opaque });
+    assert.deepEqual(call.arguments, { operation_id: operation });
+    return codexToolContinuation(call.pending.target, outcome, outcome === denied);
+  } };
   for (const value of [receipt, denied]) {
     operation = randomUUID();
     outcome = value;
     const r = await runCodexTurn({ threadId, runId: operation, text: "record " + operation, checkpoint, signal: t.signal,
-      mcp: { url: ports[0], token, tool: "record_work_item" }, onToolDelivered: text => { confirmation.push(text); } }, profile);
+      hold, onToolDelivered: text => { confirmation.push(text); } }, profile);
     checkpoint = r.checkpoint;
     assert.equal(r.text, "settled");
-    assert.deepEqual(calls.at(-1), { id: "call_" + operation, thread: r.checkpoint.state.nativeId });
+    assert.equal(calls.at(-1)?.thread, r.checkpoint.state.nativeId);
     assert.ok(captured.at(-1)?.includes(value));
   }
   assert.equal(calls.length, 2);
@@ -259,17 +254,46 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each sco
   assert.equal(shapes.length, 4);
   operation = randomUUID();
   tool = "undeclared_private_tool";
-  const forbidden = await runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
-    checkpoint, signal: t.signal, mcp: { url: ports[0], token, tool: "record_work_item" },
-    onToolDelivered: text => { confirmation.push(text); } }, profile);
-  assert.equal(forbidden.text, "settled");
-  assert.match(captured.at(-1)!, /unknown|not found|not available|unsupported/i);
-  assert.equal(forbiddenCalls, 0);
+  await assert.rejects(runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
+    checkpoint, signal: t.signal, hold, onToolDelivered: text => { confirmation.push(text); } }, profile), /Codex native turn failed|Unexpected native Codex tool/);
   assert.equal(calls.length, 2);
   assert.deepEqual(confirmation, [receipt, denied]);
 });
 
-test("hard killing the SDK host stops its Codex CLI and preserves unrelated conversations", { timeout: 30_000 }, async t => {
+test("request_user_input is declined when no person is attached", { timeout: 40_000 }, async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-question-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const provider = createServer(async (req, res) => {
+    try {
+      const parsed = request.parse(await json(req));
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const id = "resp_" + randomUUID();
+      send(res, "response.created", { response: { id } });
+      const answered = parsed.input.find((item) => item.type === "function_call_output");
+      if (!answered) {
+        send(res, "response.output_item.done", { item: { type: "function_call", call_id: "call_question", name: "request_user_input",
+          arguments: JSON.stringify([{ id: "q1", question: "Continue?" }]) } });
+      } else {
+        assert.match(JSON.stringify(answered.output), /No person is attached/);
+        send(res, "response.output_item.done", { item: { type: "message", role: "assistant", phase: "final_answer", id: "msg_" + randomUUID(),
+          content: [{ type: "output_text", text: "declined" }] } });
+      }
+      send(res, "response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+      res.end();
+    } catch { res.destroy(); }
+  });
+  provider.listen(0, "127.0.0.1");
+  await once(provider, "listening");
+  t.after(() => { provider.closeAllConnections(); return new Promise<void>((done) => provider.close(() => done())); });
+  const addr = provider.address();
+  assert.ok(addr && typeof addr === "object");
+  const result = await runCodexTurn({
+    threadId: randomUUID(), runId: randomUUID(), text: "ask a person", checkpoint: null, signal: t.signal,
+  }, { ownerId: randomUUID(), memberId: randomUUID(), stateDir, model: "gpt-5.4", baseUrl: "http://127.0.0.1:" + addr.port });
+  assert.equal(result.text, "declined");
+});
+
+test("hard killing the host stops its Codex CLI and preserves unrelated conversations", { timeout: 30_000 }, async t => {
   const { spawn } = await import("node:child_process");
   const { readFile } = await import("node:fs/promises");
   const { setTimeout: delay } = await import("node:timers/promises");

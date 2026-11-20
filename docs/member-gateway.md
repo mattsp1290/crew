@@ -63,7 +63,7 @@ Cards in `state.pendingApprovals` and `state.pendingQuestions` may include `argu
 
 Codex publishes one balanced text message for each completed native assistant item. On a tool-enabled turn it holds the preamble until its native call identifies itself or the turn finishes without a proposal. If an item ends with a possible prefix of a known native call ID, publication waits for the next item or turn completion. Every item containing part of a matched ID displays `[tool call]`. A later turn can introduce a new ID that happens to match prose in an already completed turn. Observers have already received that prose by then.
 
-A live MCP proposal has an `expiresAt` deadline. Disconnecting an observer leaves the call open for another owner client to resolve. If the deadline expires or the worker dies, both observers receive the interruption and the card closes. A late decision returns HTTP 409.
+A live Codex proposal has an `expiresAt` deadline. Disconnecting an observer leaves the call open for another owner client to resolve. If the deadline expires or the worker dies, both observers receive the interruption and the card closes. A late decision returns HTTP 409.
 
 Inspect `state.liveOperations` for the effect and its native delivery status. For an interrupted call with zero effect, open a new conversation under the same member, submit a new request and approve its new call. For a committed effect, use the existing receipt. If execution is uncertain, wait for reconciliation. Native delivery stays unknown until Codex confirms the result on that call.
 

@@ -247,10 +247,12 @@ int main(int argc, char **argv) {
         checked(chdir(scratch));
         permit(rules, home, private, 0);
         permit(rules, scratch, read | list, 0);
+        const char *sqlite = getenv("BIRBCREW_NATIVE_SQLITE_HOME"), *logs = getenv("BIRBCREW_NATIVE_LOG_DIR");
+        if (sqlite) permit(rules, sqlite, private, 0);
+        if (logs) permit(rules, logs, private, 0);
         port(rules, getenv("BIRBCREW_NATIVE_PROVIDER_PORT"));
-        if (getenv("BIRBCREW_NATIVE_MCP_PORT")) port(rules, getenv("BIRBCREW_NATIVE_MCP_PORT"));
         unsetenv("BIRBCREW_NATIVE_BINARY"); unsetenv("BIRBCREW_NATIVE_PARENT"); unsetenv("BIRBCREW_NATIVE_WORKSPACE");
-        unsetenv("BIRBCREW_NATIVE_PROVIDER_PORT"); unsetenv("BIRBCREW_NATIVE_MCP_PORT");
+        unsetenv("BIRBCREW_NATIVE_PROVIDER_PORT"); unsetenv("BIRBCREW_NATIVE_SQLITE_HOME"); unsetenv("BIRBCREW_NATIVE_LOG_DIR");
         argv[0] = executable;
     } else {
         const char *lib[] = {"/usr/lib","/usr/lib64","/lib64",NULL};

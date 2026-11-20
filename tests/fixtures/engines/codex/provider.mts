@@ -28,7 +28,7 @@ export async function startProvider(onFailure = () => {},
   const server = createServer(async (request, response) => {
     response.once("close", () => { if (!response.writableEnded) cancelled++; });
     try {
-      if (request.method !== "POST" || request.url !== "/responses") {
+      if (request.method !== "POST" || (request.url !== "/responses" && request.url !== "/v1/responses")) {
         response.writeHead(404).end(); return;
       }
       const body = await json(request);
@@ -92,8 +92,8 @@ export async function startProvider(onFailure = () => {},
           const parts = textParts.safeParse(i.content);
           return parts.success ? parts.data.map(p => p.text) : [];
         }).join("\n");
-        const namespace = [...tools,...additional].find(tool => (dynamicNamespace !== undefined && tool.name === dynamicNamespace) || tool.name === "mcp__birbcrew" || tool.name === "mcp__fixture")?.name ??
-          (dynamicNamespace && catalog.includes("- "+dynamicNamespace) ? dynamicNamespace : /^- (mcp__(?:birbcrew|fixture))\s*$/m.exec(catalog)?.[1]);
+        const namespace = [...tools,...additional].find(tool => (dynamicNamespace !== undefined && tool.name === dynamicNamespace) || tool.name === "application" || tool.name === "mcp__birbcrew" || tool.name === "mcp__fixture")?.name ??
+          (dynamicNamespace && catalog.includes("- "+dynamicNamespace) ? dynamicNamespace : /^- (application|mcp__(?:birbcrew|fixture))\s*$/m.exec(catalog)?.[1]);
         if (!namespace) throw new Error("Fixture MCP namespace missing");
         send(response, "response.output_item.done", { item: {
           type:"function_call", call_id:callId, namespace,

@@ -61,9 +61,10 @@ which would otherwise bypass the filter.
 
 - **Claude** runs the Claude CLI with its conversation directory writable. The
   launcher does not restrict its network.
-- **Codex** runs the Codex binary with its private `CODEX_HOME` writable, its
-  workspace readable, and TCP connections only to the provider port and the
-  invocation's tool port.
+- **Codex** runs the Codex app-server through Switchboard's host adapter. The
+  launcher leaves its private `CODEX_HOME` writable, its workspace readable, and
+  grants private sqlite and log directories outside that home. TCP connects only
+  to the provider port.
 - **Pi** runs the Pi SDK in a Node worker, `src/service/pi-worker.ts`. The
   worker gets no credentials and no network. Its only channel is descriptor 3,
   a socket pair to its host carrying newline-delimited JSON.

@@ -119,15 +119,15 @@ gateway was down, the firing fails `approval_expired` instead.
 
 ## Codex
 
-A Codex live card has its own deadline: the native callback's, at most 170 seconds by
-contract and 45 seconds as Crew's Codex adapter sets it. With a request deadline, the
-card's deadline is the earlier of the two. `proposeLive` stores it in
+A Codex live card has its own deadline: the host call's, at most 170 seconds by
+contract and 120 seconds as the live hold sets the decision wait. With a request
+deadline, the card's deadline is the earlier of the two. `proposeLive` stores it in
 `codex_live_calls` and shows it as the card's `expiresAt`, and the existing live-call
 path enforces it: past it a decision is refused and the call is interrupted, the
 snapshot lists it under `interruptedCalls`, the turn becomes `uncertain` and a firing
-fails `turn_uncertain`. No `approval.expired` row is written for Codex. With the 45
-second adapter deadline and the 60 second minimum, the live deadline is always the
-earlier one today.
+fails `turn_uncertain`. No `approval.expired` row is written for Codex. With the 120
+second decision deadline and the 60 second minimum, the live deadline is the earlier
+of the request deadline and that 120 second wait.
 
 ## Conversation handoff
 

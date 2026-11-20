@@ -23,7 +23,7 @@ export interface DriverInput {
   checkpoint: Checkpoint | null;
   signal: AbortSignal;
   projectContext?: string;
-  mcp?: import("./codex-mcp.ts").NativeToolEndpoint;
+  hold?: import("./codex.ts").CodexHold;
   onThreadStarted?: (nativeThreadId:string) => void | Promise<void>;
   onToolDelivered?: (text:string) => void | Promise<void>;
   onToolArgs?: (nativeCallId: string, matchedOperation: boolean) => void;

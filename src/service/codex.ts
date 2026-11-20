@@ -1,33 +1,55 @@
-import { nativeTranscriptBytes } from "./native-limits.ts";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises";
-import { codexExecutable } from "./codex-executable.ts";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { spawn } from "node:child_process";
+import { mkdir, readdir, realpath } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Codex, type McpToolCallItem, type ThreadEvent } from "@openai/codex-sdk";
+import { codexHostAdapter } from "@mattsp1290/switchboard/host/codex";
 import { z } from "zod";
 import { codexSubscriptionEndpoint } from "./accounts.ts";
+import { codexExecutable } from "./codex-executable.ts";
 import { redact } from "./diagnostics.ts";
 import { turnTextBytes } from "./domain.ts";
-import { codexRolloutModel, codexRolloutTotal, codexUsage, type SegmentUsage } from "./usage-capture.ts";
+import { codexUsage, type SegmentUsage } from "./usage-capture.ts";
 
 const uuid = z.uuid();
-const hash = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
+const hash = (data: string) => createHash("sha256").update(data).digest("hex");
+const bindingSchema = z.strictObject({
+  engine: z.string(), nativeVersion: z.string(), account: z.string(),
+  authorizedScope: z.string(), nativeFormat: z.string(),
+});
+const sessionSchema = z.strictObject({
+  kind: z.literal("session"), formatVersion: z.literal(1), binding: bindingSchema, opaque: uuid,
+});
+const fingerprintSchema = z.strictObject({
+  kind: z.literal("checkpoint"), formatVersion: z.literal(1), binding: bindingSchema,
+  sessionOpaque: z.string(), opaque: z.string(),
+});
+const legacyCheckpoint = z.strictObject({
+  version: z.literal(1), engine: z.literal("codex"),
+  state: z.strictObject({ rollout: z.string() }).passthrough(),
+});
 const checkpointSchema = z.strictObject({
-  version: z.literal(1), engine: z.literal("codex"), state: z.strictObject({
+  version: z.literal(2), engine: z.literal("codex"), state: z.strictObject({
     threadId: uuid, nativeId: uuid, memberId: uuid, ownerDigest: z.hash("sha256"), model: z.string(),
-    requestId: uuid, rollout: z.string(), bytes: z.int().positive(), sha256: z.hash("sha256"),
+    requestId: uuid, session: sessionSchema, fingerprint: fingerprintSchema.nullable(),
+    priorTotal: z.record(z.string(), z.unknown()).nullable(),
   }),
 });
 export type CodexCheckpoint = z.infer<typeof checkpointSchema>;
+type OpenedAdapter = Extract<Awaited<ReturnType<typeof codexHostAdapter.open>>, { kind: "ok" }>["value"];
+type CodexSegment = Awaited<ReturnType<OpenedAdapter["run"]>>;
+export type CodexToolCall = Extract<CodexSegment, { kind: "pending" }>["calls"][number];
+export interface CodexHold {
+  readonly tool: "record_work_item" | "choose_next_step";
+  answer(call: CodexToolCall, signal: AbortSignal): Promise<ReturnType<typeof codexToolContinuation>>;
+}
 interface CodexInput {
   threadId: string; runId: string; text: string; checkpoint: unknown; signal: AbortSignal;
   projectContext?: string;
   onText?: (text: string) => void | Promise<void>;
   onThreadStarted?: (nativeId: string) => void | Promise<void>;
   onToolDelivered?: (text: string) => void | Promise<void>;
-  mcp?: { url: string; token: string; tool: "record_work_item" | "choose_next_step" };
+  hold?: CodexHold;
 }
 export interface CodexProfile {
   ownerId: string; memberId: string; stateDir: string; model: string; apiKey?: string; baseUrl?: string;
@@ -36,59 +58,64 @@ export interface CodexProfile {
   proxyTransport?: (signal: AbortSignal) => Promise<{ baseUrl: string; apiKey: string; close: () => Promise<void> }>;
 }
 
-const loopback = (raw: string) => {
+const extension = (data: Readonly<Record<string, unknown>>) =>
+  ({ namespace: "codex", schemaVersion: 1, data });
+
+/** The text a host tool returns to the model. `isError` marks a refusal the model can read. */
+export function codexToolContinuation(target: CodexToolCall["pending"]["target"], text: string, isError: boolean) {
+  const body = extension({ text });
+  return {
+    formatVersion: 1 as const, kind: "tool" as const,
+    outcome: {
+      target,
+      result: isError ? { kind: "error" as const, error: body } : { kind: "ok" as const, value: body },
+      effect: { kind: "known" as const, effect: "none" as const, evidence: extension({}) },
+      delivery: { kind: "unknown" as const },
+    },
+  };
+}
+
+/** Today's exec lane does not intercept `request_user_input`; the binary owns it. The host lane declines it. */
+function declineUserInput(call: CodexToolCall) {
+  const questions = Array.isArray(call.arguments) ? call.arguments : [];
+  const answers: Record<string, { answers: string[] }> = {};
+  for (const question of questions) {
+    if (question && typeof question === "object" && "id" in question && typeof question.id === "string") {
+      answers[question.id] = { answers: ["No person is attached."] };
+    }
+  }
+  return {
+    formatVersion: 1 as const, kind: "tool" as const,
+    outcome: {
+      target: call.pending.target,
+      result: { kind: "ok" as const, value: extension({ answers }) },
+      effect: { kind: "known" as const, effect: "none" as const, evidence: extension({}) },
+      delivery: { kind: "unknown" as const },
+    },
+  };
+}
+
+export function codexTurnFailure(code: string, message: unknown): Error {
+  const failure = new Error("Codex native turn failed");
+  const reason = typeof message === "string" ? redact(message, 64) : undefined;
+  Object.assign(failure, { code, ...(reason && { reason }) });
+  return failure;
+}
+
+function canonicalEndpoint(raw: string) {
   const url = new URL(raw);
-  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.search || url.hash) {
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) {
     throw new Error("Expected a scoped loopback endpoint");
   }
-  return url;
-};
-export async function nativeHistory(home: string, scratch: string, nativeId: string, known?: string,
-  read?: (lines: readonly string[]) => void) {
-  // The CLI places rollout files in sessions/YYYY/MM/DD.
-  const filePattern = /^sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[\dT-]+-([0-9a-f-]{36})\.jsonl$/;
-  const index = join(home, "state_5.sqlite");
-  if (await realpath(index) !== index || !(await lstat(index)).isFile()) throw new Error("Invalid native thread index");
-  const db = new DatabaseSync(index, { readOnly: true });
-  let path: string;
-  try {
-    const row = db.prepare("SELECT rollout_path,cwd FROM threads WHERE id=?").get(nativeId);
-    if (!row || row.cwd !== scratch || typeof row.rollout_path !== "string") throw new Error("Native thread is absent");
-    path = relative(home, row.rollout_path);
-    if (known && path !== known) throw new Error("Codex native thread location changed");
-  } finally {
-    db.close();
-  }
-  if (filePattern.exec(path)?.[1] !== nativeId) throw new Error("Invalid native rollout");
-  const file = resolve(home, path);
-  if (relative(home, file) !== path || await realpath(file) !== file) throw new Error("Invalid native rollout path");
-  const stat = await lstat(file);
-  if (!stat.isFile() || stat.nlink !== 1 || !stat.size || stat.size > nativeTranscriptBytes) throw new Error("Invalid native rollout file");
-  const bytes = await readFile(file);
-  const lines = bytes.toString("utf8").trimEnd().split("\n");
-  const first = JSON.parse(lines[0]), last = JSON.parse(lines[lines.length - 1]);
-  if (first.type !== "session_meta" || first.payload?.id !== nativeId || last.type !== "event_msg" ||
-      last.payload?.type !== "task_complete") throw new Error("Codex native turn is incomplete");
-  read?.(lines);
-  return { rollout: path, bytes: bytes.length, sha256: hash(bytes) };
+  return url.href;
 }
 
-async function delivered(item: McpToolCallItem, input: CodexInput) {
-  if (!input.mcp || item.server !== "birbcrew" || item.tool !== input.mcp.tool) throw new Error("Unexpected native Codex tool");
-  const content = item.result?.content;
-  if (content?.length === 1 && content[0].type === "text") await input.onToolDelivered?.(content[0].text);
-}
-
-function codexTurnFailure(event: Extract<ThreadEvent, { type: "error" | "turn.failed" }>): Error {
-  const failure = new Error("Codex native turn failed");
-  try {
-    const code = event.type;
-    if (code !== "error" && code !== "turn.failed") return failure;
-    const message = code === "error" ? event.message : event.error?.message;
-    const reason = typeof message === "string" ? redact(message, 64) : undefined;
-    Object.assign(failure, { code, ...(reason && { reason }) });
-  } catch {}
-  return failure;
+function toolSchema(tool: CodexHold["tool"], requestId: string): Readonly<Record<string, unknown>> {
+  if (tool === "choose_next_step") return { type: "object", additionalProperties: false, properties: {} };
+  return {
+    type: "object", additionalProperties: false, required: ["operation_id"],
+    properties: { operation_id: { type: "string", const: requestId }, note: { type: "string", maxLength: 4096 } },
+  };
 }
 
 export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
@@ -105,17 +132,20 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   const threadId = uuid.parse(input.threadId), requestId = uuid.parse(input.runId), memberId = uuid.parse(profile.memberId);
   const ownerDigest = hash(profile.ownerId);
   if (!isAbsolute(profile.stateDir) || !profile.model || !input.text || Buffer.byteLength(input.text) > turnTextBytes) throw new Error("Invalid Codex member input");
-  const provider = profile.baseUrl ? loopback(profile.baseUrl) : undefined;
-  const approved = profile.authorize !== undefined;
-  const credentialCount = Number(profile.apiKey !== undefined) + Number(profile.subscription !== undefined);
-  if (credentialCount !== Number(approved) || profile.apiKey === "" || (!approved && !provider)) {
-    throw new Error("Approved Codex account required");
+  if (input.checkpoint !== null && legacyCheckpoint.safeParse(input.checkpoint).success) {
+    throw new Error("Codex checkpoint predates the host adapter");
   }
-  const endpoint = input.mcp && loopback(input.mcp.url);
-  if (input.mcp && (!input.mcp.token || !["record_work_item", "choose_next_step"].includes(input.mcp.tool))) throw new Error("Invalid Codex tool binding");
   const prior = input.checkpoint === null ? null : checkpointSchema.parse(input.checkpoint).state;
   if (prior && (prior.threadId !== threadId || prior.memberId !== memberId || prior.ownerDigest !== ownerDigest ||
-      prior.model !== profile.model || prior.requestId === requestId)) throw new Error("Codex checkpoint identity mismatch");
+      prior.model !== profile.model || prior.requestId === requestId || prior.session.opaque !== prior.nativeId)) {
+    throw new Error("Codex checkpoint identity mismatch");
+  }
+  const approved = profile.authorize !== undefined;
+  const credentialCount = Number(profile.apiKey !== undefined) + Number(profile.subscription !== undefined);
+  if (credentialCount !== Number(approved) || profile.apiKey === "" || (!approved && !profile.baseUrl)) {
+    throw new Error("Approved Codex account required");
+  }
+  if (input.hold && input.hold.tool !== "record_work_item" && input.hold.tool !== "choose_next_step") throw new Error("Invalid Codex tool binding");
   if (!prior) await mkdir(profile.stateDir, { mode: 0o700, recursive: true });
   let parent = await realpath(profile.stateDir);
   for (const part of ["codex", ownerDigest, memberId]) {
@@ -124,18 +154,12 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     if (await realpath(parent) !== parent) throw new Error("Invalid Codex member directory");
   }
   const root = join(parent, threadId), home = join(root, "home"), scratch = join(root, "workspace");
+  const sqliteHome = join(root, "sqlite"), logDir = join(root, "logs");
   if (!prior) {
-    await mkdir(root, { mode: 0o700 });
-    await mkdir(home, { mode: 0o700 });
-    await mkdir(scratch, { mode: 0o700 });
+    for (const directory of [root, home, scratch, sqliteHome, logDir]) await mkdir(directory, { mode: 0o700 });
   }
-  if (await realpath(home) !== home || await realpath(scratch) !== scratch) throw new Error("Invalid Codex storage");
-  let priorTotal: ReturnType<typeof codexRolloutTotal> = null;
-  if (prior) {
-    const saved = await nativeHistory(home, scratch, prior.nativeId, prior.rollout, lines => { priorTotal = codexRolloutTotal(lines); });
-    if (saved.sha256 !== prior.sha256 || saved.bytes !== prior.bytes) throw new Error("Codex native history changed");
-  }
-  // The host owns configuration. Native session files can survive a restart, configuration from disk cannot.
+  if (await realpath(home) !== home || await realpath(scratch) !== scratch ||
+      await realpath(sqliteHome) !== sqliteHome || await realpath(logDir) !== logDir) throw new Error("Invalid Codex storage");
   const ambient = ["auth.json", "config.toml", "mcp.json", "hooks.json", "AGENTS.md", "AGENTS.override.md", "plugins", "rules", "agents", ".codex", ".agents"];
   if ((await readdir(home)).some((name) => ambient.includes(name)) || (await readdir(scratch)).some((name) => ambient.includes(name))) {
     throw new Error("Unexpected Codex configuration in native storage");
@@ -144,62 +168,158 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   const subscription = await profile.subscription?.();
   if (profile.subscription && (!subscription?.accessToken || !subscription.accountId)) throw new Error("Missing Codex subscription identity");
   input.signal.throwIfAborted();
-  const sdk = new Codex({
-    codexPathOverride: fileURLToPath(new URL("../../.proof/bin/member-launch", import.meta.url)),
-    env: {
-      HOME: home, CODEX_HOME: home, PATH: "", TMPDIR: home, BIRBCREW_NATIVE_BINARY: codexExecutable(),
-      BIRBCREW_NATIVE_PARENT: String(process.pid), BIRBCREW_NATIVE_WORKSPACE: scratch,
-      BIRBCREW_NATIVE_PROVIDER_PORT: provider?.port ?? "443",
-      ...(subscription && { BIRBCREW_CODEX_BEARER: subscription.accessToken, BIRBCREW_CODEX_ACCOUNT: subscription.accountId }),
-      ...(input.mcp && endpoint && { BIRBCREW_NATIVE_MCP_PORT: endpoint.port, BIRBCREW_MCP_AUTH: input.mcp.token }),
-    },
-    ...(profile.apiKey && { apiKey: profile.apiKey, baseUrl: provider?.href ?? "https://api.openai.com/v1" }),
+  const endpoint = canonicalEndpoint(profile.baseUrl ?? (profile.apiKey ? "https://api.openai.com/v1" : codexSubscriptionEndpoint));
+  const url = new URL(endpoint);
+  const loopbackRelay = url.hostname === "127.0.0.1";
+  if (profile.baseUrl && !loopbackRelay) throw new Error("Expected a scoped loopback endpoint");
+  const form = profile.apiKey || subscription ? "bearer" as const : "none" as const;
+  const envKey = subscription ? "BIRBCREW_CODEX_BEARER" : "CODEX_API_KEY";
+  const variables: Record<string, string> = {
+    HOME: home, CODEX_HOME: home, PATH: "", TMPDIR: home,
+    ...(subscription && { BIRBCREW_CODEX_BEARER: subscription.accessToken, BIRBCREW_CODEX_ACCOUNT: subscription.accountId }),
+    ...(profile.apiKey && { CODEX_API_KEY: profile.apiKey }),
+  };
+  const account = ownerDigest;
+  const principal = `crew:${form}:${ownerDigest}:${memberId}`;
+  const route = {
     config: {
-      ...(subscription && { model_provider: "birbcrew_subscription", model_providers: { birbcrew_subscription: {
-        name: "ChatGPT subscription", base_url: provider?.href.replace(/\/$/, "") ?? codexSubscriptionEndpoint,
-        wire_api: "responses", env_key: "BIRBCREW_CODEX_BEARER", env_http_headers: { "ChatGPT-Account-Id": "BIRBCREW_CODEX_ACCOUNT" },
-        requires_openai_auth: false, supports_websockets: false, request_max_retries: 0, stream_max_retries: 0,
-      } } }),
-      ...(profile.apiKey && provider && { model_provider: "birbcrew_proxy", model_providers: { birbcrew_proxy: {
-        name: "Operator proxy relay", base_url: provider.href.replace(/\/$/, ""),
-        wire_api: "responses", env_key: "CODEX_API_KEY", requires_openai_auth: false,
-        supports_websockets: false, request_max_retries: 0, stream_max_retries: 0,
-      } } }),
-      ...(!approved && provider && { model_provider: "fixture", model_providers: { fixture: { name: "BirbCrew local fixture",
-        base_url: provider.href.replace(/\/$/, ""), wire_api: "responses", requires_openai_auth: false,
-        supports_websockets: false, request_max_retries: 0, stream_max_retries: 0 } } }),
-      features: { plugins: false, apps: false, shell_tool: false, unified_exec: false, shell_snapshot: false, multi_agent: false, multi_agent_v2: false, code_mode: false, goals: false, image_generation: false },
-      analytics: { enabled: false }, feedback: { enabled: false },
-      developer_instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
-      ...(input.mcp && endpoint && { mcp_servers: { birbcrew: { url: endpoint.href,
-        bearer_token_env_var: "BIRBCREW_MCP_AUTH", enabled_tools: [input.mcp.tool], required: true,
-        startup_timeout_sec: 8, tool_timeout_sec: 150, default_tools_approval_mode: "approve",
-        omit_tools_from: ["code_mode", "deferred"] } } }),
+      kind: "host-route" as const, endpoint, protocol: "responses" as const, credentialPurpose: "host-route" as const,
+      credentialForm: form, principal, model: profile.model,
+      resolve: () => form === "none" ? { purpose: "host-route" as const, form } : {
+        purpose: "host-route" as const, form, token: subscription?.accessToken ?? profile.apiKey ?? "",
+        ...(subscription && { headers: { "ChatGPT-Account-Id": subscription.accountId } }),
+      },
+    },
+    scope: { engine: "codex", account, adapterInstanceId: "crew", sessionId: threadId },
+  };
+  const launcher = fileURLToPath(new URL("../../.proof/bin/member-launch", import.meta.url));
+  const opened = await codexHostAdapter.open({
+    launch: { kind: "spawn", spawn: (request, signal) => borrowLauncher(launcher, request, signal, url.port || (url.protocol === "https:" ? "443" : "80"), sqliteHome, logDir) },
+    environment: {
+      variables,
+      nativeConfig: {
+        home, cwd: scratch, executable: codexExecutable(), sqliteHome, logDir, providerId: "crew",
+        loopbackRelay, sandbox: "read-only",
+        ...(form === "bearer" && { envKey, ...(subscription && { headerEnv: { "ChatGPT-Account-Id": "BIRBCREW_CODEX_ACCOUNT" } }) }),
+      },
+    },
+    instructions: "You are a BirbCrew coworker." + (input.projectContext ? "\n" + input.projectContext : ""),
+    ...(input.hold && { tools: [{
+      name: input.hold.tool,
+      description: input.hold.tool === "record_work_item" ? "Ask the owner to record a work item." : "Ask the owner to choose the next step.",
+      inputSchema: toolSchema(input.hold.tool, requestId),
+    }] }),
+    builtInTools: ["view_image", "request_user_input"],
+    subagents: "off",
+    route,
+    ...(prior && { resume: { session: prior.session, ...(prior.fingerprint && { expectedHistory: prior.fingerprint }) } }),
+  }, input.signal);
+  if (opened.kind === "error") throw codexTurnFailure(opened.error.code, opened.error.message);
+  const adapter = opened.value;
+  const answered = new Map<string, string>();
+  let published = 0, observerError: unknown, observed = Promise.resolve();
+  const subscriptionHandle = adapter.events.subscribe((event) => {
+    observed = observed.then(async () => {
+      if (event.kind === "text-delta" && event.text) {
+        published += Buffer.byteLength(event.text);
+        if (published > 65_536) throw new Error("Codex reply exceeds limit");
+        await input.onText?.(event.text);
+      }
+      if (event.kind !== "tool-delivery") return;
+      const text = answered.get(event.target.nativeToolCallId);
+      if (text !== undefined) await input.onToolDelivered?.(text);
+    }).catch((error: unknown) => { observerError ??= error; });
+  });
+  const recordIntent = (_identity: unknown, signal: AbortSignal) => { signal.throwIfAborted(); };
+  try {
+    if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
+    let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: input.signal });
+    let announced = false;
+    while (segment.kind === "pending" || (segment.kind === "complete" && !announced)) {
+      if (!announced && (segment.kind === "pending" || segment.kind === "complete")) {
+        announced = true;
+        if (prior && segment.session.opaque !== prior.nativeId) throw new Error("Unexpected Codex thread identity");
+        await input.onThreadStarted?.(segment.session.opaque);
+      }
+      if (segment.kind !== "pending") break;
+      const answers = [];
+      for (const call of segment.calls) {
+        if (call.name === "request_user_input") answers.push(declineUserInput(call));
+        else if (input.hold && call.name === input.hold.tool) {
+          const answer = await input.hold.answer(call, input.signal);
+          const data = answer.outcome.result.kind === "ok" ? answer.outcome.result.value.data : answer.outcome.result.error.data;
+          const text = data && typeof data === "object" && "text" in data && typeof data.text === "string" ? data.text : undefined;
+          if (text !== undefined) answered.set(call.pending.target.nativeToolCallId, text);
+          answers.push(answer);
+        } else throw new Error("Unexpected native Codex tool");
+      }
+      segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: input.signal });
+    }
+    await observed;
+    if (observerError) throw observerError;
+    if (segment.kind !== "complete") throw codexTurnFailure(segment.error.code, segment.error.message);
+    if (!segment.text || Buffer.byteLength(segment.text) > 65_536) throw new Error("Incomplete native Codex turn");
+    const fingerprintApi = adapter.capabilities.fingerprint;
+    if (fingerprintApi.kind !== "supported" || fingerprintApi.api.validity !== "segment-end") throw new Error("Codex history fingerprint is unavailable");
+    const fingerprint = await fingerprintApi.api.read(input.signal);
+    if (fingerprint.kind === "error") throw codexTurnFailure(fingerprint.error.code, fingerprint.error.message);
+    const total = usageTotal(segment.usage.native.data);
+    return {
+      text: segment.text,
+      checkpoint: { version: 2, engine: "codex", state: {
+        threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
+        session: segment.session, fingerprint: fingerprint.value, priorTotal: total,
+      } },
+      usage: codexUsage(total, prior?.priorTotal ?? null, profile.model),
+    };
+  } finally {
+    if (subscriptionHandle.kind === "ok") subscriptionHandle.value.dispose();
+    await adapter.close();
+  }
+}
+
+function usageTotal(data: unknown): Record<string, unknown> | null {
+  if (!data || typeof data !== "object" || !("total" in data)) return null;
+  const total = data.total;
+  return total && typeof total === "object" ? { ...total } : null;
+}
+
+function borrowLauncher(launcher: string, request: { executable: string; args: readonly string[]; cwd: string; env: Readonly<Record<string, string>> },
+  signal: AbortSignal, port: string, sqliteHome: string, logDir: string) {
+  if (signal.aborted) throw signal.reason;
+  const child = spawn(launcher, request.args.slice(1), {
+    cwd: request.cwd, stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...request.env, BIRBCREW_NATIVE_BINARY: request.executable, BIRBCREW_NATIVE_PARENT: String(process.pid),
+      BIRBCREW_NATIVE_WORKSPACE: request.cwd, BIRBCREW_NATIVE_PROVIDER_PORT: port,
+      BIRBCREW_NATIVE_SQLITE_HOME: sqliteHome, BIRBCREW_NATIVE_LOG_DIR: logDir,
     },
   });
-  const options = { workingDirectory: scratch, model: profile.model, skipGitRepoCheck: true, sandboxMode: "read-only", approvalPolicy: "never", webSearchMode: "disabled" } as const;
-  const thread = prior ? sdk.resumeThread(prior.nativeId, options) : sdk.startThread(options);
-  let nativeId: string | undefined, completed: { usage: unknown } | undefined, text = "";
-  for await (const event of (await thread.runStreamed(input.text, { signal: input.signal })).events) {
-    if (event.type === "thread.started") {
-      if (nativeId || (prior && event.thread_id !== prior.nativeId)) throw new Error("Unexpected Codex thread identity");
-      nativeId = uuid.parse(event.thread_id);
-      await input.onThreadStarted?.(nativeId);
-    } else if (event.type === "item.completed" && event.item.type === "agent_message") {
-      const delta = event.item.text;
-      if (Buffer.byteLength(text) + Buffer.byteLength(delta) > 65_536) throw new Error("Codex reply exceeds limit");
-      text += delta;
-      if (delta) await input.onText?.(delta);
-    } else if (event.type === "item.completed" && event.item.type === "mcp_tool_call") {
-      await delivered(event.item, input);
-    } else if (event.type === "turn.completed") completed = event;
-    else if (event.type === "error" || event.type === "turn.failed") throw codexTurnFailure(event);
-  }
-  input.signal.throwIfAborted();
-  if (!nativeId || !text || !completed) throw new Error("Incomplete native Codex turn");
-  let model: string | null = null;
-  const history = await nativeHistory(home, scratch, nativeId, undefined, lines => { model = codexRolloutModel(lines); });
-  return { text, checkpoint: { version: 1, engine: "codex", state: {
-    threadId, requestId, nativeId, memberId, ownerDigest, model: profile.model, ...history,
-  } }, usage: codexUsage(completed.usage, priorTotal, model) };
+  const stdin = child.stdin, stdout = child.stdout, stderr = child.stderr;
+  if (!stdin || !stdout || !stderr) throw new Error("The host launcher returned no channel");
+  return {
+    processExit: new Promise((resolve) => { child.once("exit", resolve); child.once("error", resolve); }),
+    channel: {
+      listen(sink: { data: (bytes: Uint8Array) => void; diagnostic: (bytes: Uint8Array) => void; ended: (reason: "process-exit") => void }) {
+        const onData = (chunk: Buffer) => sink.data(chunk);
+        const onError = (chunk: Buffer) => sink.diagnostic(chunk);
+        const onClose = () => sink.ended("process-exit");
+        stdout.on("data", onData);
+        stderr.on("data", onError);
+        child.on("close", onClose);
+        return () => { stdout.off("data", onData); stderr.off("data", onError); child.off("close", onClose); };
+      },
+      write(frame: Uint8Array, writeSignal: AbortSignal) {
+        if (writeSignal.aborted) return Promise.reject(writeSignal.reason);
+        return new Promise<void>((resolve, reject) => {
+          const abort = () => reject(writeSignal.reason);
+          writeSignal.addEventListener("abort", abort, { once: true });
+          stdin.write(frame, (error) => {
+            writeSignal.removeEventListener("abort", abort);
+            if (error) reject(error); else resolve();
+          });
+        });
+      },
+    },
+  };
 }
