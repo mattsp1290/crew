@@ -40,7 +40,7 @@ test("Codex reports a native thread's running total; each turn records only its 
   const first = await runCodexTurn(input, profile);
   const second = await runCodexTurn({ ...input, runId: randomUUID(), text: "recall", checkpoint: first.checkpoint }, profile);
   const third = await runCodexTurn({ ...input, runId: randomUUID(), text: "recall", checkpoint: second.checkpoint }, profile);
-  // The model is the one each turn's turn_context entry in the rollout names.
+  // The host adapter does not name the answering model, so the segment records the profile model.
   const share = (n: number) => ({ ...reported, model: "gpt-5.4", inputTokens: 100 * n, outputTokens: 7 * n, cachedInputTokens: 10 * n,
     cacheWriteTokens: 0, reasoningTokens: 2 * n });
   assert.deepEqual([first.usage, second.usage, third.usage], [share(1), share(2), share(3)]);

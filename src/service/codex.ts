@@ -391,11 +391,27 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
       listen(sink: { data: (bytes: Uint8Array) => void; diagnostic: (bytes: Uint8Array) => void; ended: (reason: "process-exit") => void }) {
         const onData = (chunk: Buffer) => sink.data(chunk);
         const onError = (chunk: Buffer) => sink.diagnostic(chunk);
-        const onClose = () => sink.ended("process-exit");
+        let reported = false;
+        let grace: ReturnType<typeof setTimeout> | undefined;
+        const report = () => {
+          if (reported) return;
+          reported = true;
+          clearTimeout(grace);
+          sink.ended("process-exit");
+        };
+        // `close` waits for pipes a descendant may still hold. After exit, keep reading for the same grace the sign-in reader uses, then stop. Ending at once would drop frames still in the pipe.
+        const onExit = () => { grace = setTimeout(report, 500); };
         stdout.on("data", onData);
         stderr.on("data", onError);
-        child.on("close", onClose);
-        return () => { stdout.off("data", onData); stderr.off("data", onError); child.off("close", onClose); };
+        child.on("exit", onExit);
+        child.on("close", report);
+        return () => {
+          clearTimeout(grace);
+          stdout.off("data", onData);
+          stderr.off("data", onError);
+          child.off("exit", onExit);
+          child.off("close", report);
+        };
       },
       write(frame: Uint8Array, writeSignal: AbortSignal) {
         if (writeSignal.aborted) return Promise.reject(writeSignal.reason);

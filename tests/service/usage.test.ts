@@ -222,13 +222,13 @@ test("the usage routes total an owner's usage by member and conversation, mark r
   assert.deepEqual([capabilities.usage.route, capabilities.usage.budget.period, capabilities.usage.budget.refusal,
     capabilities.usage.budget.refusalClosingConversation], ["/v1/usage", "utc_day", "usage_limit", "usage_limit_closed"]);
   // Pinned, so rewording a value consumers may match is a deliberate change. Values that were true
-  // before estimates still are, since costUsd is still billed only; only Codex's model changed.
+  // before estimates still are, since costUsd is still billed only. Codex's model is the profile model.
   assert.deepEqual([capabilities.usage.cost, capabilities.usage.engines, capabilities.usage.lanes, capabilities.usage.estimate,
     capabilities.usage.budget.lanesCounted, capabilities.usage.budget.lanesRefused], ["provider-billed-only; never-estimated", {
     pi: { usage: "per-model-call", model: "reported", modelSource: "answering-model", cost: "when-provider-billed",
       estimate: "when-priced-and-not-billed" },
     claude: { usage: "per-query", model: "reported", cost: "never", estimate: "when-priced" },
-    codex: { usage: "per-turn-from-thread-total", model: "from-rollout-turn-context", cost: "never", estimate: "when-priced" },
+    codex: { usage: "per-turn-from-thread-total", model: "profile-model", cost: "never", estimate: "when-priced" },
   }, ["member", "trusted"], { field: "estimatedCostUsd", source: "operator-price-table", setting: "BIRBCREW_USAGE_PRICES_PATH",
     unit: "usd-per-million-tokens", keyedBy: "recorded-model", computed: "at-write; never-recomputed", builtInPrices: false,
     withBilledCost: "never-on-one-segment; totals-never-added" }, ["member", "trusted"], ["member"]]);

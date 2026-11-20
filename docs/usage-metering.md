@@ -203,7 +203,7 @@ refuses (`lanesCounted`, `lanesRefused`), the refusal codes (`refusal` and
 IDs. `cost` and each engine's `cost` still describe `costUsd`, which is still a billed
 cost only, so their values are unchanged; each engine gains `estimate`, and Pi
 `modelSource`. One existing value changed, because it stopped being true: Codex's
-`model`, from `not-reported` to `from-rollout-turn-context`.
+`model`, from `not-reported` to `profile-model`.
 
 ## Estimated cost
 
@@ -612,8 +612,8 @@ answer, and `unknown` for the faux fixture. It starts the real supervisor host a
 runners, with no Temporal, and checks one ledger row per launch for all three engines,
 no second row for a repeated start, and the `model.invoke` attributes. It also checks
 the mapping rules: a billed cost kept only when billed, counts that go down or cannot be
-read. It checks the model each engine names: Codex's from its rollout, the last turn's
-only and none when that turn's entries disagree, and Pi's answering model, including a
+read. It checks the model each engine names: Codex's profile model on a native turn,
+the rollout helper's last turn only when that turn's entries agree, and Pi's answering model, including a
 routed answer taken from the reply the host relayed to the confined worker. It prices
 segments with every part of the input, exactly at the largest counts and rates the
 ledger and table accept, and refuses an estimate with no table, no price, no model, a
