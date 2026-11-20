@@ -28,17 +28,17 @@ export async function runLiveTool(
   const hold: CodexHold = {
     tool,
     answer: (call, turn) => answer(pool, temporal, launch, workflowId, tool, signal, turn, nativeThread.promise, discloseCallId, call, () => active, (value) => { active = value; }, deliveries, () => stopped.abort()),
+    async delivered(nativeCallId, text) {
+      const pending = deliveries.get(nativeCallId);
+      if (!pending || pending.text !== text) throw new Error("Native SDK result differs from the returned tool result");
+      await confirmDelivery(pool, launch, pending.approvalId);
+      deliveries.delete(nativeCallId);
+    },
   };
   try {
     return await run({
       ...input, signal, hold,
       onThreadStarted(id) { nativeThread.resolve(id); },
-      async onToolDelivered(nativeCallId, text) {
-        const pending = deliveries.get(nativeCallId);
-        if (!pending || pending.text !== text) throw new Error("Native SDK result differs from the returned tool result");
-        await confirmDelivery(pool, launch, pending.approvalId);
-        deliveries.delete(nativeCallId);
-      },
     });
   } finally {
     stopped.abort();

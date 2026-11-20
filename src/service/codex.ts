@@ -42,6 +42,7 @@ export type CodexToolCall = Extract<CodexSegment, { kind: "pending" }>["calls"][
 export interface CodexHold {
   readonly tool: "record_work_item" | "choose_next_step";
   answer(call: CodexToolCall, signal: AbortSignal): Promise<ReturnType<typeof codexToolContinuation>>;
+  delivered?(nativeCallId: string, text: string): void | Promise<void>;
 }
 interface CodexInput {
   threadId: string; runId: string; text: string; checkpoint: unknown; signal: AbortSignal;
@@ -232,6 +233,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       const text = answered.get(event.target.nativeToolCallId);
       if (text === undefined) return;
       await input.onToolDelivered?.(event.target.nativeToolCallId, text);
+      await input.hold?.delivered?.(event.target.nativeToolCallId, text);
     }).catch((error: unknown) => { observerError ??= error; observerStop.abort(); });
   });
   const recordIntent = (_identity: unknown, signal: AbortSignal) => { signal.throwIfAborted(); };
