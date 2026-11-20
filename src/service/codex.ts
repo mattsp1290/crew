@@ -131,7 +131,7 @@ export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Pr
 
 /** Publishes the first delta of an assistant item immediately and holds the rest until the item changes. */
 function codexTranscript(onText?: (text: string) => void | Promise<void>) {
-  let transcript = "", itemId = "", pending = "", opened = false;
+  let transcript = "", itemId = "", pending = "", opened = false, closed = false;
   const publish = async (text: string) => {
     if (!text) return;
     transcript += text;
@@ -140,6 +140,7 @@ function codexTranscript(onText?: (text: string) => void | Promise<void>) {
   };
   return {
     async delta(id: string, text: string) {
+      if (closed) throw new Error("Codex text arrived after the transcript closed");
       if (id !== itemId) {
         if (opened) await publish(pending);
         itemId = id;
@@ -149,7 +150,12 @@ function codexTranscript(onText?: (text: string) => void | Promise<void>) {
       if (!opened) { opened = true; await publish(text); }
       else pending += text;
     },
-    async finish() { await publish(pending); pending = ""; },
+    async finish() {
+      closed = true;
+      const tail = pending;
+      pending = "";
+      await publish(tail);
+    },
     text: () => transcript,
   };
 }
@@ -305,8 +311,17 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       failedObserver();
       segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: turnSignal });
     }
-    await reply.finish();
-    await observed;
+    const whenIdle = async () => {
+      let cursor: Promise<void>;
+      do {
+        cursor = observed;
+        await cursor;
+      } while (cursor !== observed);
+    };
+    // finish runs on the subscriber chain. A delta still awaiting onText cannot clear the tail first.
+    await whenIdle();
+    observed = observed.then(() => reply.finish());
+    await whenIdle();
     failedObserver();
     if (segment.kind !== "complete") throw codexTurnFailure(segment.error.code, segment.error.message);
     const text = reply.text();
@@ -327,13 +342,16 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       usage: codexUsage(total, priorUsage, profile.model),
     };
   } finally {
-    if (subscriptionHandle?.kind === "ok") subscriptionHandle.value.dispose();
-    await adapter?.close();
-    for (const start of launched) {
-      start.child.kill("SIGKILL");
-      start.child.stdin?.end();
+    try {
+      if (subscriptionHandle?.kind === "ok") subscriptionHandle.value.dispose();
+      await adapter?.close();
+    } finally {
+      for (const start of launched) {
+        start.child.kill("SIGKILL");
+        start.child.stdin?.end();
+      }
+      await Promise.all(launched.map((start) => start.processExit));
     }
-    await Promise.all(launched.map((start) => start.processExit));
   }
 }
 
