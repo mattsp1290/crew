@@ -203,7 +203,7 @@ refuses (`lanesCounted`, `lanesRefused`), the refusal codes (`refusal` and
 IDs. `cost` and each engine's `cost` still describe `costUsd`, which is still a billed
 cost only, so their values are unchanged; each engine gains `estimate`, and Pi
 `modelSource`. One existing value changed, because it stopped being true: Codex's
-`model`, from `not-reported` to `profile-model`.
+`model`, from `from-rollout-turn-context` to `profile-model`.
 
 ## Estimated cost
 
@@ -314,8 +314,9 @@ The unit is coarser than the member lane's: there each segment of a request has 
 row, while a trusted request is one row, written only when its whole native turn
 returns. A trusted request that fails, is cancelled or loses its lease to a rotation
 records nothing, including the model calls it had already finished (a Claude tool round
-trip, a Pi or Codex tool call), so the lane undercounts more on failure. One whose
-commit then finds the generation stale keeps its row, because the tokens were spent.
+trip or a Pi tool call), so the lane undercounts more on failure. Codex has no trusted
+lane. One whose commit then finds the generation stale keeps its row, because the tokens
+were spent.
 
 The lane's guarantees do not change. The row holds counts and a model name, never the
 context, prompt, reply or tool data; nothing enters Temporal. `erase()` leaves the row,
@@ -674,14 +675,14 @@ limit and the earlier total, unchanged by resume, and admits the request the sou
 refused.
 
 `trusted-runner.test.ts` (`npm run test:trusted`) runs `runTrustedRequest` with the real
-Pi, Claude and Codex SDKs against fixtures that report usage, through a tool round trip
-and a context rotation, and checks one priced row per trusted request with the counts
-of every model call it made.
+Pi and Claude SDKs against fixtures that report usage, through a tool round trip and a
+context rotation, and checks one priced row per trusted request with the counts of
+every model call it made. A Codex profile is refused before a request is claimed.
 
 `npm run test:api:service` (the integration API workflow's `actual-service` job, with
 Temporal) gives its worker a price table and reads `/v1/usage` back over HTTP: each of
-six Claude and six Codex turns carries its estimate, the Codex model comes from its
-rollout, Pi's fixture reports nothing, and the owner's billed and estimated totals stay
+six Claude and six Codex turns carries its estimate, the Codex model is the profile
+model, Pi's fixture reports nothing, and the owner's billed and estimated totals stay
 apart. The other service proofs run the same supervisor host but do not read the ledger.
 So these are not exercised end to end: a refusal by the admission activity inside a real
 workflow (the mapping is tested with a constructed failure), the workflow closing that conversation,

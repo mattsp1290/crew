@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { codexHostAdapter } from "@mattsp1290/switchboard/host/codex";
 import { z } from "zod";
 import { codexSubscriptionEndpoint } from "./accounts.ts";
+import { exitGraceMs } from "./codex-subscription.ts";
 import { codexExecutable } from "./codex-executable.ts";
 import { redact } from "./diagnostics.ts";
 import { turnTextBytes } from "./domain.ts";
@@ -330,16 +331,17 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     if (fingerprintApi.kind !== "supported" || fingerprintApi.api.validity !== "segment-end") throw new Error("Codex history fingerprint is unavailable");
     const fingerprint = await fingerprintApi.api.read(turnSignal);
     if (fingerprint.kind === "error") throw codexTurnFailure(fingerprint.error.code, fingerprint.error.message);
-    const total = codexAdapterTotal(segment.usage.native.data);
-    const baseline = prior ? codexAdapterTotal(prior.priorTotal) : null;
+    const cumulative = segment.usage.scope === "cumulative" && adapter.capabilities.usage === "cumulative";
+    const total = cumulative ? codexAdapterTotal(segment.usage.native.data) : null;
+    const baseline = prior && cumulative ? codexAdapterTotal(prior.priorTotal) : null;
     const priorUsage = prior ? (prior.priorTotal === null || baseline === null ? undefined : baseline) : null;
     return {
       text,
       checkpoint: { version: 1, engine: "codex", state: {
         threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
-        session: segment.session, fingerprint: fingerprint.value, priorTotal: total,
+        session: segment.session, fingerprint: fingerprint.value, priorTotal: cumulative ? total : null,
       } },
-      usage: codexUsage(total, priorUsage, profile.model),
+      usage: codexUsage(cumulative ? total : undefined, cumulative ? priorUsage : undefined, profile.model),
     };
   } finally {
     try {
@@ -375,10 +377,7 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
       BIRBCREW_NATIVE_SQLITE_HOME: sqliteHome, BIRBCREW_NATIVE_LOG_DIR: logDir,
     },
   });
-  const stdin = child.stdin, stdout = child.stdout, stderr = child.stderr;
-  if (!stdin || !stdout || !stderr) throw new Error("The host launcher returned no channel");
-  // The turn never ends stdin. Closing it races a frame the adapter has already queued. A dead process returns EPIPE, which stays on the stream.
-  for (const stream of [stdin, stdout, stderr]) stream.on("error", () => {});
+  const channel = codexProcessChannel(child);
   const stopChild = () => { child.kill("SIGKILL"); };
   const onAbort = () => stopChild();
   signal.addEventListener("abort", onAbort, { once: true });
@@ -387,49 +386,87 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
   return {
     child,
     processExit: new Promise((resolve) => { child.once("exit", resolve); child.once("error", resolve); }),
-    channel: {
-      listen(sink: { data: (bytes: Uint8Array) => void; diagnostic: (bytes: Uint8Array) => void; ended: (reason: "process-exit") => void }) {
-        const onData = (chunk: Buffer) => sink.data(chunk);
-        const onError = (chunk: Buffer) => sink.diagnostic(chunk);
-        let reported = false;
-        let grace: ReturnType<typeof setTimeout> | undefined;
-        const report = () => {
-          if (reported) return;
-          reported = true;
-          clearTimeout(grace);
-          sink.ended("process-exit");
+    channel,
+  };
+}
+
+/** The stdio channel for one app-server process. Stdin stays open. A descendant that inherited the pipes
+ * cannot hold the turn: after exit, unread bytes are kept for `exitGraceMs`, then the pipes are destroyed. */
+export function codexProcessChannel(child: ChildProcess) {
+  const stdin = child.stdin, stdout = child.stdout, stderr = child.stderr;
+  if (!stdin || !stdout || !stderr) throw new Error("The host launcher returned no channel");
+  for (const stream of [stdin, stdout, stderr]) stream.on("error", () => {});
+  let reported = false;
+  let grace: ReturnType<typeof setTimeout> | undefined;
+  let markReported: () => void = () => {};
+  const whenReported = new Promise<void>((resolve) => { markReported = resolve; });
+  let sink: { ended: (reason: "process-exit") => void } | undefined;
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  const report = (releasePipes: boolean) => {
+    if (reported || !sink) return;
+    reported = true;
+    clearTimeout(grace);
+    if (releasePipes) {
+      stdout.destroy();
+      stderr.destroy();
+    }
+    sink.ended("process-exit");
+    markReported();
+  };
+  const armGrace = () => {
+    if (reported || grace) return;
+    grace = setTimeout(() => report(true), exitGraceMs);
+  };
+  return {
+    listen(next: { data: (bytes: Uint8Array) => void; diagnostic: (bytes: Uint8Array) => void; ended: (reason: "process-exit") => void }) {
+      sink = next;
+      const onData = (chunk: Buffer) => next.data(chunk);
+      const onError = (chunk: Buffer) => next.diagnostic(chunk);
+      const onClose = () => report(false);
+      stdout.on("data", onData);
+      stderr.on("data", onError);
+      child.on("exit", armGrace);
+      child.on("close", onClose);
+      if (exited()) armGrace();
+      return () => {
+        clearTimeout(grace);
+        stdout.off("data", onData);
+        stderr.off("data", onError);
+        child.off("exit", armGrace);
+        child.off("close", onClose);
+      };
+    },
+    write(frame: Uint8Array, writeSignal: AbortSignal) {
+      if (writeSignal.aborted) return Promise.reject(writeSignal.reason);
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const settle = (failed: boolean, error?: unknown) => {
+          if (settled) return;
+          settled = true;
+          writeSignal.removeEventListener("abort", abort);
+          if (failed) reject(error); else resolve();
         };
-        // `close` waits for pipes a descendant may still hold. After exit, keep reading for the same grace the sign-in reader uses, then stop. Ending at once would drop frames still in the pipe.
-        const onExit = () => { grace = setTimeout(report, 500); };
-        stdout.on("data", onData);
-        stderr.on("data", onError);
-        child.on("exit", onExit);
-        child.on("close", report);
-        return () => {
-          clearTimeout(grace);
-          stdout.off("data", onData);
-          stderr.off("data", onError);
-          child.off("exit", onExit);
-          child.off("close", report);
-        };
-      },
-      write(frame: Uint8Array, writeSignal: AbortSignal) {
-        if (writeSignal.aborted) return Promise.reject(writeSignal.reason);
-        if (!stdin.writable) return Promise.reject(new Error("Codex launcher stdin is closed"));
-        return new Promise<void>((resolve, reject) => {
-          const abort = () => reject(writeSignal.reason);
-          writeSignal.addEventListener("abort", abort, { once: true });
-          try {
-            stdin.write(frame, (error) => {
-              writeSignal.removeEventListener("abort", abort);
-              if (error) reject(error); else resolve();
-            });
-          } catch (error) {
-            writeSignal.removeEventListener("abort", abort);
-            reject(error);
+        // Rejecting before process-exit makes the transport close the reader and drop frames still in the pipe.
+        const afterExit = (failed: boolean, error?: unknown) => {
+          if (failed && exited() && !reported) {
+            armGrace();
+            void whenReported.then(() => settle(true, error));
+            return;
           }
-        });
-      },
+          settle(failed, error);
+        };
+        const abort = () => afterExit(true, writeSignal.reason);
+        writeSignal.addEventListener("abort", abort, { once: true });
+        if (!stdin.writable) {
+          afterExit(true, new Error("Codex launcher stdin is closed"));
+          return;
+        }
+        try {
+          stdin.write(frame, (error) => afterExit(error != null, error));
+        } catch (error) {
+          afterExit(true, error);
+        }
+      });
     },
   };
 }
