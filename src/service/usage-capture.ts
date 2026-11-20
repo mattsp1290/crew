@@ -154,10 +154,11 @@ export function codexRolloutModel(lines: readonly string[]): string | null {
   return null;
 }
 
-/** Codex (SDK 0.167.1 turn.completed): the usage is the native thread's running total, carried
- * across resumed turns, so this turn's share is the total less the one the prior rollout ended
- * on. Responses API counts: input_tokens already includes the cached tokens and output_tokens
- * the reasoning tokens. Codex reports no cost, and names the model only in its rollout. */
+/** Codex: the host adapter's cumulative `token-usage.total` is the native thread's running total,
+ * carried across resumed turns, so this turn's share is the total less the checkpoint's prior total.
+ * A missing prior total leaves the segment unknown. Responses API counts: input_tokens already
+ * includes the cached tokens and output_tokens the reasoning tokens. Codex reports no cost. Crew
+ * prices the profile model. */
 export function codexUsage(total: unknown, prior: Record<string, unknown> | null | undefined, name: string | null = null): SegmentUsage {
   const now = codexTotal.safeParse(total);
   if (!now.success || prior === undefined) return unknown(name);

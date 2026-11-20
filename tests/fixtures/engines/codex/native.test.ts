@@ -281,7 +281,7 @@ test("request_user_input is declined when no person is attached", { timeout: 40_
       const answered = parsed.input.find((item) => item.type === "function_call_output");
       if (!answered) {
         send(res, "response.output_item.done", { item: { type: "function_call", call_id: "call_question", name: "request_user_input",
-          arguments: JSON.stringify([{ id: "q1", question: "Continue?" }]) } });
+          arguments: JSON.stringify({ questions: [{ id: "q1", question: "Continue?" }] }) } });
       } else {
         assert.match(JSON.stringify(answered.output), /No person is attached/);
         assistantText(res, "declined");
@@ -315,12 +315,10 @@ test("hard killing the host stops its Codex CLI and preserves unrelated conversa
   const host = spawn(process.execPath, ["--input-type=module", "-e", `
     import { runCodexTurn } from ${JSON.stringify(module)};
     const [threadId,runId,profile] = process.argv.slice(1);
-    await runCodexTurn({threadId,runId,text:"wait",checkpoint:null,signal:new AbortController().signal,
-      onThreadStarted:id => process.send?.(id)}, JSON.parse(profile));
+    await runCodexTurn({threadId,runId,text:"wait",checkpoint:null,signal:new AbortController().signal}, JSON.parse(profile));
   `, threadId, runId, JSON.stringify(profile)], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   const exit = once(host, "exit");
   t.after(async () => { if (host.exitCode === null && !host.signalCode) host.kill("SIGKILL"); await exit; });
-  await once(host, "message");
   for (let i = 0; i < 100 && !provider.requests.length; i++) await delay(30);
   assert.equal(provider.requests.length, 1);
   const children = (await readFile(`/proc/${host.pid}/task/${host.pid}/children`, "utf8")).trim().split(/\s+/);

@@ -11,6 +11,7 @@ test("Codex launcher config keeps plugins, apps, goals, and image generation off
     "-c", "features.plugins=false", "-c", "features.apps=false", "-c", "features.goals=false",
     "-c", "features.image_generation=false", "-c", "features.code_mode=false",
     "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
+    "-c", "web_search=\"disabled\"",
   ]);
 });
 

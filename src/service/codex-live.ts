@@ -24,10 +24,10 @@ export async function runLiveTool(
   const nativeThread = Promise.withResolvers<string>();
   const workflowId = "birbcrew-ts/member/" + member.memberId + "/conversation/" + member.conversationId;
   const deliveries = new Map<string, { approvalId: string; text: string }>();
-  let active = false;
+  let active = false, consumed = false;
   const hold: CodexHold = {
     tool,
-    answer: (call, turn) => answer(pool, temporal, launch, workflowId, tool, signal, turn, nativeThread.promise, discloseCallId, call, () => active, (value) => { active = value; }, deliveries, () => stopped.abort()),
+    answer: (call, turn) => answer(pool, temporal, launch, workflowId, tool, signal, turn, nativeThread.promise, discloseCallId, call, () => active || consumed, (value) => { active = value; if (value) consumed = true; }, deliveries, () => stopped.abort()),
     async delivered(nativeCallId, text) {
       const pending = deliveries.get(nativeCallId);
       if (!pending || pending.text !== text) throw new Error("Native SDK result differs from the returned tool result");

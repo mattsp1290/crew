@@ -48,6 +48,19 @@ static unsigned long number(const char *text, unsigned long max) {
     return n;
 }
 
+static int private_tree(const char *path) {
+    if (!path || path[0] != '/' || path[1] == '\0') return 0;
+    for (const char *cursor = path; *cursor; ) {
+        while (*cursor == '/') cursor++;
+        if (!*cursor) break;
+        const char *start = cursor;
+        while (*cursor && *cursor != '/') cursor++;
+        size_t span = (size_t)(cursor - start);
+        if ((span == 1 && start[0] == '.') || (span == 2 && start[0] == '.' && start[1] == '.')) return 0;
+    }
+    return 1;
+}
+
 static void permit(int rules, const char *path, uint64_t access, int optional) {
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0 && optional && (errno == ENOENT || errno == ENOTDIR)) return;
@@ -248,8 +261,8 @@ int main(int argc, char **argv) {
         permit(rules, home, private, 0);
         permit(rules, scratch, read | list, 0);
         const char *sqlite = getenv("BIRBCREW_NATIVE_SQLITE_HOME"), *logs = getenv("BIRBCREW_NATIVE_LOG_DIR");
-        if (sqlite && sqlite[0] != '/') return 126;
-        if (logs && logs[0] != '/') return 126;
+        if (sqlite && !private_tree(sqlite)) return 126;
+        if (logs && !private_tree(logs)) return 126;
         if (sqlite) permit(rules, sqlite, private, 0);
         if (logs) permit(rules, logs, private, 0);
         port(rules, getenv("BIRBCREW_NATIVE_PROVIDER_PORT"));

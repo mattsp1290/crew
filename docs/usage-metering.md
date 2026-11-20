@@ -26,14 +26,14 @@ fixture providers (`tests/service/usage-capture.test.ts`).
 
 | | Pi | Claude | Codex |
 | --- | --- | --- | --- |
-| SDK | `@earendil-works/pi-ai` 1.5.2 | `@anthropic-ai/claude-agent-sdk` 0.3.306 (CLI 2.1.306) through the vendored AG-UI adapter 0.0.8 | `@openai/codex-sdk` and CLI 0.167.1 |
-| Where Crew sees it | `usage` and `model` on each reply the host relayed from the provider to the segment's confined worker (`pi-launch.ts`, `pi.ts`) | `result.usage` on the adapter's `RUN_FINISHED` event, and `model` on its `system:init` event (`claude-worker.ts`) | `usage` on the `turn.completed` event (`codex.ts`) |
+| SDK | `@earendil-works/pi-ai` 1.5.2 | `@anthropic-ai/claude-agent-sdk` 0.3.306 (CLI 2.1.306) through the vendored AG-UI adapter 0.0.8 | Codex app-server 0.169.0 through Switchboard's host adapter |
+| Where Crew sees it | `usage` and `model` on each reply the host relayed from the provider to the segment's confined worker (`pi-launch.ts`, `pi.ts`) | `result.usage` on the adapter's `RUN_FINISHED` event, and `model` on its `system:init` event (`claude-worker.ts`) | the host adapter's cumulative `token-usage.total` (`codex.ts`) |
 | Input tokens | `input` + `cacheRead` + `cacheWrite` | `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` | `input_tokens`, which already includes cached tokens |
 | Cached input | `cacheRead` | `cache_read_input_tokens` | `cached_input_tokens` |
 | Cache writes | `cacheWrite` | `cache_creation_input_tokens` | `cache_write_input_tokens` |
 | Output tokens | `output` | `output_tokens` | `output_tokens` |
 | Reasoning tokens | `reasoning` when the provider reports it | not reported | `reasoning_output_tokens` |
-| Model | the one that answered: `responseModel` when the provider named a model other than the one requested, else `model`; null when the segment's calls name different models | as the CLI's `init` message reports it | the `turn_context` entries the CLI writes to the turn's rollout; null when they name none or more than one |
+| Model | the one that answered: `responseModel` when the provider named a model other than the one requested, else `model`; null when the segment's calls name different models | as the CLI's `init` message reports it | the profile model; the host adapter does not name the model that answered |
 | Billed cost | `cost.total` only when `cost.totalFromProvider` is true; otherwise pi-ai computed it from its model catalog, and Crew drops it | never: `total_cost_usd` is the SDK's estimate from a price lookup | never: nothing reported |
 | Estimated cost | from the operator's table when the segment has no billed cost | from the operator's table | from the operator's table |
 | Granularity | one model call per assistant message, summed over the segment | the one `query()` call that runs the segment | the native thread's running total |

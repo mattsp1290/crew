@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -195,8 +195,17 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     scope: { engine: "codex", account, adapterInstanceId: "crew", sessionId: threadId },
   };
   const launcher = fileURLToPath(new URL("../../.proof/bin/member-launch", import.meta.url));
+  const launched: { child: ChildProcess; processExit: Promise<unknown> }[] = [];
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  let adapter: OpenedAdapter | undefined;
+  let subscriptionHandle: ReturnType<OpenedAdapter["events"]["subscribe"]> | undefined;
+  try {
   const opened = await codexHostAdapter.open({
-    launch: { kind: "spawn", spawn: (request, signal) => borrowLauncher(launcher, request, signal, url.port || (url.protocol === "https:" ? "443" : "80"), sqliteHome, logDir) },
+    launch: { kind: "spawn", spawn: (request, signal) => {
+      const started = borrowLauncher(launcher, request, signal, port, sqliteHome, logDir);
+      launched.push(started);
+      return { processExit: started.processExit, channel: started.channel };
+    } },
     environment: {
       variables,
       nativeConfig: {
@@ -217,17 +226,34 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     ...(prior && { resume: { session: prior.session, ...(prior.fingerprint && { expectedHistory: prior.fingerprint }) } }),
   }, input.signal);
   if (opened.kind === "error") throw codexTurnFailure(opened.error.code, opened.error.message);
-  const adapter = opened.value;
+  adapter = opened.value;
   const answered = new Map<string, string>();
   const observerStop = new AbortController();
   const turnSignal = AbortSignal.any([input.signal, observerStop.signal]);
-  let published = 0, observerError: unknown, observed = Promise.resolve();
-  const subscriptionHandle = adapter.events.subscribe((event) => {
+  let transcript = "", itemId = "", pending = "", observerError: unknown, observed = Promise.resolve();
+  let openedItem = false;
+  const publishText = async (text: string) => {
+    if (!text) return;
+    transcript += text;
+    if (Buffer.byteLength(transcript) > 65_536) throw new Error("Codex reply exceeds limit");
+    await input.onText?.(text);
+  };
+  subscriptionHandle = adapter.events.subscribe((event) => {
     observed = observed.then(async () => {
       if (event.kind === "text-delta" && event.text) {
-        published += Buffer.byteLength(event.text);
-        if (published > 65_536) throw new Error("Codex reply exceeds limit");
-        await input.onText?.(event.text);
+        if (event.nativeItemId !== itemId) {
+          if (openedItem) await publishText(pending);
+          itemId = event.nativeItemId;
+          pending = "";
+          openedItem = false;
+        }
+        // The first delta is published immediately. A turn that never completes, such as a
+        // cancellation fixture, still reaches the observer. Later deltas of the same item are one
+        // further item, so a long reply does not store one native item per token.
+        if (!openedItem) {
+          openedItem = true;
+          await publishText(event.text);
+        } else pending += event.text;
       }
       if (event.kind !== "tool-delivery") return;
       const text = answered.get(event.target.nativeToolCallId);
@@ -238,7 +264,14 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   });
   const recordIntent = (_identity: unknown, signal: AbortSignal) => { signal.throwIfAborted(); };
   const failedObserver = () => { if (observerError) throw observerError; };
-  try {
+  if (subscriptionHandle.kind === "ok") {
+    void subscriptionHandle.value.ended.then((reason) => {
+      if (reason === "overflow" || reason === "listener-error") {
+        observerError ??= new Error("Codex event stream ended");
+        observerStop.abort();
+      }
+    });
+  }
     if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
     let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: turnSignal });
     let announced = false;
@@ -265,19 +298,21 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       failedObserver();
       segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: turnSignal });
     }
+    await publishText(pending);
+    pending = "";
     await observed;
     failedObserver();
     if (segment.kind !== "complete") throw codexTurnFailure(segment.error.code, segment.error.message);
-    if (!segment.text || Buffer.byteLength(segment.text) > 65_536) throw new Error("Incomplete native Codex turn");
+    if (!transcript || !transcript.endsWith(segment.text) || Buffer.byteLength(transcript) > 65_536) throw new Error("Incomplete native Codex turn");
     const fingerprintApi = adapter.capabilities.fingerprint;
     if (fingerprintApi.kind !== "supported" || fingerprintApi.api.validity !== "segment-end") throw new Error("Codex history fingerprint is unavailable");
     const fingerprint = await fingerprintApi.api.read(turnSignal);
     if (fingerprint.kind === "error") throw codexTurnFailure(fingerprint.error.code, fingerprint.error.message);
     const total = codexAdapterTotal(segment.usage.native.data);
     const baseline = prior ? codexAdapterTotal(prior.priorTotal) : null;
-    const priorUsage = prior && prior.priorTotal !== null && baseline === null ? undefined : baseline;
+    const priorUsage = prior ? (prior.priorTotal === null || baseline === null ? undefined : baseline) : null;
     return {
-      text: segment.text,
+      text: transcript,
       checkpoint: { version: 2, engine: "codex", state: {
         threadId, requestId, nativeId: segment.session.opaque, memberId, ownerDigest, model: profile.model,
         session: segment.session, fingerprint: fingerprint.value, priorTotal: total,
@@ -285,21 +320,31 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       usage: codexUsage(total, priorUsage, profile.model),
     };
   } finally {
-    if (subscriptionHandle.kind === "ok") subscriptionHandle.value.dispose();
-    await adapter.close();
+    if (subscriptionHandle?.kind === "ok") subscriptionHandle.value.dispose();
+    await adapter?.close();
+    for (const start of launched) {
+      start.child.kill("SIGKILL");
+      start.child.stdin?.end();
+    }
+    await Promise.all(launched.map((start) => start.processExit));
   }
 }
 
-/** Features the previous driver forced off. The host adapter does not emit these, and 0.169.0 defaults the first four on. */
+/** Features the previous driver forced off. The host adapter does not emit these, and 0.169.0 defaults the first four on.
+ * `web_search` is separate: 0.169.0 defaults an unset mode to Cached. */
 export const codexPinnedConfigArgs = [
   "-c", "features.plugins=false", "-c", "features.apps=false", "-c", "features.goals=false",
   "-c", "features.image_generation=false", "-c", "features.code_mode=false",
   "-c", "analytics.enabled=false", "-c", "feedback.enabled=false",
+  "-c", "web_search=\"disabled\"",
 ] as const;
 
 function borrowLauncher(launcher: string, request: { executable: string; args: readonly string[]; cwd: string; env: Readonly<Record<string, string>> },
   signal: AbortSignal, port: string, sqliteHome: string, logDir: string) {
   if (signal.aborted) throw signal.reason;
+  if (request.args[0] !== request.executable || request.args[1] !== "app-server" || request.args[2] !== "--stdio") {
+    throw new Error("Unexpected Codex launcher arguments");
+  }
   const child = spawn(launcher, [...request.args.slice(1), ...codexPinnedConfigArgs], {
     cwd: request.cwd, stdio: ["pipe", "pipe", "pipe"],
     env: {
@@ -316,6 +361,7 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
   if (signal.aborted) onAbort();
   child.once("exit", () => signal.removeEventListener("abort", onAbort));
   return {
+    child,
     processExit: new Promise((resolve) => { child.once("exit", resolve); child.once("error", resolve); }),
     channel: {
       listen(sink: { data: (bytes: Uint8Array) => void; diagnostic: (bytes: Uint8Array) => void; ended: (reason: "process-exit") => void }) {
