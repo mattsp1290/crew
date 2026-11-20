@@ -349,7 +349,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     } finally {
       for (const start of launched) start.child.kill("SIGKILL");
       await Promise.all(launched.map((start) => start.processExit));
-      await new Promise((resolve) => setTimeout(resolve, exitGraceMs));
+      // finish('caller-close') runs reader.close(). The channel grace has to report first.
+      if (launched.length > 0) await new Promise((resolve) => setTimeout(resolve, exitGraceMs));
       await adapter?.close();
     }
   }
