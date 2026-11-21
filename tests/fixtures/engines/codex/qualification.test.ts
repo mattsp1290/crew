@@ -11,6 +11,9 @@ import test from "node:test";
 import { z } from "zod";
 import { startProvider } from "./provider.mts";
 
+// The Codex member ships only a Linux arm64/x64 binary (src/service/codex-executable.ts).
+const linux = process.platform === "linux";
+
 const callMessage = z.object({
   kind: z.literal("call"),
   threadId: z.uuid(),
@@ -19,7 +22,7 @@ const callMessage = z.object({
 });
 
 for (const decision of ["approve", "deny", "interrupt"] as const) {
-  test("native Codex host tool " + decision, { timeout: 45_000 }, async (t) => {
+  test("native Codex host tool " + decision, { skip: !linux, timeout: 45_000 }, async (t) => {
     const root = await mkdtemp(join(tmpdir(), "birb-codex-tool-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const db = new DatabaseSync(join(root, "operations.sqlite"));

@@ -100,7 +100,8 @@ async function turn(host, threadId, prompt, t, cancel = false) {
 }
 
 for (const engine of ["claude", "pi", "codex"]) {
-  test(`${engine} clean consumer`, { timeout: 120_000 }, async (t) => {
+  // The Codex member ships only a Linux arm64/x64 binary (src/service/codex-executable.ts).
+  test(`${engine} clean consumer`, { skip: engine === "codex" && process.platform !== "linux", timeout: 120_000 }, async (t) => {
     const { createFixture } = await import(`./${engine}/index.mts`);
     const providerFailure = t.mock.fn();
     const host = await serve(await createFixture(providerFailure), t);
