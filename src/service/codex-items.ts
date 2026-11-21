@@ -24,7 +24,8 @@ function redactCompletedItems(items: string[], ids: Set<string>, final: boolean)
       hidden.fill(1, at, at + id.length);
     }
     if (final) continue;
-    // The next item may finish a private ID. Wait to publish the item containing its prefix.
+    // Hold a prefix of the id at the end of the buffer: "After private." waits for "<uuid> finished.".
+    // A finished id does not match ("…7890".endsWith("private.…789") is false). A suffix check would publish the split early.
     for (let n = Math.min(id.length - 1, joined.length); n > 0; n--) {
       if (joined.endsWith(id.slice(0, n))) {
         complete = Math.min(complete, joined.length - n);

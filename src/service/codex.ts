@@ -305,9 +305,11 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
         await input.onThreadStarted?.(segment.session.opaque);
       }
       if (segment.kind !== "pending") break;
-      // The preamble is one completed item once the model asks for a tool. Publish it before that call is disclosed.
+      // The preamble is one completed item once the model asks for a tool. Publish it on the
+      // subscriber chain, as finish does, so a delta that arrives during onText stays in this item.
       await whenIdle();
-      await reply.flush();
+      observed = observed.then(() => reply.flush());
+      await whenIdle();
       const answers = [];
       for (const call of segment.calls) {
         failedObserver();

@@ -9,6 +9,7 @@ import type { DeferredTool, ToolOutcome } from "./deferral.ts";
 import type { Launch } from "./supervisor.ts";
 import { MemberStoreError, type Conversation } from "./domain.ts";
 import { temporalConnectionOptions, type TemporalSettings } from "./temporal-config.ts";
+import { proseCallId } from "./text-stream.ts";
 
 function resultText(outcome: ToolOutcome) {
   if (outcome.kind === "answered") return outcome.choice;
@@ -61,7 +62,7 @@ async function answer(
     if (threadId !== call.pending.target.session.opaque) throw new Error("Unexpected native thread");
     if (call.name !== tool) throw new Error("Unexpected native Codex tool");
     const nativeId = call.pending.target.nativeToolCallId;
-    const visible = modelVisibleCallId(nativeId);
+    const visible = proseCallId(nativeId);
     // One flush, after every id the model can write is known. The ledger cannot redact an item it already published.
     await discloseCallId(nativeId, ...(visible && visible !== nativeId ? [visible] : []));
     const deadline = Date.now() + 120_000;
@@ -100,12 +101,4 @@ async function answer(
     stop();
     throw new Error("Native tool call interrupted", { cause: error });
   } finally { setActive(false); }
-}
-
-/** The adapter's ledger id is a JSON list whose third entry is the id the model can write back. */
-function modelVisibleCallId(id: string) {
-  try {
-    const parts = JSON.parse(id);
-    return Array.isArray(parts) && typeof parts[2] === "string" && parts[2] !== "" ? parts[2] : undefined;
-  } catch { return undefined; }
 }
