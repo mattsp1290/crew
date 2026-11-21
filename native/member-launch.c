@@ -63,7 +63,10 @@ static int private_tree(const char *path) {
 
 static void permit(int rules, const char *path, uint64_t access, int optional) {
     int fd = open(path, O_PATH | O_CLOEXEC);
-    if (fd < 0 && optional && (errno == ENOENT || errno == ENOTDIR)) return;
+    // EACCES: a nested launcher already lives under the worker domain, which
+    // cannot name this process's /proc/self. Skip the optional file instead of
+    // refusing the CLI. Required paths still fail closed.
+    if (fd < 0 && optional && (errno == ENOENT || errno == ENOTDIR || errno == EACCES)) return;
     checked(fd);
     struct landlock_path_beneath_attr attr = { .allowed_access = access, .parent_fd = fd };
     checked(syscall(SYS_landlock_add_rule, rules, LANDLOCK_RULE_PATH_BENEATH, &attr, 0));
@@ -301,6 +304,11 @@ int main(int argc, char **argv) {
             permit_under(rules, root, "packages/client/package.json", read);
             permit_under(rules, root, "packages/client/dist", read | list);
             if (claude_worker) permit_under(rules, root, ".proof/bin/member-launch", read | exec);
+            // A rule opened through /proc/self names only this process. The nested
+            // launcher is a new pid and must open its own /proc/self entries to put
+            // them in the CLI ruleset. Landlock's ptrace scope still refuses another
+            // process's environ, mem and cmdline.
+            if (claude_worker) permit(rules, "/proc", read | list, 0);
             unsetenv("BIRBCREW_NATIVE_SOURCE");
             unsetenv("BIRBCREW_CLAUDE_WORKER");
             unsetenv("BIRBCREW_NATIVE_CHANNEL");

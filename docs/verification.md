@@ -65,7 +65,10 @@ which would otherwise bypass the filter.
   `.proof/bin/member-launch`. It may write only its conversation directory. It
   may start a process, and the Claude CLI is started again through this
   launcher, which confines that CLI's filesystem to the conversation directory
-  and does not handle network either. `setsid` and
+  and does not handle network either. The worker may also read `/proc`, because
+  a `/proc/self` rule names only the process that opened it and the nested
+  launcher has a new pid. Landlock's ptrace scope still hides another process's
+  environ, mem and cmdline. `setsid` and
   `setpgid` stay denied, so the worker cannot leave the process group its host
   kills. The launcher keeps the Node IPC socket and refuses to start unless
   that descriptor is a socket. The worker's network is not restricted: the
@@ -197,7 +200,8 @@ directory. It gets `EACCES` when it reads or writes a sibling file, reads a
 test file, reads or appends the docs tree, reads client source, reads its
 host's environment, writes `src/service`, `node_modules`, or the compiled
 client, or executes a script it just wrote in the conversation directory.
-`setsid` returns `EPERM`. A nested launcher process cannot read the sibling
+A detached child keeps the worker's session id, which is how the probe shows
+`setsid` was denied: libuv ignores the `EPERM`. A nested launcher process cannot read the sibling
 file or the worker source: that second ruleset confines the CLI to the
 conversation directory and does not handle network either. A loopback TCP
 connect from the worker still succeeds, because network confinement waits for

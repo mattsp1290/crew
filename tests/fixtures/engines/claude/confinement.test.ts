@@ -62,9 +62,13 @@ test("the confined Claude worker can read its code, write its directory and star
     result.planted = planted.error?.code ?? (planted.status === 0 ? "allowed" : String(planted.status));
     const nested = childProcess.spawnSync(${JSON.stringify(launcher)}, [String(process.pid), process.execPath, "-e", ${JSON.stringify(nestedScript)}], { cwd: process.cwd(), encoding: "utf8" });
     result.nested = nested.status === 0 ? JSON.parse(nested.stdout) : (nested.error?.code ?? String(nested.status));
-    // detached calls setsid. setpgid is the same seccomp deny and has no Node spawn flag.
-    const session = childProcess.spawnSync(process.execPath, ["-e", "process.exit(0)"], { detached: true });
-    result.setsid = session.error?.code ?? (session.status === 0 ? "allowed" : String(session.status));
+    // libuv's Linux fork path calls setsid and ignores EPERM, so a zero exit does not
+    // mean the syscall worked. The session id in /proc/self/stat changes only when it does.
+    // Field after the comm: state, ppid, pgrp, session.
+    const sessionId = (stat) => stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3];
+    const mine = sessionId(fs.readFileSync("/proc/self/stat", "utf8"));
+    const session = childProcess.spawnSync(process.execPath, ["-e", "const fs=require('node:fs'); const stat=fs.readFileSync('/proc/self/stat','utf8'); process.stdout.write(stat.slice(stat.lastIndexOf(')')+2).split(' ')[3]);"], { encoding: "utf8", detached: true });
+    result.setsid = session.status === 0 && session.stdout === mine ? "EPERM" : (session.error?.code ?? "allowed");
     const finish = (tcp) => { process.send({ ...result, tcp }, () => process.exit(0)); };
     require("node:net").connect(${address.port}, "127.0.0.1").once("connect", () => finish("allowed")).once("error", (error) => finish(error.code));
   `;
