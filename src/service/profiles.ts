@@ -18,10 +18,14 @@ export interface CursorRuntimeOptions {
   readonly apiKey: string;
   readonly model: string;
 }
+export type CursorRuntimeEvent =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "tool"; readonly callId: string; readonly name: string; readonly status: "running" | "completed" | "error" }
+  | { readonly kind: "ended"; readonly outcome: "completed" | "failed" | "interrupted" };
 export interface CursorRuntimeHandle {
   start(request: {
     readonly text: string;
-    readonly onEvent: (event: { readonly kind: string; readonly text?: string; readonly outcome?: string }) => void;
+    readonly onEvent: (event: CursorRuntimeEvent) => void;
   }): Promise<{ readonly agentId: string; readonly finished: Promise<string>; abort(): Promise<void> }>;
   close(): Promise<void>;
 }

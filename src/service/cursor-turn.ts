@@ -1,13 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, rm } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
+import { removePrivate, TextTurnFailed } from "./private-directory.ts";
 import type { CursorProfile, CursorRuntimeHandle, CursorRuntimeOptions } from "./profiles.ts";
 
-const failed = () => new Error("Text engine turn failed");
+const failed = () => new TextTurnFailed();
 const closeBoundMs = 5_000;
 
 async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRuntimeHandle> {
@@ -20,14 +19,6 @@ async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRunt
   process.env.TMPDIR = options.sessionDirectory;
   process.env.CURSOR_DATA_DIR = options.sessionDirectory;
   return createCursorRuntime(options);
-}
-
-async function removePrivate(directory: string) {
-  try { await rm(directory, { recursive: true, force: true }); return; }
-  catch { /* a child can leave a directory this uid cannot list */ }
-  const run = promisify(execFile);
-  await run("/bin/chmod", ["-R", "u+rwx", "--", directory]).catch(() => undefined);
-  await run("/bin/rm", ["-rf", "--one-file-system", "--", directory]);
 }
 
 function bounded<T>(work: Promise<T>): Promise<T> {
@@ -60,27 +51,20 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     }
     let latest = "";
     let outcome: string | undefined;
-    let sawDisallowed = false;
+    let refusal = false;
     const started = runtime.start({
       text: input.text,
       onEvent(event) {
-        if (event.kind === "text" && typeof event.text === "string") {
-          const text = event.text;
-          if (!text.startsWith(latest)) {
-            sawDisallowed = true;
-            throw failed();
-          }
-          const suffix = text.slice(latest.length);
+        if (refusal) return;
+        if (event.kind === "text") {
+          if (!event.text.startsWith(latest)) { refusal = true; return; }
+          const suffix = event.text.slice(latest.length);
           if (suffix.length > 0) void input.onText?.(suffix);
-          latest = text;
+          latest = event.text;
           return;
         }
-        if (event.kind === "ended" && typeof event.outcome === "string") {
-          outcome = event.outcome;
-          return;
-        }
-        sawDisallowed = true;
-        throw failed();
+        if (event.kind === "ended") { outcome = event.outcome; return; }
+        refusal = true;
       },
     });
     let rejectPending: (error: Error) => void = () => undefined;
@@ -104,7 +88,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     else input.signal.addEventListener("abort", onAbort);
     try {
       const finished = await turn.finished;
-      if (sawDisallowed || input.signal.aborted || finished !== "completed" || outcome !== "completed"
+      if (refusal || input.signal.aborted || finished !== "completed" || outcome !== "completed"
         || latest.length === 0 || Buffer.byteLength(latest) > turnTextBytes) throw failed();
       result = {
         kind: "complete", text: latest,
@@ -114,14 +98,14 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
       input.signal.removeEventListener("abort", onAbort);
     }
   } catch (error) {
-    if (error instanceof Error && error.message === "Text engine turn failed") throw error;
+    if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
     try {
       if (runtime) await bounded(runtime.close());
       await removePrivate(sessionDirectory);
     } catch (error) {
-      if (error instanceof Error && error.message === "Text engine turn failed") throw error;
+      if (error instanceof TextTurnFailed) throw error;
       throw failed();
     }
   }

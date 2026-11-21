@@ -1,14 +1,14 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
 import type { Conversation } from "./domain.ts";
+import { removePrivate, TextTurnFailed } from "./private-directory.ts";
 import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "./profiles.ts";
 
-const failed = () => new Error("Text engine turn failed");
+const failed = () => new TextTurnFailed();
 const maxPrompt = 1_048_576;
 const closeBoundMs = 20_000;
 
@@ -20,13 +20,6 @@ function sameEnvironment(left: Readonly<Record<string, string>>, right: Readonly
   const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
 }
-async function removePrivate(directory: string) {
-  try { await rm(directory, { recursive: true, force: true }); return; }
-  catch { /* a child can leave a directory this uid cannot list */ }
-  const run = promisify(execFile);
-  await run("/bin/chmod", ["-R", "u+rwx", "--", directory]).catch(() => undefined);
-  await run("/bin/rm", ["-rf", "--one-file-system", "--", directory]);
-}
 function bounded<T>(work: Promise<T>, kill: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -37,7 +30,7 @@ function bounded<T>(work: Promise<T>, kill: () => void): Promise<T> {
   timeout.catch(() => undefined);
   return Promise.race([work, timeout]).catch((error: unknown) => {
     kill();
-    throw error instanceof Error && error.message === "Text engine turn failed" ? error : failed();
+    throw error instanceof TextTurnFailed ? error : failed();
   }).finally(() => { if (timer) clearTimeout(timer); });
 }
 function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void, invocationGroup?: number): OpenCodeSpawned {
@@ -160,7 +153,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   } catch (error) {
     await bounded(adapter.close().then(() => undefined, () => undefined), killGroup).catch(() => undefined);
     killGroup();
-    if (error instanceof Error && error.message === "Text engine turn failed") throw error;
+    if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
     if (subscription.kind === "ok") subscription.value.dispose();

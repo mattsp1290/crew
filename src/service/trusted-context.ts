@@ -113,14 +113,14 @@ export class TrustedContextStore {
     const key = keySchema.parse(input), snapshot = snapshotSchema.parse(value);
     await this.allowed({ ...key, scope:snapshot.scope,version:snapshot.version,phase:"open" });
     await this.transaction(async db => {
-      const c = await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 AND owner_id=$2 FOR UPDATE", [key.conversationId,key.ownerId]);
-      if (!c.rowCount) throw new TrustedContextError("not_found");
       const member = await db.query<{ engine: Engine }>(
-        `SELECT m.engine FROM birbcrew_ts.members m
-          JOIN birbcrew_ts.conversations c ON c.owner_id = m.owner_id AND c.member_id = m.member_id
-          WHERE c.conversation_id = $1 AND c.owner_id = $2`,
+        `SELECT m.engine FROM birbcrew_ts.conversations c
+          JOIN birbcrew_ts.members m ON c.owner_id = m.owner_id AND c.member_id = m.member_id
+          WHERE c.conversation_id = $1 AND c.owner_id = $2
+          FOR UPDATE OF c`,
         [key.conversationId, key.ownerId]);
-      if (member.rows[0] && isTextEngine(member.rows[0].engine)) throw new TrustedContextError("denied");
+      if (!member.rows[0]) throw new TrustedContextError("not_found");
+      if (isTextEngine(member.rows[0].engine)) throw new TrustedContextError("denied");
       if ((await db.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1",[key.conversationId])).rowCount) throw new TrustedContextError("conflict");
       // A handoff's source is sealed and its target awaits its reserved first request on the member lane.
       if ((await db.query("SELECT 1 FROM birbcrew_ts.conversation_handoffs WHERE source_conversation_id=$1 OR target_conversation_id=$1",

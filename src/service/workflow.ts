@@ -324,7 +324,6 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     void admission.catch(() => {}); // Also observed by the queued runner and admission handler.
     const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string> };
     inFlight++;
-    let textBudgetRejection = false;
     const result = previous.then(async () => {
       try { await entry.admission; }
       catch (error) {
@@ -335,7 +334,6 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
           await rejectUnstartedAdmission(request);
           turns.delete(request.requestId);
-          textBudgetRejection = true;
           throw error;
         }
         // The SQL admission may have committed even if Temporal lost every ack.
@@ -353,7 +351,10 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     turns.set(request.requestId, entry);
     previous = result.then(() => { inFlight--; }, (error) => {
       inFlight--;
-      if (!textBudgetRejection && !applicationFailure(error, "text_stopped")) failed = true;
+      const keepOpen = applicationFailure(error, "input_limit")
+        || applicationFailure(error, "prompt_rejected")
+        || applicationFailure(error, "text_stopped");
+      if (!keepOpen) failed = true;
     });
     return entry;
   }

@@ -89,3 +89,13 @@ export class MemberStoreError extends Error {
     this.code = code;
   }
 }
+
+/** A text-engine admission refusal. failureType is the non-retryable Temporal type. */
+export class TextAdmissionError extends MemberStoreError {
+  readonly failureType: "prompt_rejected" | "input_limit";
+  constructor(code: "conflict" | "input_limit", failureType: "prompt_rejected" | "input_limit") {
+    super(code);
+    this.name = "TextAdmissionError";
+    this.failureType = failureType;
+  }
+}

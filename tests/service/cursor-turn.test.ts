@@ -82,7 +82,7 @@ test("a cursor tool event or a snapshot that does not extend the previous one fa
     runtime: () => ({
       async start({ onEvent }) {
         onEvent({ kind: "text", text: "cedar " });
-        onEvent({ kind: "tool", arguments: toolArguments, result: toolResult } as { kind: string });
+        onEvent({ kind: "tool", callId: "call-1", name: "shell", status: "running" });
         onEvent({ kind: "ended", outcome: "completed" });
         return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
       },

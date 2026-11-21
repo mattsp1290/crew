@@ -24,8 +24,8 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  isTextEngine, MemberStoreError, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, turnRequestSchema,
-  type BeginTurn, type Conversation, type Member, type RequestInitiator, type TurnRequest,
+  isTextEngine, MemberStoreError, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
+  type BeginTurn, type Conversation, type Engine, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 
 type SpawnedMember = Member & { subagents: MemberSubagents; instructions?: InstructionsSummary; instructionPacks?: string[];
@@ -73,6 +73,22 @@ function sameTerms(admission: { prompt_digest: Buffer; approval_deadline_seconds
     && admission.approval_deadline_seconds === (request.approvalDeadlineSeconds ?? null);
 }
 
+const turnBudgetSql = `SELECT turn_limit AS "limit",
+      (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
+       UNION SELECT request_id FROM birbcrew_ts.turns WHERE conversation_id=$1) ids)::integer AS used
+      FROM birbcrew_ts.conversations WHERE conversation_id=$1`;
+
+async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string) {
+  const { rows: [budget] } = await db.query<{ limit: number; used: number }>(turnBudgetSql, [conversationId]);
+  return budget;
+}
+
+function textAdmissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
+  if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("conflict", "prompt_rejected");
+  if (turnLimitReached && isTextEngine(engine)) return new TextAdmissionError("input_limit", "input_limit");
+  return undefined;
+}
+
 /** recordAcceptance's checks of a request with no admission row that come before its member's
  * budget, in its order, inside the caller's transaction after it locked the conversation: a turn
  * a legacy submit already started, the conversation's request bound, a handoff's seal or
@@ -85,12 +101,10 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
   if(existingTurn) {
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
-    if (conversation.engine === "opencode" && opencodePromptRejected(key.text)) throw new MemberStoreError("conflict");
-    const {rows:[budget]}=await db.query<{limit:number;used:number}>(`SELECT turn_limit AS "limit",
-      (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
-       UNION SELECT request_id FROM birbcrew_ts.turns WHERE conversation_id=$1) ids)::integer AS used
-      FROM birbcrew_ts.conversations WHERE conversation_id=$1`,[key.conversationId]);
-    if(budget.used>=budget.limit)throw new MemberStoreError("input_limit");
+    const budget = await turnBudget(db, key.conversationId);
+    const refusal = textAdmissionRefusal(conversation.engine, key.text, budget.used >= budget.limit);
+    if (refusal) throw refusal;
+    if (budget.used >= budget.limit) throw new MemberStoreError("input_limit");
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
   const recorded=handoff??await firingInitiator(db,key,conversation)??attested;
@@ -137,14 +151,7 @@ export function ownerAdmissionActivity(store: MemberStore) {
       // Retrying cannot change a budget refusal within the activity's deadline. MemberClient
       // reads this failure type back as usage_limit_closed.
       if (error instanceof MemberStoreError && error.code === "usage_limit") throw ApplicationFailure.nonRetryable("usage_limit", "usage_limit");
-      if (error instanceof MemberStoreError && error.code === "conflict") {
-        const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId }).catch(() => undefined);
-        if (conversation?.engine === "opencode" && opencodePromptRejected(request.text)) throw ApplicationFailure.nonRetryable("prompt_rejected", "prompt_rejected");
-      }
-      if (error instanceof MemberStoreError && error.code === "input_limit") {
-        const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
-        if (isTextEngine(conversation.engine)) throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
-      }
+      if (error instanceof TextAdmissionError) throw ApplicationFailure.nonRetryable(error.failureType, error.failureType);
       throw error;
     }
   };
@@ -321,14 +328,9 @@ export class MemberStore {
     if (turn.rowCount) return;
     if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
     submitSchema.parse(key);
-    if (conversation.engine === "opencode" && opencodePromptRejected(key.text)) throw new MemberStoreError("conflict");
-    if (isTextEngine(conversation.engine)) {
-      const { rows: [budget] } = await this.pool.query<{ limit: number; used: number }>(`SELECT turn_limit AS "limit",
-        (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
-         UNION SELECT request_id FROM birbcrew_ts.turns WHERE conversation_id=$1) ids)::integer AS used
-        FROM birbcrew_ts.conversations WHERE conversation_id=$1`, [key.conversationId]);
-      if (budget.used >= budget.limit) throw new MemberStoreError("input_limit");
-    }
+    const counted = isTextEngine(conversation.engine) ? await turnBudget(this.pool, key.conversationId) : undefined;
+    const refusal = textAdmissionRefusal(conversation.engine, key.text, Boolean(counted && counted.used >= counted.limit));
+    if (refusal) throw refusal;
     if (!await budgetApplies(this.pool, key)) return;
     // The lock waits for an admission, turn start or handoff that holds the conversation, and
     // recordAcceptance's earlier checks run again under it, so a request refused under the budget

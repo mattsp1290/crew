@@ -12,7 +12,7 @@ import { Pool } from "pg";
 import { registerProfiles } from "./deployment.ts";
 import { memberProfiles } from "./profiles.ts";
 import type { DriverInput } from "./activities.ts";
-import type { Conversation, Checkpoint } from "./domain.ts";
+import type { Conversation, Checkpoint, Engine } from "./domain.ts";
 import { temporalSettings } from "./temporal-config.ts";
 import { usageAttributes } from "./usage-capture.ts";
 import { errorSummary, forwardWarnings, warn } from "./diagnostics.ts";
@@ -68,8 +68,10 @@ process.once("message", async (command: AdmittedTurn) => {
           checkpoint: command.checkpoint, continuation: command.continuation, signal,
         };
         const scope = {...command.launch, engine:member.engine, workflowRunId:command.launch.execution.workflowRunId};
-        const provider = member.engine === "codex" ? "openai" : member.engine === "claude" ? "anthropic"
-          : member.engine === "cursor" ? "cursor" : member.engine === "opencode" ? "opencode" : profile?.pi?.model.provider ?? "";
+        const telemetryProvider: Partial<Record<Engine, string>> = {
+          codex: "openai", claude: "anthropic", cursor: "cursor", opencode: "opencode",
+        };
+        const provider = telemetryProvider[member.engine] ?? profile?.pi?.model.provider ?? "";
         const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => driver(value, member));
         const invoke = () => traced("model.invoke",scope, async () => {
           const result = items && tool
