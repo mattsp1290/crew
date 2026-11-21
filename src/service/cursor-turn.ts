@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import type { CursorProfile, CursorRuntimeHandle, CursorRuntimeOptions } from "./profiles.ts";
@@ -12,9 +14,20 @@ async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRunt
   const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
   // The runner's database pool is already open. Tool shells copy process.env, so only the locale
   // and PATH remain for the rest of this one-shot process.
-  const inherited = new Set(["PATH", "LANG", "LC_ALL", "TZ"]);
+  const inherited = new Set(["PATH", "LANG", "LC_ALL", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"]);
   for (const key of Object.keys(process.env)) if (!inherited.has(key)) delete process.env[key];
+  process.env.HOME = options.sessionDirectory;
+  process.env.TMPDIR = options.sessionDirectory;
+  process.env.CURSOR_DATA_DIR = options.sessionDirectory;
   return createCursorRuntime(options);
+}
+
+async function removePrivate(directory: string) {
+  try { await rm(directory, { recursive: true, force: true }); return; }
+  catch { /* a child can leave a directory this uid cannot list */ }
+  const run = promisify(execFile);
+  await run("/bin/chmod", ["-R", "u+rwx", "--", directory]).catch(() => undefined);
+  await run("/bin/rm", ["-rf", "--one-file-system", "--", directory]);
 }
 
 function bounded<T>(work: Promise<T>): Promise<T> {
@@ -23,6 +36,8 @@ function bounded<T>(work: Promise<T>): Promise<T> {
     timer = setTimeout(() => reject(failed()), closeBoundMs);
     timer.unref?.();
   });
+  work.catch(() => undefined);
+  timeout.catch(() => undefined);
   return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
@@ -30,7 +45,7 @@ function bounded<T>(work: Promise<T>): Promise<T> {
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: string): Promise<DriverResult> {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation) throw failed();
   const sessionDirectory = join(stateDir, "cursor", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
-  await rm(sessionDirectory, { recursive: true, force: true });
+  await removePrivate(sessionDirectory);
   await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
   await chmod(sessionDirectory, 0o700);
   let runtime: CursorRuntimeHandle | undefined;
@@ -104,12 +119,12 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
   } finally {
     try {
       if (runtime) await bounded(runtime.close());
-      await rm(sessionDirectory, { recursive: true, force: true });
+      await removePrivate(sessionDirectory);
     } catch (error) {
       if (error instanceof Error && error.message === "Text engine turn failed") throw error;
       throw failed();
     }
   }
-  if (!result) throw failed();
+  if (input.signal.aborted || !result) throw failed();
   return result;
 }

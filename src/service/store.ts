@@ -533,10 +533,12 @@ export class MemberStore {
       const stopped = await db.query(`SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2
         AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped)`,
         [key.conversationId,key.requestId]);
-      await publishObservation(db, key.conversationId, { kind: stopped.rowCount ? "stopped" : "failed", requestId:key.requestId });
+      const confirmedStop = Boolean(stopped.rowCount);
+      await publishObservation(db, key.conversationId, { kind: confirmedStop ? "stopped" : "failed", requestId:key.requestId });
       // recovery_closed above makes this uncertain outcome final; the "recover" return is not.
       await appendAudit(db, { type: "request.finished", ownerId: key.ownerId, memberId: conversation.memberId,
         conversationId: key.conversationId, requestId: key.requestId, payload: { status: "uncertain" } });
+      if (isTextEngine(conversation.engine)) return confirmedStop ? { kind: "stopped" as const } : { kind: "failed" as const };
       return null;
     });
   }

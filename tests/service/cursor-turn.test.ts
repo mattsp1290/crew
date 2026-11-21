@@ -159,6 +159,28 @@ test("cursor refuses a checkpoint or project context before start", async () => 
   await rm(stateDir, { recursive: true, force: true });
 });
 
+test("abort during cursor close does not return the completed turn", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
+  const place = member({ cwd: stateDir });
+  const controller = new AbortController();
+  const profile: CursorProfile = {
+    model, apiKey, cwd: stateDir,
+    runtime() {
+      return {
+        async start({ onEvent }) {
+          onEvent({ kind: "text", text: "cedar remembered" });
+          onEvent({ kind: "ended", outcome: "completed" });
+          return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
+        },
+        async close() { controller.abort(); },
+      };
+    },
+  };
+  await assert.rejects(runCursorTurn(place.input({ signal: controller.signal }), place.member, profile, stateDir), { message: "Text engine turn failed" });
+  await assert.rejects(access(place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId)));
+  await rm(stateDir, { recursive: true, force: true });
+});
+
 test("abort before cursor start resolves closes the runtime and aborts a late start", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
   const place = member({ cwd: stateDir });

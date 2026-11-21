@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,7 @@ function input(conversationId: string, extra: Partial<DriverInput> = {}): Driver
   return { threadId: conversationId, runId: randomUUID(), text: "remember cedar", checkpoint: null, signal: AbortSignal.timeout(20_000), ...extra };
 }
 
-function session(deltas = ["cedar ", "remembered"]) {
+function session(deltas = ["cedar ", "remembered"], onClose?: () => void) {
   const requests: OpenCodeSpawnRequest[] = [];
   const state = { requests: [] as { method?: string; id?: number; params?: { value?: string } }[] };
   let sink: { (chunk: Uint8Array): void; ended(): void } | undefined;
@@ -46,7 +47,10 @@ function session(deltas = ["cedar ", "remembered"]) {
         } } });
       }
       push({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn", usage: {} } });
-    } else if (message.method === "session/close") push({ jsonrpc: "2.0", id: message.id, result: {} });
+    } else if (message.method === "session/close") {
+      onClose?.();
+      push({ jsonrpc: "2.0", id: message.id, result: {} });
+    }
   }
   const spawned: OpenCodeSpawned = {
     processExit,
@@ -99,6 +103,21 @@ test("an injected opencode spawn commits both text deltas and receives only the 
   }
 });
 
+test("abort during opencode close does not return the completed turn", async () => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "opencode-turn-")));
+  const controller = new AbortController();
+  const agent = session(["cedar ", "remembered"], () => controller.abort());
+  const executable = join(cwd, "opencode");
+  const profile: OpenCodeProfile = {
+    model, executable, cwd, account: "ACCOUNT LABEL", env: { OPENCODE_TOKEN: "kept" }, spawn: (request) => agent.spawn(request),
+  };
+  const member = conversation();
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { signal: controller.signal }), member, profile, cwd), { message: "Text engine turn failed" });
+  const root = join(cwd, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  await assert.rejects(access(root));
+  await rm(cwd, { recursive: true, force: true });
+});
+
 test("opencode refuses a slash prompt, a checkpoint, or project context before spawn", async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "opencode-turn-")));
   let spawned = 0;
@@ -147,7 +166,7 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
     }
     assert.fail(`peer ${pid} still running`);
   }
-  const completed = await runOpenCodeTurn(input(member.conversationId), member, profile("complete"), cwd);
+  const completed = await runOpenCodeTurn(input(member.conversationId), member, profile("complete"), cwd, process.pid);
   assert.equal(completed.kind, "complete");
   if (completed.kind !== "complete") return;
   assert.equal(completed.text, "cedar remembered");
@@ -155,6 +174,8 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
   assert.equal(JSON.stringify(completed).includes("kept"), false);
   assert.equal(JSON.stringify(completed.checkpoint).includes(executable), true);
   await assertLastExited();
+  const home = join(cwd, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  await assert.rejects(access(home));
 
   const lingering = await runOpenCodeTurn(input(member.conversationId), member, profile("linger"), cwd);
   assert.equal(lingering.kind, "complete");

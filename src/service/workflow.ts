@@ -204,6 +204,10 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         }
         const final = await CancellationScope.nonCancellable(() => reconcileTurn(request, run, false, false));
         if (final?.kind === "pending" || final?.kind === "complete") return final;
+      } else if (result && result.kind === "stopped") {
+        throw ApplicationFailure.nonRetryable("Text turn stopped", "text_stopped");
+      } else if (result && result.kind === "failed") {
+        throw error;
       } else if (result) {
         return result;
       }
@@ -347,7 +351,10 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     });
     entry.result = result;
     turns.set(request.requestId, entry);
-    previous = result.then(() => { inFlight--; }, () => { inFlight--; if (!textBudgetRejection) failed = true; });
+    previous = result.then(() => { inFlight--; }, (error) => {
+      inFlight--;
+      if (!textBudgetRejection && !applicationFailure(error, "text_stopped")) failed = true;
+    });
     return entry;
   }
   setHandler(submitTurn, value => enqueue(value).result, { validator: validate });
