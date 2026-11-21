@@ -84,8 +84,8 @@ async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string)
 }
 
 function textAdmissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
-  if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("conflict", "prompt_rejected");
   if (turnLimitReached && isTextEngine(engine)) return new TextAdmissionError("input_limit", "input_limit");
+  if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("conflict", "prompt_rejected");
   return undefined;
 }
 
@@ -532,15 +532,18 @@ export class MemberStore {
       await db.query("UPDATE birbcrew_ts.native_launches SET recovery_closed=true WHERE conversation_id=$1 AND request_id=$2",
         [key.conversationId, key.requestId]);
       if (conversation.engine === "codex") await interruptLiveLocked(db, key);
+      const cancellation = await db.query("SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2",
+        [key.conversationId, key.requestId]);
       const stopped = await db.query(`SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2
         AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped)`,
         [key.conversationId,key.requestId]);
       const confirmedStop = Boolean(stopped.rowCount);
-      await publishObservation(db, key.conversationId, { kind: confirmedStop ? "stopped" : "failed", requestId:key.requestId });
+      const textStop = isTextEngine(conversation.engine) && Boolean(cancellation.rowCount);
+      await publishObservation(db, key.conversationId, { kind: confirmedStop || textStop ? "stopped" : "failed", requestId:key.requestId });
       // recovery_closed above makes this uncertain outcome final; the "recover" return is not.
       await appendAudit(db, { type: "request.finished", ownerId: key.ownerId, memberId: conversation.memberId,
         conversationId: key.conversationId, requestId: key.requestId, payload: { status: "uncertain" } });
-      if (isTextEngine(conversation.engine)) return confirmedStop ? { kind: "stopped" as const } : { kind: "failed" as const };
+      if (isTextEngine(conversation.engine)) return confirmedStop || textStop ? { kind: "stopped" as const } : { kind: "failed" as const };
       return null;
     });
   }

@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 // Speaks one ACP session on stdin/stdout. Not an opencode binary. argv[2] is "acp".
+import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 const mode = process.env.OPENCODE_PEER_MODE ?? "complete";
 if (process.env.OPENCODE_PEER_PID_FILE) appendFileSync(process.env.OPENCODE_PEER_PID_FILE, `${process.pid}\n`);
+if (mode === "grandchild") {
+  const helper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  if (process.env.OPENCODE_PEER_PID_FILE && helper.pid) appendFileSync(process.env.OPENCODE_PEER_PID_FILE, `${helper.pid}\n`);
+}
 const sessionId = "session-1";
 if (process.argv[2] !== "acp") process.exit(1);
 

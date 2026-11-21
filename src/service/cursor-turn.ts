@@ -3,21 +3,20 @@ import { chmod, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
-import { removePrivate, TextTurnFailed } from "./private-directory.ts";
+import { removePrivate, scrubTextEngineEnvironment, TextTurnFailed } from "./private-directory.ts";
 import type { CursorProfile, CursorRuntimeHandle, CursorRuntimeOptions } from "./profiles.ts";
 
 const failed = () => new TextTurnFailed();
 const closeBoundMs = 5_000;
 
 async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRuntimeHandle> {
-  const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
-  // The runner's database pool is already open. Tool shells copy process.env, so only the locale
-  // and PATH remain for the rest of this one-shot process.
-  const inherited = new Set(["PATH", "LANG", "LC_ALL", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"]);
-  for (const key of Object.keys(process.env)) if (!inherited.has(key)) delete process.env[key];
+  // The runner's database pool is already open. Scrub before the SDK import so a later homedir
+  // read cannot land on the operator home shared with Codex and Claude.
+  scrubTextEngineEnvironment();
   process.env.HOME = options.sessionDirectory;
   process.env.TMPDIR = options.sessionDirectory;
   process.env.CURSOR_DATA_DIR = options.sessionDirectory;
+  const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
   return createCursorRuntime(options);
 }
 
@@ -101,13 +100,13 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
-    try {
-      if (runtime) await bounded(runtime.close());
-      await removePrivate(sessionDirectory);
-    } catch (error) {
-      if (error instanceof TextTurnFailed) throw error;
-      throw failed();
+    let closeError: unknown;
+    if (runtime) {
+      try { await bounded(runtime.close()); }
+      catch (error) { closeError = error; }
     }
+    await removePrivate(sessionDirectory);
+    if (!result && closeError) throw closeError instanceof TextTurnFailed ? closeError : failed();
   }
   if (input.signal.aborted || !result) throw failed();
   return result;

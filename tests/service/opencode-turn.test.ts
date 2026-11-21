@@ -177,6 +177,13 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
   const home = join(cwd, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
   await assert.rejects(access(home));
 
+  const helper = conversation();
+  const helped = await runOpenCodeTurn(input(helper.conversationId), helper, profile("grandchild"), cwd, process.pid);
+  assert.equal(helped.kind, "complete");
+  await assertLastExited();
+  const helperHome = join(cwd, "opencode", createHash("sha256").update(helper.ownerId).digest("hex"), helper.memberId, helper.conversationId);
+  await assert.rejects(access(helperHome));
+
   const lingering = await runOpenCodeTurn(input(member.conversationId), member, profile("linger"), cwd);
   assert.equal(lingering.kind, "complete");
   if (lingering.kind !== "complete") return;

@@ -30,7 +30,7 @@ let closing = false;
 const stopping = new WeakSet<ChildProcess>();
 
 function killNativeGroup(child: ChildProcess) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid) return;
   try { process.kill(-child.pid, "SIGKILL"); }
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
 }
@@ -51,7 +51,7 @@ function stopRunner(child: ChildProcess | undefined) {
   if (!child || stopping.has(child) || child.exitCode !== null || child.signalCode !== null) return;
   stopping.add(child);
   if (child.connected) child.send("stop", () => { });
-  const timeout = setTimeout(() => killNativeGroup(child), 3000);
+  const timeout = setTimeout(() => killNativeGroup(child), 12_000);
   timeout.unref();
   child.once("close", () => clearTimeout(timeout));
 }

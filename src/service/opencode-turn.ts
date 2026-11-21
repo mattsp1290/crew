@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
@@ -10,7 +10,7 @@ import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "./p
 
 const failed = () => new TextTurnFailed();
 const maxPrompt = 1_048_576;
-const closeBoundMs = 20_000;
+const closeBoundMs = 2_000;
 
 function promptAllowed(value: string) {
   return value.length >= 1 && Buffer.byteLength(value) <= maxPrompt && !opencodePromptRejected(value);
@@ -33,11 +33,12 @@ function bounded<T>(work: Promise<T>, kill: () => void): Promise<T> {
     throw error instanceof TextTurnFailed ? error : failed();
   }).finally(() => { if (timer) clearTimeout(timer); });
 }
-function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void, invocationGroup?: number): OpenCodeSpawned {
-  const inGroup = invocationGroup !== undefined;
+function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void, _invocationGroup?: number): OpenCodeSpawned {
   const child = spawn(request.args[0], request.args.slice(1), {
-    cwd: request.cwd, env: { ...request.env, HOME: home, TMPDIR: tmp }, detached: !inGroup, stdio: ["pipe", "pipe", "pipe"],
+    cwd: request.cwd, env: { ...request.env, HOME: home, TMPDIR: tmp, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: tmp, XDG_DATA_HOME: home },
+    detached: true, stdio: ["pipe", "pipe", "pipe"],
   });
+  for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.on("error", () => undefined);
   child.stderr?.on("data", () => undefined);
   let settled = false;
   let closing = false;
@@ -52,7 +53,7 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
   };
   const stop = () => {
     if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-    const target = inGroup ? child.pid : -child.pid;
+    const target = -child.pid;
     try { process.kill(target, "SIGKILL"); }
     catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : undefined;
@@ -113,6 +114,8 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   await removePrivate(root);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await mkdir(tmp, { recursive: true, mode: 0o700 });
+  await chmod(home, 0o700);
+  await chmod(tmp, 0o700);
   let killGroup = () => {};
   let completed: DriverResult | undefined;
   const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
@@ -159,6 +162,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
     if (subscription.kind === "ok") subscription.value.dispose();
   }
   } finally {
+    killGroup();
     await removePrivate(root);
   }
   if (input.signal.aborted || !completed) throw failed();

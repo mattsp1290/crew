@@ -205,9 +205,10 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         const final = await CancellationScope.nonCancellable(() => reconcileTurn(request, run, false, false));
         if (final?.kind === "pending" || final?.kind === "complete") return final;
       } else if (result && result.kind === "stopped") {
+        cancelled = true;
         throw ApplicationFailure.nonRetryable("Text turn stopped", "text_stopped");
       } else if (result && result.kind === "failed") {
-        throw error;
+        throw ApplicationFailure.nonRetryable("Text turn failed", "text_failed");
       } else if (result) {
         return result;
       }
@@ -351,10 +352,8 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     turns.set(request.requestId, entry);
     previous = result.then(() => { inFlight--; }, (error) => {
       inFlight--;
-      const keepOpen = applicationFailure(error, "input_limit")
-        || applicationFailure(error, "prompt_rejected")
-        || applicationFailure(error, "text_stopped");
-      if (!keepOpen) failed = true;
+      if (applicationFailure(error, "text_stopped")) cancelled = true;
+      else if (!applicationFailure(error, "input_limit") && !applicationFailure(error, "prompt_rejected")) failed = true;
     });
     return entry;
   }

@@ -159,6 +159,29 @@ test("cursor refuses a checkpoint or project context before start", async () => 
   await rm(stateDir, { recursive: true, force: true });
 });
 
+test("a rejecting cursor close still removes the session directory and keeps a completed reply", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
+  const place = member({ cwd: stateDir });
+  const profile: CursorProfile = {
+    model, apiKey, cwd: stateDir,
+    runtime() {
+      return {
+        async start({ onEvent }) {
+          onEvent({ kind: "text", text: "cedar remembered" });
+          onEvent({ kind: "ended", outcome: "completed" });
+          return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
+        },
+        async close() { throw new Error("close failed"); },
+      };
+    },
+  };
+  const result = await runCursorTurn(place.input(), place.member, profile, stateDir);
+  assert.equal(result.kind, "complete");
+  if (result.kind === "complete") assert.equal(result.text, "cedar remembered");
+  await assert.rejects(access(place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId)));
+  await rm(stateDir, { recursive: true, force: true });
+});
+
 test("abort during cursor close does not return the completed turn", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
   const place = member({ cwd: stateDir });

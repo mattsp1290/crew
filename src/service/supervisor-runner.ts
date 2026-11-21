@@ -12,7 +12,8 @@ import { Pool } from "pg";
 import { registerProfiles } from "./deployment.ts";
 import { memberProfiles } from "./profiles.ts";
 import type { DriverInput } from "./activities.ts";
-import type { Conversation, Checkpoint, Engine } from "./domain.ts";
+import { isTextEngine, type Conversation, type Checkpoint, type Engine } from "./domain.ts";
+import { scrubTextEngineEnvironment } from "./private-directory.ts";
 import { temporalSettings } from "./temporal-config.ts";
 import { usageAttributes } from "./usage-capture.ts";
 import { errorSummary, forwardWarnings, warn } from "./diagnostics.ts";
@@ -72,7 +73,10 @@ process.once("message", async (command: AdmittedTurn) => {
           codex: "openai", claude: "anthropic", cursor: "cursor", opencode: "opencode",
         };
         const provider = telemetryProvider[member.engine] ?? profile?.pi?.model.provider ?? "";
-        const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => driver(value, member));
+        const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => {
+          if (isTextEngine(member.engine)) scrubTextEngineEnvironment();
+          return driver(value, member);
+        });
         const invoke = () => traced("model.invoke",scope, async () => {
           const result = items && tool
             ? await runLiveTool(pool, temporal, command.launch, member, tool, input, invokeDriver, items.disclose)
