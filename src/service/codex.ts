@@ -132,32 +132,31 @@ export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Pr
   } finally { await transport.close(); }
 }
 
-/** Publishes the first delta of an assistant item immediately and holds the rest until the item changes. */
+/** Holds each assistant item until the next item, a tool call, or the end of the turn, then publishes it whole. */
 function codexTranscript(onText?: (text: string) => void | Promise<void>) {
-  let transcript = "", itemId = "", pending = "", opened = false, closed = false;
+  let transcript = "", itemId = "", pending = "", closed = false;
   const publish = async (text: string) => {
     if (!text) return;
     transcript += text;
     if (Buffer.byteLength(transcript) > 65_536) throw new Error("Codex reply exceeds limit");
     await onText?.(text);
   };
+  async function flush() {
+    const text = pending;
+    pending = "";
+    await publish(text);
+  }
   return {
     async delta(id: string, text: string) {
       if (closed) throw new Error("Codex text arrived after the transcript closed");
-      if (id !== itemId) {
-        if (opened) await publish(pending);
-        itemId = id;
-        pending = "";
-        opened = false;
-      }
-      if (!opened) { opened = true; await publish(text); }
-      else pending += text;
+      if (itemId && id !== itemId) await flush();
+      itemId = id;
+      pending += text;
     },
+    flush,
     async finish() {
       closed = true;
-      const tail = pending;
-      pending = "";
-      await publish(tail);
+      await flush();
     },
     text: () => transcript,
   };
@@ -289,6 +288,13 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       });
     }
     if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
+    const whenIdle = async () => {
+      let cursor: Promise<void>;
+      do {
+        cursor = observed;
+        await cursor;
+      } while (cursor !== observed);
+    };
     let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: turnSignal });
     let announced = false;
     while (segment.kind === "pending" || (segment.kind === "complete" && !announced)) {
@@ -299,6 +305,9 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
         await input.onThreadStarted?.(segment.session.opaque);
       }
       if (segment.kind !== "pending") break;
+      // The preamble is one completed item once the model asks for a tool. Publish it before that call is disclosed.
+      await whenIdle();
+      await reply.flush();
       const answers = [];
       for (const call of segment.calls) {
         failedObserver();
@@ -314,13 +323,6 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       failedObserver();
       segment = await adapter.continue({ hostOperationId: requestId, answers, recordIntent, signal: turnSignal });
     }
-    const whenIdle = async () => {
-      let cursor: Promise<void>;
-      do {
-        cursor = observed;
-        await cursor;
-      } while (cursor !== observed);
-    };
     // finish runs on the subscriber chain. A delta still awaiting onText cannot clear the tail first.
     await whenIdle();
     observed = observed.then(() => reply.finish());

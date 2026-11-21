@@ -221,9 +221,14 @@ for (const first of ["stop","effect"] as const) {
       const settling=()=>settleLive(pool,launch,a.approvalId);
       if (first==="stop") stop=stopping();
       else settle=settling();
+      // The operation's own statement, not another backend the gate happens to block.
+      const waiting = first === "stop"
+        ? "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE"
+        : "FOR UPDATE OF c";
       let blocked=false;
       for (let i=0;i<100 && !blocked;i++) {
-        const current=await pool.query("SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))",[blocker.pid]);
+        const current=await pool.query(`SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock'
+          AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE $2`, [blocker.pid, `%${waiting}%`]);
         blocked=Boolean(current.rowCount);
         if (!blocked) await delay(10);
       }

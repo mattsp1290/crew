@@ -73,8 +73,8 @@ export function codexItemWriter(knownIds: string[], awaitingCall: boolean,
       items.push(text);
       return flush(false);
     },
-    disclose(id: string) {
-      ids.add(id);
+    disclose(...names: string[]) {
+      for (const name of names) ids.add(name);
       awaitingCall = false;
       return flush(false);
     },

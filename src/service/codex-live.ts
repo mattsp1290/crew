@@ -18,7 +18,7 @@ function resultText(outcome: ToolOutcome) {
 /** One profile tool, answered through the live ledger. The driver declines `request_user_input` itself. */
 export async function runLiveTool(
   pool: Pool, temporal: TemporalSettings, launch: Launch, member: Conversation, tool: DeferredTool, input: DriverInput,
-  run: (input: DriverInput) => Promise<DriverResult>, discloseCallId: (id: string) => Promise<void>,
+  run: (input: DriverInput) => Promise<DriverResult>, discloseCallId: (...ids: string[]) => Promise<void>,
 ) {
   const stopped = new AbortController();
   const signal = AbortSignal.any([input.signal, stopped.signal]);
@@ -49,7 +49,7 @@ export async function runLiveTool(
 
 async function answer(
   pool: Pool, temporal: TemporalSettings, launch: Launch, workflowId: string, tool: DeferredTool,
-  signal: AbortSignal, turn: AbortSignal, nativeThread: Promise<string>, discloseCallId: (id: string) => Promise<void>,
+  signal: AbortSignal, turn: AbortSignal, nativeThread: Promise<string>, discloseCallId: (...ids: string[]) => Promise<void>,
   call: CodexToolCall, isActive: () => boolean, setActive: (value: boolean) => void,
   deliveries: Map<string, { approvalId: string; text: string }>, stop: () => void,
 ) {
@@ -60,9 +60,10 @@ async function answer(
     const threadId = await Promise.race([nativeThread, delay(5000, undefined, { signal: callSignal })]);
     if (threadId !== call.pending.target.session.opaque) throw new Error("Unexpected native thread");
     if (call.name !== tool) throw new Error("Unexpected native Codex tool");
-    await discloseCallId(call.pending.target.nativeToolCallId);
-    const visible = modelVisibleCallId(call.pending.target.nativeToolCallId);
-    if (visible) await discloseCallId(visible);
+    const nativeId = call.pending.target.nativeToolCallId;
+    const visible = modelVisibleCallId(nativeId);
+    // One flush, after every id the model can write is known. The ledger cannot redact an item it already published.
+    await discloseCallId(nativeId, ...(visible && visible !== nativeId ? [visible] : []));
     const deadline = Date.now() + 120_000;
     const approval = await proposeLive(pool, launch, {
       threadId, nativeCallId: call.pending.target.nativeToolCallId, toolName: tool, args: call.arguments,
