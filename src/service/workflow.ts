@@ -86,12 +86,13 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   const { quarantineDelegation } = proxyActivities<Pick<ChildStore, "quarantineDelegation">>({
     taskQueue: memberTaskQueue, startToCloseTimeout: "15 seconds",
   });
-  // keepOpen marks a rejected turn that must not fail the conversation. Exactly two places set it:
-  // segment() for a reaped text-engine stop ({kind:"stopped"}), and the admission catch for a text
-  // engine's input_limit or prompt_rejected refusal under patched("text-engine-budget-v1"). The
-  // `previous` rejection handler reads it. It stays a flag rather than a new failure type so update
-  // failure payloads already recorded in histories keep replaying unchanged.
-  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string>; keepOpen: boolean }>();
+  // sparesConversation marks a rejected turn that must not mark the conversation failed. Exactly two
+  // places set it. segment() sets it for a reaped text-engine stop ({kind:"stopped"}); that path also
+  // sets `cancelled`, so the run completes rather than failing. The admission catch sets it for a text
+  // engine's input_limit or prompt_rejected refusal under patched("text-engine-budget-v1"); that run
+  // stays running. The `previous` rejection handler reads it. It stays a flag rather than a new failure
+  // type so update failure payloads already recorded in histories keep replaying unchanged.
+  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string>; sparesConversation: boolean }>();
   let previous = Promise.resolve();
   let failed = false;
   let cancelled = false;
@@ -202,7 +203,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
       } else if (result && result.kind === "stopped") {
         cancelled = true;
         const current = turns.get(request.requestId);
-        if (current) current.keepOpen = true;
+        if (current) current.sparesConversation = true;
         throw ApplicationFailure.nonRetryable("Text turn stopped", "text_stopped");
       } else if (result && result.kind === "failed") {
         throw ApplicationFailure.nonRetryable("Text turn failed", "text_failed");
@@ -320,7 +321,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     // execution; if an earlier turn prevents it from running, persist that outcome too.
     const admission = durable ? persistAdmission(request) : Promise.resolve();
     void admission.catch(() => {}); // Also observed by the queued runner and admission handler.
-    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string>, keepOpen: false };
+    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string>, sparesConversation: false };
     inFlight++;
     const result = previous.then(async () => {
       try { await entry.admission; }
@@ -330,7 +331,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         // Older histories stay on the retryable path.
         const refused = hasFailureType(error, "input_limit") || hasFailureType(error, "prompt_rejected");
         if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
-          entry.keepOpen = true;
+          entry.sparesConversation = true;
           await rejectUnstartedAdmission(request);
           turns.delete(request.requestId);
           throw error;
@@ -350,7 +351,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     turns.set(request.requestId, entry);
     previous = result.then(() => { inFlight--; }, () => {
       inFlight--;
-      if (!entry.keepOpen) failed = true;
+      if (!entry.sparesConversation) failed = true;
     });
     return entry;
   }

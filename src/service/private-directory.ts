@@ -38,8 +38,9 @@ export class TextTurnFailed extends Error {
 
 export const textTurnFailed = () => new TextTurnFailed();
 
-/** Refuses what a one-turn text member cannot run, before any filesystem work, and names its
- * private root: <stateDir>/<engine>/<sha256(ownerId)>/<memberId>/<conversationId>. */
+/** Refuses what every one-turn text member cannot run, before any filesystem work, and names its
+ * private root: <stateDir>/<engine>/<sha256(ownerId)>/<memberId>/<conversationId>. An engine may refuse
+ * more before calling it (OpenCode checks its prompt first); this is not the whole pre-filesystem gate. */
 export function textTurnRoot(input: DriverInput, member: Conversation, engine: "cursor" | "opencode", stateDir: string) {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation
     || !isAbsolute(stateDir)) throw textTurnFailed();
@@ -70,7 +71,9 @@ export function boundedBy<T>(work: Promise<T>, ms: number, onFailure: () => void
   }).finally(() => { if (timer) clearTimeout(timer); });
 }
 
-/** Removes `directory` again once `work` settles, for work that outlived its bound and may still write there. */
+/** Removes `directory` again once `work` settles, for work that outlived its bound and may still write there.
+ * Best-effort: it runs only while this runner process is alive. The runner exits right after its reply,
+ * so a close or process that settles later is cleaned up by the next preparePrivate of that root. */
 export function sweepWhenSettled(work: PromiseLike<unknown>, directory: string) {
   const sweep = () => removePrivate(directory).catch(() => undefined);
   void Promise.resolve(work).then(sweep, sweep);

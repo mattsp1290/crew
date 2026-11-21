@@ -11,7 +11,7 @@ import { z } from "zod";
 // The proof starts this process in a separate network namespace with loopback down.
 assert.deepEqual(networkInterfaces(), {}, "Offline replay needs an isolated network namespace");
 let activityLoads = 0;
-const allowed = new Set(["workflow.ts", "queues.ts", "domain.ts", "limits.ts", "deferral.ts"]);
+const allowed = new Set(["workflow.ts", "queues.ts", "domain.ts", "limits.ts", "deferral.ts", "failure-type.ts", "child-target.ts"]);
 const product = new URL("../../src/service/", import.meta.url).href;
 registerHooks({
   load(url, context, next) {

@@ -170,9 +170,11 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
     }
   } finally {
     killGroup();
-    const exited = await boundedBy(processExit, closeBoundMs, killGroup).then(() => true, () => false);
+    // `exited` means the process settled (either way) within the bound, not that it exited cleanly.
+    const exited = await boundedBy(processExit.then(() => undefined, () => undefined), closeBoundMs, killGroup).then(() => true, () => false);
     await removePrivate(root);
-    // A process still alive after the bound can write under HOME after the removal; sweep again on exit.
+    // A process still alive after the bound can write under HOME after the removal; sweep again,
+    // best-effort, if it exits while this runner is still alive.
     if (!exited) sweepWhenSettled(processExit, root);
   }
   return textTurnResult(input.signal, completed);

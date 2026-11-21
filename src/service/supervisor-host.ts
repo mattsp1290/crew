@@ -29,8 +29,16 @@ const starts = new Map<string, { launch: Launch; result: Promise<SegmentResult> 
 let closing = false;
 const stopping = new WeakSet<ChildProcess>();
 
+function groupAlive(pid: number) {
+  try { process.kill(-pid, 0); return true; }
+  catch { return false; }
+}
+
 function killNativeGroup(child: ChildProcess) {
   if (!child.pid) return;
+  // A reaped leader can leave an empty group whose id the system may reuse. Signal such a group only
+  // while a member is still alive; a live member also keeps the id from being reused.
+  if ((child.exitCode !== null || child.signalCode !== null) && !groupAlive(child.pid)) return;
   try { process.kill(-child.pid, "SIGKILL"); }
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
 }

@@ -66,7 +66,11 @@ function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signa
   });
 }
 
-/** True when close settled, false when the turn was stopped while close was still running. */
+/** True when close settled, false when the turn was stopped while close was still running.
+ * closeBoundMs (5s) is only the grace an aborted turn gives close before abandoning it. A close
+ * that is not aborted is awaited until the runner's turn signal aborts (supervisor-runner.ts),
+ * because the session environment must outlive close. Do not align this with OpenCode's hard
+ * close-and-kill bound: Cursor runs in-process and has no group to kill. */
 async function waitForClose(closing: Promise<void>, signal: AbortSignal) {
   let endWait: () => void = () => undefined;
   const stopped = new Promise<void>((resolve) => {
