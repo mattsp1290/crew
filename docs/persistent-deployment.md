@@ -340,7 +340,7 @@ lists what each field became.
 ## Kernel
 
 Every member engine runs through the native launcher (`native/member-launch.c`).
-Codex needs Linux Landlock ABI 4 or newer, and Claude and Pi need ABI 3; with
+Codex and Claude need Linux Landlock ABI 4 or newer, and Pi needs ABI 3; with
 less, the launcher exits with status 126 and the turn fails, with no unconfined
 fallback. See [native confinement](verification.md#native-confinement). Landlock ABI 4 shipped in
 Linux 6.7; the node must also list `landlock` in `/sys/kernel/security/lsm`, and
