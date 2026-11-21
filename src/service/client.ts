@@ -65,6 +65,7 @@ export class MemberClient {
       }
       catch (error) {
         if (failureType(error, "input_limit")) throw new MemberStoreError("input_limit");
+        if (failureType(error, "prompt_rejected")) throw new MemberStoreError("conflict");
         if (!(error instanceof WorkflowUpdateFailedError) || !(error.cause instanceof ApplicationFailure) ||
             error.cause.type !== "RolloverInProgress") throw error;
         if (Date.now() >= deadline) throw new MemberStoreError("busy");

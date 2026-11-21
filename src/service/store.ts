@@ -137,16 +137,11 @@ export function ownerAdmissionActivity(store: MemberStore) {
       if (error instanceof MemberStoreError && error.code === "usage_limit") throw ApplicationFailure.nonRetryable("usage_limit", "usage_limit");
       if (error instanceof MemberStoreError && error.code === "conflict") {
         const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId }).catch(() => undefined);
-        if (conversation?.engine === "opencode" && opencodePromptRejected(request.text)) throw ApplicationFailure.nonRetryable("conflict", "conflict");
+        if (conversation?.engine === "opencode" && opencodePromptRejected(request.text)) throw ApplicationFailure.nonRetryable("prompt_rejected", "prompt_rejected");
       }
       if (error instanceof MemberStoreError && error.code === "input_limit") {
-        try {
-          const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
-          if (isTextEngine(conversation.engine)) throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
-        } catch (readError) {
-          if (readError instanceof ApplicationFailure) throw readError;
-          throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
-        }
+        const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
+        if (isTextEngine(conversation.engine)) throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
       }
       throw error;
     }

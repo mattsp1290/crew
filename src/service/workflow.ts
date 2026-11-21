@@ -4,7 +4,7 @@ import {
 } from "@temporalio/workflow";
 import { workflowGenerationTurnLimit, historyRequiresRollover } from "./limits.ts";
 import { acceptsChoice } from "./deferral.ts";
-import { isTextEngine, opencodePromptRejected, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
+import { isTextEngine, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
 import type { Approval, Decision, Choice } from "./approvals.ts";
 import type { ChildKey, ChildStore } from "./children.ts";
 import { childTarget } from "./child-target.ts";
@@ -324,11 +324,11 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     const result = previous.then(async () => {
       try { await entry.admission; }
       catch (error) {
-        // A second text-engine request loses the one-turn budget, or OpenCode refuses the prompt
-        // before a row exists. Fail this update and leave the committed turn's workflow open.
+        // A text-engine admission activity reports input_limit or prompt_rejected when the turn
+        // did not start. Fail this update and leave the committed turn's workflow open.
         // Older histories stay on the retryable path.
-        const promptRefusal = conversation.engine === "opencode" && applicationFailure(error, "conflict") && opencodePromptRejected(request.text);
-        if (patched("text-engine-budget-v1") && isTextEngine(conversation.engine) && (applicationFailure(error, "input_limit") || promptRefusal)) {
+        const refused = applicationFailure(error, "input_limit") || applicationFailure(error, "prompt_rejected");
+        if (patched("text-engine-budget-v1") && isTextEngine(conversation.engine) && refused) {
           await rejectUnstartedAdmission(request);
           turns.delete(request.requestId);
           textBudgetRejection = true;
