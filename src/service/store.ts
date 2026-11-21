@@ -83,9 +83,10 @@ async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string)
   return budget;
 }
 
-function textAdmissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
+function admissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
   if (turnLimitReached && isTextEngine(engine)) return new TextAdmissionError("input_limit", "input_limit");
   if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("conflict", "prompt_rejected");
+  if (turnLimitReached) return new MemberStoreError("input_limit");
   return undefined;
 }
 
@@ -102,9 +103,8 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
     const budget = await turnBudget(db, key.conversationId);
-    const refusal = textAdmissionRefusal(conversation.engine, key.text, budget.used >= budget.limit);
+    const refusal = admissionRefusal(conversation.engine, key.text, budget.used >= budget.limit);
     if (refusal) throw refusal;
-    if (budget.used >= budget.limit) throw new MemberStoreError("input_limit");
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
   const recorded=handoff??await firingInitiator(db,key,conversation)??attested;
@@ -329,7 +329,7 @@ export class MemberStore {
     if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
     submitSchema.parse(key);
     const counted = isTextEngine(conversation.engine) ? await turnBudget(this.pool, key.conversationId) : undefined;
-    const refusal = textAdmissionRefusal(conversation.engine, key.text, Boolean(counted && counted.used >= counted.limit));
+    const refusal = admissionRefusal(conversation.engine, key.text, Boolean(counted && counted.used >= counted.limit));
     if (refusal) throw refusal;
     if (!await budgetApplies(this.pool, key)) return;
     // The lock waits for an admission, turn start or handoff that holds the conversation, and
@@ -532,18 +532,15 @@ export class MemberStore {
       await db.query("UPDATE birbcrew_ts.native_launches SET recovery_closed=true WHERE conversation_id=$1 AND request_id=$2",
         [key.conversationId, key.requestId]);
       if (conversation.engine === "codex") await interruptLiveLocked(db, key);
-      const cancellation = await db.query("SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2",
-        [key.conversationId, key.requestId]);
       const stopped = await db.query(`SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2
-        AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped)`,
-        [key.conversationId,key.requestId]);
+        AND ($3::boolean OR NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped))`,
+        [key.conversationId, key.requestId, isTextEngine(conversation.engine)]);
       const confirmedStop = Boolean(stopped.rowCount);
-      const textStop = isTextEngine(conversation.engine) && Boolean(cancellation.rowCount);
-      await publishObservation(db, key.conversationId, { kind: confirmedStop || textStop ? "stopped" : "failed", requestId:key.requestId });
+      await publishObservation(db, key.conversationId, { kind: confirmedStop ? "stopped" : "failed", requestId:key.requestId });
       // recovery_closed above makes this uncertain outcome final; the "recover" return is not.
       await appendAudit(db, { type: "request.finished", ownerId: key.ownerId, memberId: conversation.memberId,
         conversationId: key.conversationId, requestId: key.requestId, payload: { status: "uncertain" } });
-      if (isTextEngine(conversation.engine)) return confirmedStop || textStop ? { kind: "stopped" as const } : { kind: "failed" as const };
+      if (isTextEngine(conversation.engine)) return confirmedStop ? { kind: "stopped" as const } : { kind: "failed" as const };
       return null;
     });
   }

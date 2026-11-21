@@ -20,6 +20,27 @@ async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRunt
   return createCursorRuntime(options);
 }
 
+function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  const tracked = work.then((handle) => {
+    if (signal.aborted) void handle.abort().catch(() => undefined);
+    return handle;
+  });
+  tracked.catch(() => undefined);
+  if (signal.aborted) return Promise.reject(failed());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(failed());
+    signal.addEventListener("abort", onAbort, { once: true });
+    tracked.then((handle) => {
+      signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) reject(failed());
+      else resolve(handle);
+    }, (error: unknown) => {
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+  });
+}
+
 function bounded<T>(work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -66,22 +87,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
         refusal = true;
       },
     });
-    let rejectPending: (error: Error) => void = () => undefined;
-    const aborted = new Promise<never>((_resolve, reject) => { rejectPending = reject; });
-    void aborted.catch(() => undefined);
-    const onEarlyAbort = () => rejectPending(failed());
-    if (input.signal.aborted) onEarlyAbort();
-    else input.signal.addEventListener("abort", onEarlyAbort);
-    const pending = started.then((handle) => {
-      if (input.signal.aborted) void handle.abort().catch(() => undefined);
-      return handle;
-    });
-    let turn: Awaited<ReturnType<CursorRuntimeHandle["start"]>>;
-    try {
-      turn = await Promise.race([pending, aborted]);
-    } finally {
-      input.signal.removeEventListener("abort", onEarlyAbort);
-    }
+    const turn = await raceAbort(started, input.signal);
     const onAbort = () => { void turn.abort().catch(() => undefined); };
     if (input.signal.aborted) onAbort();
     else input.signal.addEventListener("abort", onAbort);
@@ -100,13 +106,8 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
-    let closeError: unknown;
-    if (runtime) {
-      try { await bounded(runtime.close()); }
-      catch (error) { closeError = error; }
-    }
+    if (runtime) await bounded(runtime.close()).catch(() => undefined);
     await removePrivate(sessionDirectory);
-    if (!result && closeError) throw closeError instanceof TextTurnFailed ? closeError : failed();
   }
   if (input.signal.aborted || !result) throw failed();
   return result;

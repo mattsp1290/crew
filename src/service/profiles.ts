@@ -153,7 +153,7 @@ export function memberProfiles(config: ReadonlyMap<string, MemberProfile>, state
       return tool ? runClaudeSegment(input, options, tool) : { kind: "complete", ...await runClaudeTurn(input, options) };
     };
     if (cursor) drivers.cursor = (input, member) => runCursorTurn(input, member, cursor, stateDir);
-    if (opencode) drivers.opencode = (input, member) => runOpenCodeTurn(input, member, opencode, stateDir, invocationGroup);
+    if (opencode) drivers.opencode = (input, member) => runOpenCodeTurn(input, member, opencode, stateDir);
     if (codex) drivers.codex = async (input, { ownerId, memberId }) => {
       if (input.childProfile) throw new ChildTargetError("unsupported_engine");
       const turn: Parameters<typeof runCodexTurn>[0] = input;

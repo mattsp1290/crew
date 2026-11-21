@@ -51,6 +51,8 @@ function stopRunner(child: ChildProcess | undefined) {
   if (!child || stopping.has(child) || child.exitCode !== null || child.signalCode !== null) return;
   stopping.add(child);
   if (child.connected) child.send("stop", () => { });
+  // Longer than Cursor's 5s close and OpenCode's 2s close so private files are removed first.
+  // killNativeGroup still signals the group when the leader has already exited.
   const timeout = setTimeout(() => killNativeGroup(child), 12_000);
   timeout.unref();
   child.once("close", () => clearTimeout(timeout));

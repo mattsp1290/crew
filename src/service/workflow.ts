@@ -96,7 +96,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   const { quarantineDelegation } = proxyActivities<Pick<ChildStore, "quarantineDelegation">>({
     taskQueue: memberTaskQueue, startToCloseTimeout: "15 seconds",
   });
-  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string> }>();
+  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string>; keepOpen: boolean }>();
   let previous = Promise.resolve();
   let failed = false;
   let cancelled = false;
@@ -206,6 +206,8 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         if (final?.kind === "pending" || final?.kind === "complete") return final;
       } else if (result && result.kind === "stopped") {
         cancelled = true;
+        const current = turns.get(request.requestId);
+        if (current) current.keepOpen = true;
         throw ApplicationFailure.nonRetryable("Text turn stopped", "text_stopped");
       } else if (result && result.kind === "failed") {
         throw ApplicationFailure.nonRetryable("Text turn failed", "text_failed");
@@ -323,7 +325,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     // execution; if an earlier turn prevents it from running, persist that outcome too.
     const admission = durable ? persistAdmission(request) : Promise.resolve();
     void admission.catch(() => {}); // Also observed by the queued runner and admission handler.
-    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string> };
+    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string>, keepOpen: false };
     inFlight++;
     const result = previous.then(async () => {
       try { await entry.admission; }
@@ -333,6 +335,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         // Older histories stay on the retryable path.
         const refused = applicationFailure(error, "input_limit") || applicationFailure(error, "prompt_rejected");
         if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
+          entry.keepOpen = true;
           await rejectUnstartedAdmission(request);
           turns.delete(request.requestId);
           throw error;
@@ -350,10 +353,9 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     });
     entry.result = result;
     turns.set(request.requestId, entry);
-    previous = result.then(() => { inFlight--; }, (error) => {
+    previous = result.then(() => { inFlight--; }, () => {
       inFlight--;
-      if (applicationFailure(error, "text_stopped")) cancelled = true;
-      else if (!applicationFailure(error, "input_limit") && !applicationFailure(error, "prompt_rejected")) failed = true;
+      if (!entry.keepOpen) failed = true;
     });
     return entry;
   }

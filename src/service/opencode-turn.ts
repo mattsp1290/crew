@@ -33,7 +33,7 @@ function bounded<T>(work: Promise<T>, kill: () => void): Promise<T> {
     throw error instanceof TextTurnFailed ? error : failed();
   }).finally(() => { if (timer) clearTimeout(timer); });
 }
-function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void, _invocationGroup?: number): OpenCodeSpawned {
+function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void): OpenCodeSpawned {
   const child = spawn(request.args[0], request.args.slice(1), {
     cwd: request.cwd, env: { ...request.env, HOME: home, TMPDIR: tmp, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: tmp, XDG_DATA_HOME: home },
     detached: true, stdio: ["pipe", "pipe", "pipe"],
@@ -106,7 +106,7 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
 }
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
-export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string, invocationGroup?: number): Promise<DriverResult> {
+export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string): Promise<DriverResult> {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation || !promptAllowed(input.text)) throw failed();
   const root = join(stateDir, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
   const home = join(root, "home");
@@ -129,7 +129,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
         const args = [...request.args];
         if (args.length !== 2 || args[0] !== profile.executable || args[1] !== "acp" || request.cwd !== profile.cwd
           || !sameEnvironment(request.env, profile.env)) throw failed();
-        return profile.spawn ? profile.spawn(request, signal) : spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; }, invocationGroup);
+        return profile.spawn ? profile.spawn(request, signal) : spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; });
       },
     },
   }, input.signal);
@@ -142,8 +142,6 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
     const result = await adapter.run({
       prompt: input.text, signal: input.signal, hostOperationId: input.runId, recordIntent: async () => undefined,
     });
-    await bounded(adapter.close(), killGroup).catch(() => undefined);
-    killGroup();
     const text = result.kind === "complete" ? result.text : "";
     if (input.signal.aborted || result.kind !== "complete" || text.length === 0 || Buffer.byteLength(text) > turnTextBytes) throw failed();
     completed = {
@@ -154,12 +152,11 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
       },
     };
   } catch (error) {
-    await bounded(adapter.close().then(() => undefined, () => undefined), killGroup).catch(() => undefined);
-    killGroup();
     if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
     if (subscription.kind === "ok") subscription.value.dispose();
+    await bounded(adapter.close(), killGroup).catch(() => undefined);
   }
   } finally {
     killGroup();
