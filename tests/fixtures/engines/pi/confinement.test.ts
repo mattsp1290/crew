@@ -14,8 +14,11 @@ import { runPiTurn } from "../../../../src/service/pi.ts";
 import { createPiFixtureOptions } from "./index.mts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
+// Landlock and this launcher are Linux-only. Darwin cannot compile member-launch.c
+// or apply a ruleset, so the probes skip here.
+const linux = process.platform === "linux";
 
-test("the confined Pi worker cannot read outside its code, change other files, open a socket, start a process or signal its host", { timeout: 20_000 }, async (t) => {
+test("the confined Pi worker cannot read outside its code, change other files, open a socket, start a process or signal its host", { skip: !linux, timeout: 20_000 }, async (t) => {
   const scope = await mkdtemp(join(tmpdir(), "birb-pi-scope-"));
   t.after(() => rm(scope, { recursive: true, force: true }));
   const directory = join(scope, "conversation");
@@ -64,7 +67,7 @@ function processStatus(pid: number) {
   return Object.fromEntries(readFileSync(`/proc/${pid}/status`, "utf8").trim().split("\n").map((line) => line.split(":\t")));
 }
 
-test("a Pi turn runs in a launcher-confined worker with no inherited environment", { timeout: 20_000 }, async (t) => {
+test("a Pi turn runs in a launcher-confined worker with no inherited environment", { skip: !linux, timeout: 20_000 }, async (t) => {
   const seen: { status: Record<string, string>; command: string[]; environment: string[] }[] = [];
   const profile = await createPiFixtureOptions(() => {
     const children = readFileSync(`/proc/${process.pid}/task/${process.pid}/children`, "utf8").trim().split(/\s+/);
@@ -90,7 +93,7 @@ test("a Pi turn runs in a launcher-confined worker with no inherited environment
   assert.deepEqual(worker.environment.sort(), ["HOME", "TMPDIR"]);
 });
 
-test("the linked client exposes compiled schemas without exposing package source or allowing writes", { timeout: 20_000 }, async (t) => {
+test("the linked client exposes compiled schemas without exposing package source or allowing writes", { skip: !linux, timeout: 20_000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "birb-pi-client-scope-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const paths = {
