@@ -35,11 +35,11 @@ jobs:
           plain=$(mktemp)
           neg=$(mktemp)
           sed 's/\x1b\[[0-9;]*m//g' guard.log > "$plain"
-          cat > "$neg" << 'EOF'
-#5 [build 1/6] RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) echo "Pin NODE_IMAGE by digest" >&2; exit 1 ;; esac \
-   8 | >>> RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) echo "Pin NODE_IMAGE by digest" >&2; exit 1 ;; esac \
-#5 ERROR: process "/bin/sh -c echo \"Pin NODE_IMAGE by digest\" >&2" did not complete successfully: exit code: 1
-EOF
+          printf '%s\n' \
+            '#5 [build 1/6] RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) echo "Pin NODE_IMAGE by digest" >&2; exit 1 ;; esac \' \
+            '   8 | >>> RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) echo "Pin NODE_IMAGE by digest" >&2; exit 1 ;; esac \' \
+            '#5 ERROR: process "/bin/sh -c echo \"Pin NODE_IMAGE by digest\" >&2" did not complete successfully: exit code: 1' \
+            > "$neg"
           if grep -Eq "$pattern" "$neg"; then
             echo "The pin pattern matches a Dockerfile echo" >&2
             exit 1

@@ -113,18 +113,14 @@ function canonicalEndpoint(raw: string) {
   return url.href;
 }
 
-/** Stable for the life of the native thread. The host adapter refuses a resume whose declarations differ, so the
- * operation id is checked on the call rather than baked into the schema. */
+/** Stable for the life of the native thread. The host adapter refuses a resume whose declarations differ, so a
+ * per-turn operation id stays out of the schema and out of the owner text. The approval store binds the id. */
 function toolSchema(tool: CodexHold["tool"]): Readonly<Record<string, unknown>> {
   if (tool === "choose_next_step") return { type: "object", additionalProperties: false, properties: {} };
   return {
     type: "object", additionalProperties: false, required: ["operation_id"],
     properties: { operation_id: { type: "string" }, note: { type: "string", maxLength: 4096 } },
   };
-}
-
-function recordedOperation(args: unknown, requestId: string) {
-  return !!args && typeof args === "object" && !Array.isArray(args) && "operation_id" in args && args.operation_id === requestId;
 }
 
 export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
@@ -293,10 +289,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       });
     }
     if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
-    const prompt = input.hold?.tool === "record_work_item"
-      ? input.text + "\nrecord_work_item operation_id: " + requestId
-      : input.text;
-    let segment = await adapter.run({ hostOperationId: requestId, prompt, recordIntent, signal: turnSignal });
+    let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: turnSignal });
     let announced = false;
     while (segment.kind === "pending" || (segment.kind === "complete" && !announced)) {
       failedObserver();
@@ -311,9 +304,6 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
         failedObserver();
         if (call.name === "request_user_input") answers.push(declineUserInput(call));
         else if (input.hold && call.name === input.hold.tool) {
-          if (input.hold.tool === "record_work_item" && !recordedOperation(call.arguments, requestId)) {
-            throw new Error("Codex operation id is not this turn");
-          }
           const answer = await input.hold.answer(call, turnSignal);
           const data = answer.outcome.result.kind === "ok" ? answer.outcome.result.value.data : answer.outcome.result.error.data;
           const text = data && typeof data === "object" && "text" in data && typeof data.text === "string" ? data.text : undefined;
