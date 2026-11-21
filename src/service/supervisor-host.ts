@@ -9,7 +9,7 @@ import type { PublicSegment } from "./activities.ts";
 import { inspectChild, requestChildStop, revokeChild, type ReadySegment } from "./supervisor-child.ts";
 import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import { ChildStore, childrenFor } from "./children.ts";
-import type { Conversation, Checkpoint } from "./domain.ts";
+import { isTextEngine, type Conversation, type Checkpoint } from "./domain.ts";
 import { textProjection, textWriter } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
 import { commandSchema, runnerResultSchema, type Launch } from "./supervisor.ts";
@@ -212,7 +212,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
     }
     const result = runnerResultSchema.parse(reply);
     // Before the outcome commits: the model work happened even if that commit then fails.
-    await recordSegmentUsage(pool, launch, result.usage, prices);
+    if (!isTextEngine(member.conversation.engine)) await recordSegmentUsage(pool, launch, result.usage, prices);
     if (result.kind === "delegated") {
       if (childKey || continuation || member.childResults || member.conversation.engine !== "pi") throw new Error("Unexpected delegation");
       return {kind:"delegated",children:await children.delegate(member.conversation,requestId,token,result.proposals,result.checkpoint)};

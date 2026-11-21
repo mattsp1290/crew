@@ -52,6 +52,11 @@ test("Switchboard matches its pin, dependency, lock and installed package", asyn
   for (const notice of pin.notices) assert.ok((await readFile(new URL(notice, installed))).length > 0, notice);
   const { createEventStream } = await import(pin.name);
   assert.equal(typeof createEventStream, "function");
+  const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
+  assert.equal(typeof createCursorRuntime, "function");
+  const { opencodeHostAdapter, OPENCODE_HOST_ACP_VERSION } = await import("@mattsp1290/switchboard/host/opencode");
+  assert.deepEqual(opencodeHostAdapter.identity, { engine: "opencode", adapter: "opencode-host", version: "1", contractVersion: 1 });
+  assert.equal(OPENCODE_HOST_ACP_VERSION, "1");
 });
 
 // npm ci can install a cached copy under the lock's integrity, so a repacked archive must match it here.

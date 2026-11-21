@@ -3,12 +3,12 @@ import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { Pool } from "pg";
 import { z } from "zod";
-import type { MemberProfile } from "./profiles.ts";
+import { assertTextProfile, type MemberProfile } from "./profiles.ts";
 import { capabilitySchema, hasCapabilities, includesShell, type CapabilitySet } from "./capabilities.ts";
 import { configuredDestination } from "./provider-identity.ts";
 import { childConsentSchema, childRoleSchema, childTargetSchema, holdsChildTools, sameDestination, type ProfileTargetSeal } from "./child-target.ts";
 import { fixedRoles } from "@birbcrew/pi-subagents";
-import { engineSchema, spawnSchema } from "./domain.ts";
+import { childEngineSchema, engineSchema, type Engine, spawnSchema } from "./domain.ts";
 import { usesRelayCredential } from "./proxy-profiles.ts";
 
 async function nativeVolume(directory: string) {
@@ -44,13 +44,14 @@ function profileCeiling(name: string, entry: MemberProfile): CapabilitySet | nul
 }
 
 export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string) {
+  for (const [name, entry] of config) assertTextProfile(name, entry);
   const ceilings = new Map([...config].map(([name, entry]) => [name, profileCeiling(name, entry)]));
   const declarations = new Map<string, ProfileTargetSeal>();
   const roleMap = z.strictObject({ analyst: childTargetSchema.optional(), recorder: childTargetSchema.optional() });
   const configSchema = z.strictObject({ pi: roleMap.optional(), claude: roleMap.optional(), codex: roleMap.optional() });
   for (const [name, profile] of config) {
     const targets = configSchema.parse(profile.childTargets ?? {});
-    for (const engine of engineSchema.options) {
+    for (const engine of childEngineSchema.options) {
       const roles = targets[engine];
       if (roles === undefined) continue;
       if (!profile[engine] || (engine === "pi" && !profile.delegateTask)) throw new Error("Child parent engine is unavailable or cannot delegate");
@@ -70,10 +71,12 @@ export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, M
     }
   }
   const profiles = [...config.values()];
-  const volumes = {
+  const volumes: Record<Engine, string | null> = {
     pi: null,
     claude: profiles.some((entry) => entry.claude) ? await nativeVolume(directory) : null,
     codex: profiles.some((entry) => entry.codex) ? await nativeVolume(join(directory, "codex")) : null,
+    cursor: null,
+    opencode: null,
   };
   if (volumes.codex && volumes.codex === volumes.claude) throw new Error("Codex needs its own native state volume");
   const db = await pool.connect();

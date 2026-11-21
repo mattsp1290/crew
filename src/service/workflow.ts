@@ -4,7 +4,7 @@ import {
 } from "@temporalio/workflow";
 import { workflowGenerationTurnLimit, historyRequiresRollover } from "./limits.ts";
 import { acceptsChoice } from "./deferral.ts";
-import { turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
+import { isTextEngine, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
 import type { Approval, Decision, Choice } from "./approvals.ts";
 import type { ChildKey, ChildStore } from "./children.ts";
 import { childTarget } from "./child-target.ts";
@@ -12,6 +12,17 @@ import type { expiryActivity, MemberActivities, Resume } from "./activities.ts";
 
 import type { MemberStore, ownerAdmissionActivity } from "./store.ts";
 import { activityQueue, memberTaskQueue } from "./queues.ts";
+
+function applicationFailure(error: unknown, type: string): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof ApplicationFailure && current.type === type) return true;
+    current = current.cause;
+  }
+  return false;
+}
 
 export const submitTurn = defineUpdate<string, [TurnRequest]>("submitTurn");
 export const acceptTurn = defineUpdate<string, [TurnRequest]>("acceptTurn");
@@ -312,6 +323,12 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     const result = previous.then(async () => {
       try { await entry.admission; }
       catch (error) {
+        // A second text-engine request loses the one-turn budget. Reject the admission and leave
+        // the committed turn's workflow open. Older histories stay on the retryable path.
+        if (patched("text-engine-budget-v1") && isTextEngine(conversation.engine) && applicationFailure(error, "input_limit")) {
+          await rejectUnstartedAdmission(request);
+          return request.requestId;
+        }
         // The SQL admission may have committed even if Temporal lost every ack.
         // Persist a no-execution outcome before closing whenever storage is available.
         if (patched("recover-admission-ack-v1")) await rejectUnstartedAdmission(request);

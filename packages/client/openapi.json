@@ -88,7 +88,9 @@
             "enum": [
               "pi",
               "claude",
-              "codex"
+              "codex",
+              "cursor",
+              "opencode"
             ]
           },
           "profile": {
@@ -215,7 +217,9 @@
             "enum": [
               "pi",
               "claude",
-              "codex"
+              "codex",
+              "cursor",
+              "opencode"
             ]
           },
           "profile": {
@@ -1132,7 +1136,9 @@
                 "enum": [
                   "pi",
                   "claude",
-                  "codex"
+                  "codex",
+                  "cursor",
+                  "opencode"
                 ]
               }
             },
@@ -1160,7 +1166,9 @@
                 "enum": [
                   "pi",
                   "claude",
-                  "codex"
+                  "codex",
+                  "cursor",
+                  "opencode"
                 ]
               }
             },
@@ -1255,7 +1263,9 @@
                 "enum": [
                   "pi",
                   "claude",
-                  "codex"
+                  "codex",
+                  "cursor",
+                  "opencode"
                 ]
               }
             },
@@ -1283,7 +1293,9 @@
                 "enum": [
                   "pi",
                   "claude",
-                  "codex"
+                  "codex",
+                  "cursor",
+                  "opencode"
                 ]
               }
             },
@@ -2468,7 +2480,9 @@
             "enum": [
               "pi",
               "claude",
-              "codex"
+              "codex",
+              "cursor",
+              "opencode"
             ]
           },
           "profile": {

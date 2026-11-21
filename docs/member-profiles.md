@@ -1,7 +1,7 @@
 # Run a member with a live model
 
 The worker reads its provider configuration from a trusted module on the server.
-The built-in module supports Pi on OpenCode Go, Claude on the Anthropic API, and Codex with either a ChatGPT subscription or an OpenAI API key.
+The built-in module supports Pi on OpenCode Go, Claude on the Anthropic API, Codex with either a ChatGPT subscription or an OpenAI API key, Cursor through the Cursor SDK, and OpenCode through ACP.
 The member's spawn request selects one of the configured profile names. Create a
 new member to select a different model or engine.
 
@@ -19,9 +19,21 @@ missing, expired or belongs to another account.
 {
   "pi": {"provider": "opencode-go", "account": "ACCOUNT LABEL"},
   "claude": {"provider": "anthropic-api", "account": "ACCOUNT LABEL", "model": "claude-sonnet-4-6"},
-  "codex": {"provider": "chatgpt-subscription", "account_id": "CHATGPT_ACCOUNT_ID", "model": "gpt-5.4"}
+  "codex": {"provider": "chatgpt-subscription", "account_id": "CHATGPT_ACCOUNT_ID", "model": "gpt-5.4"},
+  "cursor": {"account": "ACCOUNT LABEL", "model": "cursor-model", "cwd": "/absolute/workspace"},
+  "opencode": {
+    "account": "ACCOUNT LABEL",
+    "model": "provider/model",
+    "cwd": "/absolute/workspace",
+    "executable": "/absolute/opencode",
+    "env": ["OPENCODE_API_KEY"]
+  }
 }
 ```
+
+`cursor` and `opencode` are optional. A worker that sets `cursor` reads the API key from `BIRBCREW_CURSOR_API_KEY` and registers `cursor.v1`. A worker that sets `opencode` reads each name in `env` from its own environment and registers `opencode.v1`. That map replaces the child process environment. The spawn argv is `[executable, "acp"]`. These profiles are not copied into tool profiles.
+
+These turns run in the supervisor runner. Cursor uses the SDK sandbox, which does not cover `webSearch`, `webFetch`, or MCP. OpenCode's process is not sandboxed to `cwd`. Tool, permission, filesystem, and terminal requests fail the turn, and files the process already wrote remain.
 
 Unknown keys are refused. The setting carries no date and does not expire. The
 credentials it points at are real ones and keep their own lifetimes: a provider
@@ -72,15 +84,21 @@ can revoke a key, and a Codex sign-in must stay current.
    and stops unless it is current and belongs to `account_id`. The native
    session volume stores conversation state; the operator's CLI manages the
    subscription login separately.
-6. Start the worker with the service database, Temporal address, and absolute
+6. For Cursor, add the `cursor` entry with the account label, the caller model
+   id, and an absolute workspace. Provide the key in `BIRBCREW_CURSOR_API_KEY`.
+   Spawn with engine `cursor` and profile `cursor.v1`.
+7. For OpenCode ACP, add the `opencode` entry with the account label, the caller
+   model id, absolute `cwd` and `executable`, and the environment variable names
+   the child needs. Spawn with engine `opencode` and profile `opencode.v1`.
+8. Start the worker with the service database, Temporal address, and absolute
    durable state directory configured.
 
    ```sh
    npm run members -- worker src/service/providers.ts
    ```
 
-Restart the worker to change the setting or to rotate a provider key. All three
-engines require independent live-account acceptance using the intended account
+Restart the worker to change the setting or to rotate a provider key. Pi, Claude,
+and Codex require independent live-account acceptance using the intended account
 and model.
 
 ### What replaced provider attestations

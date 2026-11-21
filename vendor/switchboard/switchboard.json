@@ -2,17 +2,16 @@
   "name": "@mattsp1290/switchboard",
   "version": "0.0.0",
   "sourceRepository": "https://github.com/mattsp1290/switchboard",
-  "sourceRevision": "58c7922d8fade3617cc86fedcf41677f897025ef",
-  "sourceTree": "1cd287a7ed95acdf82bc7f0b1c4cd5118a52fe86",
-  "artifact": "switchboard-58c7922d8fade3617cc86fedcf41677f897025ef.tgz",
-  "sha256": "15416f5505eb8c3f5b0e3236a48f879f873661e46d27a652ad845f08cb0b9421",
-  "integrity": "sha512-BYqLGxoq3QOZ3cpJOleAcMj+WcEc/BQIO+GnB3tR9cHiX3L1e2MGeTxl16P7zAmAfnV1koK8BX80IAGIzqtvxw==",
+  "sourceRevision": "562f0291fce6fbf07ac5df02b81574bc3a09ca7b",
+  "sourceTree": "c199e2ebba36f4d3d1f6ef8beb6b19c22547bdc6",
+  "artifact": "switchboard-562f0291fce6fbf07ac5df02b81574bc3a09ca7b.tgz",
+  "sha256": "fd825f6f397ad2d7216f43a78b6fa31ac0268775523b9ee249596cc430774cf5",
+  "integrity": "sha512-47br9b3uanerUT6WlRcbKiZyeBMUxDV1vlPp+xWcWcDmPT9IkIVqCT+TtxLUQyLZeLCWNsiir9bNDrcTqR5atg==",
   "license": "MIT",
-  "notices": ["LICENSE"],
-  "copiedFrom": {
-    "repository": "https://github.com/mattsp1290/agentui",
-    "revision": "a9483be31cc301d7d9cb4d403a922098814cadb4",
-    "path": "vendor/switchboard-58c7922d8fade3617cc86fedcf41677f897025ef.tgz",
-    "pin": "vendor/switchboard.json"
-  }
+  "notices": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/codex-APACHE-2.0.txt",
+    "licenses/codex-NOTICE.txt"
+  ]
 }

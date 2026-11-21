@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 /** Shared validation source for the portable client and the Crew server. */
-export const engineSchema = z.enum(["pi", "claude", "codex"]);
+export const engineSchema = z.enum(["pi", "claude", "codex", "cursor", "opencode"]);
+/** Child destinations and delegation targets stay on the original three engines. */
+export const childEngineSchema = z.enum(["pi", "claude", "codex"]);
 export function boundedText(bytes: number) {
   return z
     .string()
@@ -410,7 +412,7 @@ export const instructionsSummarySchema = z.object({
 export const memberSubagentsSchema = z.strictObject({
   mode: z.enum(["legacy", "named"]),
   targets: z.array(z.strictObject({
-    role: z.enum(["analyst", "recorder"]), engine: engineSchema, profile: z.string().min(1).max(128),
+    role: z.enum(["analyst", "recorder"]), engine: childEngineSchema, profile: z.string().min(1).max(128),
     model: z.string().min(1).max(256), providerHost: z.string().min(1).max(512), accountDigest: z.string().regex(/^[a-f0-9]{64}$/),
     availability: z.enum(["executable", "unsupported_engine", "removed"]),
   })),

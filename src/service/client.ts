@@ -8,11 +8,16 @@ import { memberTaskQueue } from "./queues.ts";
 
 /** The admission activity refused the request under its member's budget (ownerAdmissionActivity).
  * A refused admission closes the conversation's workflow, so the caller is told so. */
-function usageRefusal(error: unknown) {
-  for (let cause = error; cause instanceof Error; cause = cause.cause) {
-    if (cause instanceof ApplicationFailure && cause.type === "usage_limit") return true;
+function failureType(error: unknown, type: string) {
+  const seen = new Set<unknown>();
+  for (let cause: unknown = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
+    seen.add(cause);
+    if (cause instanceof ApplicationFailure && cause.type === type) return true;
   }
   return false;
+}
+function usageRefusal(error: unknown) {
+  return failureType(error, "usage_limit");
 }
 
 export class MemberClient {
@@ -59,6 +64,7 @@ export class MemberClient {
         return await action(await this.workflow(conversation));
       }
       catch (error) {
+        if (failureType(error, "input_limit")) throw new MemberStoreError("input_limit");
         if (!(error instanceof WorkflowUpdateFailedError) || !(error.cause instanceof ApplicationFailure) ||
             error.cause.type !== "RolloverInProgress") throw error;
         if (Date.now() >= deadline) throw new MemberStoreError("busy");

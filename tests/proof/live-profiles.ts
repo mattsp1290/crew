@@ -1,9 +1,9 @@
 import { goEndpoint } from "../../src/service/accounts.ts";
 import { loadLiveProfiles } from "../../src/service/live-profiles.ts";
-import { engineSchema } from "../../src/service/domain.ts";
+import { childEngineSchema } from "../../src/service/domain.ts";
 import { accountKey } from "./live-account.ts";
 
-const engine = engineSchema.parse(process.env.BIRBCREW_LIVE_ENGINE);
+const engine = childEngineSchema.parse(process.env.BIRBCREW_LIVE_ENGINE);
 const relay = new URL(process.env.BIRBCREW_LIVE_RELAY!);
 if (relay.protocol !== "http:" || relay.hostname !== "127.0.0.1" || !relay.port || !/^\/[a-f0-9]{64}$/.test(relay.pathname)) {
   throw new Error("Invalid proof relay");

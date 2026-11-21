@@ -3,11 +3,15 @@ import type { ChildKey } from "./children.ts";
 import type { Approval } from "./approvals.ts";
 import { z } from "zod";
 
-import { engineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
+import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
   createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema,
   requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
-export { engineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
+export { engineSchema, childEngineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
+export type ChildEngine = z.infer<typeof childEngineSchema>;
+export function isTextEngine(engine: Engine): engine is "cursor" | "opencode" {
+  return engine === "cursor" || engine === "opencode";
+}
 const ownerId = boundedText(256);
 const uuid = requestIdentitySchema.shape.requestId;
 export const spawnSchema = createMemberSchema.extend({ ownerId });
