@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
-import { codexProcessChannel } from "../../src/service/codex.ts";
+import { codexProcessChannel, observeCodexItemCompletions } from "../../src/service/codex.ts";
 import { exitGraceMs } from "../../src/service/codex-subscription.ts";
 
 test("a descendant that keeps the app-server pipes open does not hold the channel or drop a late frame", async () => {
@@ -49,4 +49,31 @@ test("disposing the listener during the exit grace still delivers the late frame
   assert.equal(child.stdout?.destroyed, true);
   assert.equal(child.stderr?.destroyed, true);
   child.kill("SIGKILL");
+});
+
+test("item completion is noted after the adapter sees the same bytes, including a split line", () => {
+  const noted: string[] = [];
+  const forwarded: Buffer[] = [];
+  let deliver: ((bytes: Uint8Array) => void) | undefined;
+  const channel = {
+    listen(next: { data: (bytes: Uint8Array) => void; diagnostic: (bytes: Uint8Array) => void; ended: (reason: "process-exit") => void }) {
+      deliver = (bytes) => next.data(bytes);
+      return () => {};
+    },
+    write() { return Promise.resolve(); },
+  };
+  const wrapped = observeCodexItemCompletions(channel, (id) => noted.push(id));
+  wrapped.listen({
+    data: (bytes) => forwarded.push(Buffer.from(bytes)),
+    diagnostic: () => {},
+    ended: () => {},
+  });
+  const line = Buffer.from(JSON.stringify({
+    method: "item/completed", params: { item: { id: "msg_wait", type: "agentMessage" } },
+  }) + "\n" + JSON.stringify({ method: "turn/completed" }) + "\n");
+  deliver!(line.subarray(0, 8));
+  assert.deepEqual(noted, []);
+  deliver!(line.subarray(8));
+  assert.deepEqual(noted, ["msg_wait"]);
+  assert.equal(Buffer.concat(forwarded).equals(line), true);
 });

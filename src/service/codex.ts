@@ -132,9 +132,11 @@ export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Pr
   } finally { await transport.close(); }
 }
 
-/** Holds each assistant item until the next item, a tool call, or the end of the turn, then publishes it whole. */
+/** Holds each assistant item until that item completes, the next item starts, a tool call, or the end of the turn.
+ * A final-answer delta can arrive before `item/completed`. A wait prompt completes the item and leaves the turn open. */
 function codexTranscript(onText?: (text: string) => void | Promise<void>) {
   let transcript = "", itemId = "", pending = "", closed = false;
+  const completed = new Set<string>();
   const publish = async (text: string) => {
     if (!text) return;
     transcript += text;
@@ -152,6 +154,11 @@ function codexTranscript(onText?: (text: string) => void | Promise<void>) {
       if (itemId && id !== itemId) await flush();
       itemId = id;
       pending += text;
+      if (completed.has(id)) await flush();
+    },
+    async complete(id: string) {
+      completed.add(id);
+      if (id === itemId) await flush();
     },
     flush,
     async finish() {
@@ -231,6 +238,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
   };
   const launcher = fileURLToPath(new URL("../../.proof/bin/member-launch", import.meta.url));
   const launched: { child: ChildProcess; processExit: Promise<unknown> }[] = [];
+  const itemCompleted: { note: (id: string) => void } = { note: () => {} };
   const port = url.port || (url.protocol === "https:" ? "443" : "80");
   let adapter: OpenedAdapter | undefined;
   let subscriptionHandle: ReturnType<OpenedAdapter["events"]["subscribe"]> | undefined;
@@ -239,7 +247,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       launch: { kind: "spawn", spawn: (request, signal) => {
         const started = borrowLauncher(launcher, request, signal, port, sqliteHome, logDir);
         launched.push(started);
-        return { processExit: started.processExit, channel: started.channel };
+        return { processExit: started.processExit, channel: observeCodexItemCompletions(started.channel, (id) => itemCompleted.note(id)) };
       } },
       environment: {
         variables,
@@ -267,6 +275,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     const turnSignal = AbortSignal.any([input.signal, observerStop.signal]);
     const reply = codexTranscript(input.onText);
     let observerError: unknown, observed = Promise.resolve();
+    itemCompleted.note = (id) => { observed = observed.then(() => reply.complete(id)); };
     // The host stream holds 64 events and awaits this callback. onText waits on SQL, so the
     // chain below is the queue. Returning `observed` overflows the stream and drops the rest of the item.
     subscriptionHandle = adapter.events.subscribe((event) => {
@@ -401,6 +410,49 @@ function borrowLauncher(launcher: string, request: { executable: string; args: r
     channel,
   };
 }
+
+/** `item/completed` is not a host-adapter event. The item id is enough: a final-answer delta stays held until this line. */
+export function observeCodexItemCompletions<T extends { listen(next: CodexChannelNext): () => void }>(channel: T, note: (id: string) => void): T {
+  let rest = Buffer.alloc(0);
+  return {
+    ...channel,
+    listen(next) {
+      return channel.listen({
+        ...next,
+        data(bytes) {
+          next.data(bytes);
+          const chunk = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+          rest = Buffer.concat([rest, chunk]);
+          if (rest.length > 1_048_576) { rest = Buffer.alloc(0); return; }
+          let newline = rest.indexOf(10);
+          while (newline >= 0) {
+            const line = rest.subarray(0, newline);
+            rest = rest.subarray(newline + 1);
+            const id = completedItemId(line);
+            if (id) note(id);
+            newline = rest.indexOf(10);
+          }
+        },
+      });
+    },
+  };
+}
+
+function completedItemId(line: Buffer) {
+  if (line.length === 0 || line.length > 262_144) return undefined;
+  let message: unknown;
+  try { message = JSON.parse(line.toString("utf8")); } catch { return undefined; }
+  if (!message || typeof message !== "object" || !("method" in message) || message.method !== "item/completed") return undefined;
+  if (!("params" in message) || !message.params || typeof message.params !== "object" || !("item" in message.params)) return undefined;
+  const item = message.params.item;
+  return item && typeof item === "object" && "id" in item && typeof item.id === "string" && item.id !== "" ? item.id : undefined;
+}
+
+type CodexChannelNext = {
+  data: (bytes: Uint8Array) => void;
+  diagnostic: (bytes: Uint8Array) => void;
+  ended: (reason: "process-exit") => void;
+};
 
 /** The stdio channel for one app-server process. Stdin stays open. A descendant that inherited the pipes
  * cannot hold the turn: after exit, unread bytes are kept for `exitGraceMs`, then the pipes are destroyed. */
