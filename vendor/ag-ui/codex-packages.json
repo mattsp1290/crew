@@ -3,13 +3,6 @@
   "revision": "d32063f96c2dff1dc96af839b3952abb6acfeda4",
   "packages": [
     {
-      "installPath": "node_modules/@openai/codex-sdk",
-      "version": "0.169.0",
-      "download": "https://registry.npmjs.org/@openai/codex-sdk/-/codex-sdk-0.169.0.tgz",
-      "integrity": "sha512-N2ZApXiOjjDiWKuoyaW3zdww9ggFtxKjeMp5qq+kW77UXDOxY2O6hg60ahip319Tlt6iwYEoDfPQzn9a6d3jFA==",
-      "license": "Apache-2.0"
-    },
-    {
       "installPath": "node_modules/@openai/codex",
       "version": "0.169.0",
       "download": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0.tgz",

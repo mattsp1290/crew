@@ -12,8 +12,7 @@ import { configuredDestination } from "../../src/service/provider-identity.ts";
 import { createProxyProfile, type ProxyProfileOptions } from "../../src/service/proxy-profiles.ts";
 import { runClaudeSegment, runClaudeTurn } from "../../src/service/claude.ts";
 import { runPiSegment, runPiTurn } from "../../src/service/pi.ts";
-import { runCodexTurn } from "../../src/service/codex.ts";
-import { serveNativeTool } from "../../src/service/codex-mcp.ts";
+import { codexToolContinuation, runCodexTurn } from "../../src/service/codex.ts";
 import type { Checkpoint } from "../../src/service/domain.ts";
 import { startClaudeFixtureProvider } from "../fixtures/engines/claude/index.mts";
 import { startProvider } from "../fixtures/engines/codex/provider.mts";
@@ -149,16 +148,13 @@ for (const engine of ["claude", "codex", "pi"] as const) {
     const toolInput = { ...input, threadId: randomUUID(), runId: operation, text: "record " + operation };
     if (engine === "codex") {
       let called = 0;
-      const mcp = await serveNativeTool("record_work_item", operation, t.signal, async call => {
-        assert.equal(z.object({ operation_id: z.string() }).parse(call.args).operation_id, operation);
+      const result = await runCodexTurn({ ...toolInput, hold: { tool: "record_work_item", async answer(call) {
+        assert.equal(z.object({ operation_id: z.string() }).parse(call.arguments).operation_id, operation);
         called++;
-        return { text: receipt, isError: false };
-      });
-      try {
-        const result = await runCodexTurn({ ...toolInput, mcp: { ...mcp.endpoint, tool: "record_work_item" } }, { ...active.profile.codex!, ...identity });
-        assert.ok(result.text.includes(receipt));
-        assert.equal(called, 1);
-      } finally { await mcp.close(); }
+        return codexToolContinuation(call.pending.target, receipt, false);
+      } } }, { ...active.profile.codex!, ...identity });
+      assert.ok(result.text.includes(receipt));
+      assert.equal(called, 1);
     } else {
       const proposed = engine === "claude" ? await runClaudeSegment(toolInput, { ...active.profile.claude!, ...identity }) :
         await runPiSegment(toolInput, active.profile.pi!);

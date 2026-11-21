@@ -15,13 +15,13 @@ The existing observer gateway continues to reject those inputs.
   eight registered tools per application. Tool schemas are explicit JSON object
   schemas with `additionalProperties: false`; argument/result limits and a
   deadline are mandatory. Unregistered tools and missing authorization deny.
-- Claude and Pi SDK adapters and the pinned official Codex app-server expose only
-  the registered catalog. Codex uses app-server dynamic tools instead of exec/MCP:
-  the pinned MCP path adds resource helper tools that cannot be disabled.
-  Native built-ins remain disabled. All three engines run through the isolated
+- Claude and Pi SDK adapters expose only the registered catalog.
+  Native built-ins remain disabled. Both engines run through the isolated
   launcher. Pi's SDK runs in a confined worker with no network; the backend
   process still runs each registered tool handler and the model request (see
   [native confinement](verification.md#native-confinement)).
+  A Codex profile is refused: `runTrustedRequest` throws
+  "Codex trusted lane was removed" before it claims the request.
 - Native checkpoints bind engine, owner/conversation scope, version, generation,
   context and tool manifest. Rotation creates a fresh engine-native session;
   old transcripts are **not** summarized into the new context. Cold restoration
@@ -65,9 +65,10 @@ await runTrustedRequest(trusted, key, nativeProfile, abortSignal);
 const result = await trusted.result(key, requestId);
 ```
 
-`nativeProfile` is `{engine: "pi" | "claude" | "codex", profile: ...}` using the
+`nativeProfile` is `{engine: "pi" | "claude", profile: ...}` using the
 existing native profile options, including the proxy profiles from PR #29.
-Claude/Codex owner and member identities must match the database conversation.
+A Codex profile is not a supported trusted engine. Claude owner and member
+identities must match the database conversation.
 The runner does not forward speculative text to observers: it buffers output,
 rechecks authorization and generation at commit, then returns only a request ID.
 `result()` checks current output authorization again before returning a reply.
@@ -232,10 +233,11 @@ docker run --rm --name birbcrew-trusted-pg \
 
 `trusted-context.test.ts` covers real PostgreSQL races, actual SIGKILL around a
 committed fixture effect, lease disconnects, late settlement after erasure,
-rotation/order preservation and registry immutability. Native tests cover all
-three SDK tool catalogs, result correlation, cold restore and fresh-scope
-rotation. Runner tests compose the native SDK with the durable store. A kernel
-without Landlock fails closed for all three engines; do not bypass that isolation or
+rotation/order preservation and registry immutability. Native tests cover the
+Pi and Claude tool catalogs, result correlation, cold restore and fresh-scope
+rotation. The Codex cases assert that the trusted lane throws before a request
+is claimed. Runner tests compose the native SDK with the durable store. A kernel
+without Landlock fails closed for Pi and Claude; do not bypass that isolation or
 report those tests as passing locally.
 
 This is offline fixture qualification. Live application policy/provider

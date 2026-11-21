@@ -55,6 +55,10 @@ for(const engine of ["pi","claude","codex"] as const) {
       async dispatch(call){calls.push({nativeCallId:call.nativeCallId,toolName:call.toolName});
         return {text:call.toolName==="choose_next_step"?"inspect":JSON.stringify({kind:"recorded",nativeCallId:call.nativeCallId,receipt:{receiptId:"receipt-fixture",operationId:(call.args as any).operation_id}}),isError:false};},
       onToolDelivered(call){acks.push(call);}};
+    if (engine === "codex") {
+      await assert.rejects(runTrustedNativeTurn(input, selected), /Codex trusted lane was removed/);
+      return;
+    }
     const first=await runTrustedNativeTurn(input,selected);assert.ok(first.text.includes("private-A"));
     const restored=await runTrustedNativeTurn({...input,runId:randomUUID(),text:"recall",checkpoint:first.checkpoint},selected);assert.ok(restored.text.includes("private-A"));
     await assert.rejects(runTrustedNativeTurn({...input,runId:randomUUID(),binding:"owner/B/v1/g1",checkpoint:restored.checkpoint},selected),/scope or capabilities/);
@@ -62,34 +66,7 @@ for(const engine of ["pi","claude","codex"] as const) {
     const read=await runTrustedNativeTurn({...input,threadId:randomUUID(),runId:randomUUID(),text:engine==="claude"?"next step":"choose"},selected);assert.ok(read.text.includes("inspect"));
     const operation=randomUUID();const effect=await runTrustedNativeTurn({...input,threadId:randomUUID(),runId:operation,text:"record "+operation},selected);assert.ok(effect.text.includes("receipt-fixture"));
     assert.equal(calls.length,2);assert.deepEqual(acks,calls);
-    if (engine === "codex") {
-      assert.ok("cancelled" in provider && typeof provider.cancelled === "function");
-      const cancelled = provider.cancelled as () => number;
-      const stopped = new AbortController(), before = cancelled();
-      await assert.rejects(runTrustedNativeTurn({...input,threadId:randomUUID(),runId:randomUUID(),text:"wait",
-        signal:stopped.signal,onText:()=>stopped.abort()},selected));
-      assert.equal(stopped.signal.aborted,true,"must observe a native stream before cancellation");
-      for (let i=0;i<250 && cancelled()===before;i++) await new Promise(r=>setTimeout(r,20));
-      assert.ok(cancelled()>before,"turn cancellation must close its upstream stream");
-    }
     if(engine==="pi" && "catalogs" in provider)for(const names of provider.catalogs as string[][])assert.deepEqual([...names].sort(),tools.map(t=>t.name).sort());
     if(engine==="claude")for(const names of observed)assert.deepEqual([...names].sort(),tools.map(t=>"mcp__ag_ui__"+t.name).sort());
-    if(engine === "codex") {
-      assert.ok("toolSurfaces" in provider);
-      const seen=new Set<string>();
-      const inspect=(entry:any)=>{
-        if(entry.type === "namespace") {
-          assert.equal(entry.name,"application","Unexpected native namespace");
-          assert.ok(Array.isArray(entry.tools));for(const nested of entry.tools)inspect(nested);
-        } else {
-          assert.equal(entry.type,"function","Unexpected native built-in tool type");
-          assert.ok(tools.some(t=>t.name === entry.name),"Unregistered native tool: "+entry.name);
-          seen.add(entry.name);
-        }
-      };
-      for(const catalog of provider.toolSurfaces as any[][])for(const entry of catalog)inspect(entry);
-      assert.deepEqual([...seen].sort(),tools.map(t=>t.name).sort());
-    }
-
   });
 }

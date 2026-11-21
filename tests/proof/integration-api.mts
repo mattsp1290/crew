@@ -110,8 +110,8 @@ await withServices({ label: "integration-api" }, async s => {
           assert.equal(fixtures.evidence()[engine].requests, counters, "observer disconnect does not execute work");
           // Every turn's segment has one ledger row, priced when written where the engine named a
           // priced model: Claude's fixture reports 10 and 10 tokens a call, so (10 × $3 + 10 × $15) per
-          // million; Codex's 1000 input of which 400 cached and 50 output, with the model from its
-          // rollout, so (600 × $1.25 + 400 × $0.125 + 50 × $10); Pi's provider reports nothing.
+          // million; Codex's 1000 input of which 400 cached and 50 output, with the profile model,
+          // so (600 × $1.25 + 400 × $0.125 + 50 × $10); Pi's provider reports nothing.
           const usage = await (await rawRequest(`/v1/usage/records?conversationId=${conversationId}`)).json();
           const metered = { claude: { state: "reported", model: "claude-sonnet-4-6", inputTokens: 10, outputTokens: 10, estimatedCostUsd: "0.00018" },
             codex: { state: "reported", model: "gpt-5.4", inputTokens: 1000, outputTokens: 50, estimatedCostUsd: "0.0013" },

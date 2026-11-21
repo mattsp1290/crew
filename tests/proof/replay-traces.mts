@@ -224,7 +224,7 @@ try {
     const source = await sourceFingerprint();
     assert.deepEqual(source, initialSource, "Source changed during replay verification");
     const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
-    const packages = ["@openai/codex-sdk","@openai/codex","@temporalio/worker", "@anthropic-ai/claude-agent-sdk", "@earendil-works/pi-coding-agent",
+    const packages = ["@openai/codex","@temporalio/worker", "@anthropic-ai/claude-agent-sdk", "@earendil-works/pi-coding-agent",
       "@ag-ui/claude-agent-sdk", "@ag-ui/pi", "@opentelemetry/sdk-trace-base"].map((name) => {
       const { version, integrity } = z.object({ version: z.string(), integrity: z.string().startsWith("sha512-") })
         .parse(lock.packages["node_modules/" + name]);

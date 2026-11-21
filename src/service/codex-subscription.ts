@@ -21,7 +21,7 @@ const loginBytes = 1 << 20;
 const scratchPrefix = "birb-codex-signin-";
 const readDeadlineMs = 25_000;
 // A descendant that inherited app-server's pipes keeps them open. The read waits this long for their end, then stops.
-const exitGraceMs = 500;
+export const exitGraceMs = 500;
 const stderrChars = 8192;
 // Every read ends within its deadline, so an older scratch directory belongs to a reader that was killed.
 const abandonedScratchMs = 5 * 60_000;

@@ -447,7 +447,7 @@ test("member memory and project notes fit each engine, and an open that would no
   assert.equal((spawnSync("/bin/true", ["x".repeat(argumentBytes)]).error as NodeJS.ErrnoException | undefined)?.code, "E2BIG");
   // codexArgument models codex.ts, which prefixes the context with this line.
   assert.match(await readFile(new URL("../../src/service/codex.ts", import.meta.url), "utf8"),
-    /developer_instructions: "You are a BirbCrew coworker\." \+ \(input\.projectContext \? "\\n" \+ input\.projectContext : ""\),/);
+    /instructions: "You are a BirbCrew coworker\." \+ \(input\.projectContext \? "\\n" \+ input\.projectContext : ""\),/);
 
   // The largest memory block: every entry full and every byte escaped. No other character costs more.
   const full = (text: string) => Array.from({ length: memoryLimits.activePerMember }, () => ({ memoryId: randomUUID(), text }));

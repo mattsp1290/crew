@@ -103,7 +103,28 @@ export function claudeUsage(result: unknown, initModel: unknown): SegmentUsage {
 }
 
 const codexFields = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens"] as const;
+const codexAdapterFields = {
+  input_tokens: "inputTokens", output_tokens: "outputTokens", cached_input_tokens: "cachedInputTokens",
+  cache_write_input_tokens: "cacheWriteInputTokens", reasoning_output_tokens: "reasoningOutputTokens",
+} as const;
 const codexTotal = z.looseObject({ input_tokens: z.unknown(), output_tokens: z.unknown() });
+
+function usageRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** Rollout totals are snake_case. The host adapter's cumulative `token-usage.total` is camelCase. */
+export function codexAdapterTotal(data: unknown): Record<string, unknown> | null {
+  const record = usageRecord(data);
+  const total = usageRecord(record?.total) ?? record;
+  if (!total || (!("inputTokens" in total) && !("input_tokens" in total))) return null;
+  const mapped: Record<string, unknown> = {};
+  for (const [snake, camel] of Object.entries(codexAdapterFields)) {
+    if (snake in total) mapped[snake] = total[snake];
+    else if (camel in total) mapped[snake] = total[camel];
+  }
+  return "input_tokens" in mapped && "output_tokens" in mapped ? mapped : null;
+}
 
 /** The running total a Codex rollout holds: the last token_count event's total_token_usage. Null
  * when the thread has recorded none yet; undefined when a line cannot be read. */
@@ -133,10 +154,11 @@ export function codexRolloutModel(lines: readonly string[]): string | null {
   return null;
 }
 
-/** Codex (SDK 0.167.1 turn.completed): the usage is the native thread's running total, carried
- * across resumed turns, so this turn's share is the total less the one the prior rollout ended
- * on. Responses API counts: input_tokens already includes the cached tokens and output_tokens
- * the reasoning tokens. Codex reports no cost, and names the model only in its rollout. */
+/** Codex: the host adapter's cumulative `token-usage.total` is the native thread's running total,
+ * carried across resumed turns, so this turn's share is the total less the checkpoint's prior total.
+ * A missing prior total leaves the segment unknown. Responses API counts: input_tokens already
+ * includes the cached tokens and output_tokens the reasoning tokens. Codex reports no cost. Crew
+ * prices the profile model. */
 export function codexUsage(total: unknown, prior: Record<string, unknown> | null | undefined, name: string | null = null): SegmentUsage {
   const now = codexTotal.safeParse(total);
   if (!now.success || prior === undefined) return unknown(name);

@@ -369,9 +369,12 @@ test("a native Codex turn runs on a read-only sign-in home without writing it", 
       const send = (type: string, value: object) => res.write("event: " + type + "\ndata: " + JSON.stringify({ type, ...value }) + "\n\n");
       const id = "resp_" + randomUUID();
       res.writeHead(200, { "content-type": "text/event-stream" });
+      const messageId = "msg_" + randomUUID();
+      const item = { type: "message", id: messageId, role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: marker }] };
       send("response.created", { response: { id } });
-      send("response.output_item.done", { item: { type: "message", id: "msg_" + randomUUID(), role: "assistant", phase: "final_answer",
-        content: [{ type: "output_text", text: marker }] } });
+      send("response.output_item.added", { output_index: 0, item: { ...item, content: [] } });
+      send("response.output_text.delta", { output_index: 0, item_id: messageId, content_index: 0, delta: marker });
+      send("response.output_item.done", { output_index: 0, item });
       send("response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
       res.end();
     });

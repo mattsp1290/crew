@@ -18,8 +18,8 @@ import { run, services, until, type Engine, type Services } from "./member-servi
 const matrix = {
   pi: { native: ["pi/durable", "pi/protected", "pi/delegation", "pi/confinement"], service: ["child-launch"], archive: "^(?:@ag-ui/pi |Pi's )",
     observers: "^pi |^two HttpAgents .*child|^two HttpAgents .*subagents|^terminated Pi child" },
-  claude: { native: ["claude/durable", "claude/protected"], service: [], archive: "^@ag-ui/claude", observers: "^claude " },
-  codex: { native: ["codex/qualification", "codex/native"], service: ["codex-subscription", "codex-mcp", "codex-registration", "codex-chat", "codex-calls", "codex-live", "codex-live-crashes"],
+  claude: { native: ["claude/durable", "claude/protected", "claude/confinement"], service: [], archive: "^@ag-ui/claude", observers: "^claude " },
+  codex: { native: ["codex/qualification", "codex/native"], service: ["codex-subscription", "codex-registration", "codex-chat", "codex-calls", "codex-live", "codex-live-crashes", "codex-checkpoint"],
     archive: "^the locked official Codex", observers: "^codex " },
 } as const;
 

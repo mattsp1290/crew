@@ -18,8 +18,8 @@ make paid model calls.
 ### TypeScript fixture verification
 
 Run `scripts/setup --mode fixture` on Linux with Docker, Git, curl,
-sha256sum, a C compiler and Linux development headers. Claude and Pi need
-Landlock ABI 3 or newer and Codex needs ABI 4. Install Beans (`bn`) for the project-note
+sha256sum, a C compiler and Linux development headers. Pi needs
+Landlock ABI 3 or newer, and Claude and Codex need ABI 4. Install Beans (`bn`) for the project-note
 cases. Setup installs the pinned Node and Temporal executables, both npm
 lockfiles, and the native launcher. The member fixture path requires no Python
 interpreter. Offline replay also needs Linux user and network namespaces.
@@ -50,8 +50,8 @@ from the original checkout.
 Every engine's native process starts through the member launcher,
 `.proof/bin/member-launch`, built from `native/member-launch.c`. It applies a
 Landlock filesystem ruleset and a seccomp filter, sets `no_new_privs` and a
-parent-death signal, and closes inherited descriptors from 3 up (from 4 up for
-Pi, which keeps its channel), before it runs the engine. Every engine may read
+parent-death signal, and closes inherited descriptors from 3 up (from one past
+the worker channel for Pi and the Claude worker), before it runs the engine. Every engine may read
 a fixed list of runtime files: the dynamic loader cache, DNS and TLS
 configuration, `/dev/null`, `/dev/urandom` and a few `/proc` and `/sys` entries
 that runtimes read at startup. The seccomp filter
@@ -59,11 +59,27 @@ refuses `setsid` and `setpgid`, so a native process cannot leave the process
 group that its host kills, and on x86-64 it refuses x32 system call numbers,
 which would otherwise bypass the filter.
 
-- **Claude** runs the Claude CLI with its conversation directory writable. The
-  launcher does not restrict its network.
-- **Codex** runs the Codex binary with its private `CODEX_HOME` writable, its
-  workspace readable, and TCP connections only to the provider port and the
-  invocation's tool port.
+- **Claude** runs `src/service/claude-worker.ts` under the launcher. The worker
+  may read and execute Node, the checkout's `package.json`, `node_modules`,
+  `src/service`, the compiled client under `packages/client/dist`, and
+  `.proof/bin/member-launch`. It may write only its conversation directory. It
+  may start a process, and the Claude CLI is started again through this
+  launcher, which confines that CLI's filesystem to the conversation directory
+  and does not handle network either. The worker may also read `/proc`, because
+  a `/proc/self` rule names only the process that opened it and the nested
+  launcher has a new pid. Landlock's ptrace scope still hides another process's
+  environ, mem and cmdline. `setsid` and
+  `setpgid` stay denied, so the worker cannot leave the process group its host
+  kills. The launcher keeps the Node IPC socket and refuses to start unless
+  that descriptor is a socket. The worker's network is not restricted: the
+  vendored `@ag-ui/claude-agent-sdk` binds an ephemeral loopback MCP port after
+  the ruleset is sealed, so a TCP allow rule cannot name it. Network rules move
+  to C2b. Handled network access without that allow rule would deny every TCP
+  connect, including the model request.
+- **Codex** runs the Codex app-server through Switchboard's host adapter. The
+  launcher leaves its private `CODEX_HOME` writable, its workspace readable, and
+  grants private sqlite and log directories outside that home. TCP connects only
+  to the provider port.
 - **Pi** runs the Pi SDK in a Node worker, `src/service/pi-worker.ts`. The
   worker gets no credentials and no network. Its only channel is descriptor 3,
   a socket pair to its host carrying newline-delimited JSON.
@@ -159,7 +175,7 @@ provider key. The host does not trust the worker:
   trusted lane it gets its own group, which the host kills when the worker
   exits.
 
-Claude and Pi need Landlock ABI 3 or newer, and Codex needs ABI 4. On a kernel
+Pi needs Landlock ABI 3 or newer, and Claude and Codex need ABI 4. On a kernel
 without Landlock, with an older ABI, or where the container's seccomp profile
 blocks the `landlock_*` system calls, the launcher exits with status 126 before
 the engine starts, and the turn fails. No engine falls back to running
@@ -178,9 +194,27 @@ private directory. The same test runs a real Pi turn and checks
 that its worker has `no_new_privs`, one more seccomp filter than the test
 process, and only `HOME` and `TMPDIR` in its environment, and that the launcher
 refuses a Pi worker started without descriptor 3.
-`tests/fixtures/engines/claude/durable.test.ts` and
-`tests/fixtures/engines/codex/native.test.ts` prove the Claude and Codex
-filesystem policies.
+`tests/fixtures/engines/claude/confinement.test.ts` proves the Claude worker
+policy. A probe may read the worker and its dependencies and write its private
+directory. It gets `EACCES` when it reads or writes a sibling file, reads a
+test file, reads or appends the docs tree, reads client source, reads its
+host's environment, writes `src/service`, `node_modules`, or the compiled
+client, or executes a script it just wrote in the conversation directory.
+A detached child keeps the worker's session id, which is how the probe shows
+`setsid` was denied: libuv ignores the `EPERM`. A nested launcher process cannot read the sibling
+file or the worker source: that second ruleset confines the CLI to the
+conversation directory and does not handle network either. A loopback TCP
+connect from the worker still succeeds, because network confinement waits for
+C2b with the ephemeral MCP port. The same test runs a fixture turn and checks
+that the worker has `no_new_privs`, one more seccomp filter than the test
+process, that each CLI child has one more seccomp filter than the worker, and
+a command of Node plus `claude-worker.ts`. The launcher flags and a host
+sentinel are absent from its environment. The launcher refuses a Claude worker
+whose channel is not a socket.
+`tests/fixtures/engines/claude/durable.test.ts` proves a direct CLI launch
+gets `EACCES` on a sibling owner's file.
+`tests/fixtures/engines/codex/native.test.ts` proves the Codex filesystem
+policy.
 
 ### Live member verification
 
