@@ -113,12 +113,18 @@ function canonicalEndpoint(raw: string) {
   return url.href;
 }
 
-function toolSchema(tool: CodexHold["tool"], requestId: string): Readonly<Record<string, unknown>> {
+/** Stable for the life of the native thread. The host adapter refuses a resume whose declarations differ, so the
+ * operation id is checked on the call rather than baked into the schema. */
+function toolSchema(tool: CodexHold["tool"]): Readonly<Record<string, unknown>> {
   if (tool === "choose_next_step") return { type: "object", additionalProperties: false, properties: {} };
   return {
     type: "object", additionalProperties: false, required: ["operation_id"],
-    properties: { operation_id: { type: "string", const: requestId }, note: { type: "string", maxLength: 4096 } },
+    properties: { operation_id: { type: "string" }, note: { type: "string", maxLength: 4096 } },
   };
+}
+
+function recordedOperation(args: unknown, requestId: string) {
+  return !!args && typeof args === "object" && !Array.isArray(args) && "operation_id" in args && args.operation_id === requestId;
 }
 
 export async function runCodexTurn(input: CodexInput, profile: CodexProfile): Promise<{ text: string; checkpoint: CodexCheckpoint; usage: SegmentUsage }> {
@@ -252,7 +258,7 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       ...(input.hold && { tools: [{
         name: input.hold.tool,
         description: input.hold.tool === "record_work_item" ? "Ask the owner to record a work item." : "Ask the owner to choose the next step.",
-        inputSchema: toolSchema(input.hold.tool, requestId),
+        inputSchema: toolSchema(input.hold.tool),
       }] }),
       builtInTools: ["view_image", "request_user_input"],
       subagents: "off",
@@ -301,7 +307,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       for (const call of segment.calls) {
         failedObserver();
         if (call.name === "request_user_input") answers.push(declineUserInput(call));
-        else if (input.hold && call.name === input.hold.tool) {
+        else if (input.hold && call.name === input.hold.tool &&
+            (input.hold.tool !== "record_work_item" || recordedOperation(call.arguments, requestId))) {
           const answer = await input.hold.answer(call, turnSignal);
           const data = answer.outcome.result.kind === "ok" ? answer.outcome.result.value.data : answer.outcome.result.error.data;
           const text = data && typeof data === "object" && "text" in data && typeof data.text === "string" ? data.text : undefined;

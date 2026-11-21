@@ -86,8 +86,8 @@ test("Codex uses per-turn subscription credentials for the same native thread wi
       const session = req.headers["session-id"];
       assert.ok(typeof session === "string");
       assert.equal(req.headers["thread-id"], session);
-      assert.equal(req.headers.originator, "codex_sdk_ts");
-      assert.match(req.headers["user-agent"] ?? "", /^codex_sdk_ts\//);
+      assert.equal(req.headers.originator, "switchboard-codex-host");
+      assert.match(req.headers["user-agent"] ?? "", /^switchboard-codex-host\//);
       sessions.push(session);
       const children = (await readFile(`/proc/self/task/${process.pid}/children`, "utf8")).trim().split(/\s+/);
       assert.ok(children.length && children[0]);
@@ -231,9 +231,9 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
         captured.push(JSON.stringify(result.output));
         assistantText(res, "settled");
       }
-      send(res, "response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+      send(res, "response.completed", { response: { id, status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
       res.end();
-    } catch { res.destroy(); }
+    } catch (error) { res.destroy(); t.diagnostic(error instanceof Error ? error.message : "Bad host tool request"); }
   });
   provider.listen(0, "127.0.0.1");
   await once(provider, "listening");
@@ -280,15 +280,16 @@ test("request_user_input is declined when no person is attached", { timeout: 40_
       send(res, "response.created", { response: { id } });
       const answered = parsed.input.find((item) => item.type === "function_call_output");
       if (!answered) {
-        send(res, "response.output_item.done", { item: { type: "function_call", call_id: "call_question", name: "request_user_input",
-          arguments: JSON.stringify({ questions: [{ id: "q1", question: "Continue?" }] }) } });
+        send(res, "response.output_item.done", { item: { type: "function_call", id: "fc_question", call_id: "call_question",
+          name: "request_user_input", status: "completed", arguments: JSON.stringify({ questions: [{ id: "q1", header: "Confirm",
+            question: "Continue?", options: [{ label: "Yes", description: "Continue." }, { label: "No", description: "Stop." }] }] }) } });
       } else {
         assert.match(JSON.stringify(answered.output), /No person is attached/);
         assistantText(res, "declined");
       }
-      send(res, "response.completed", { response: { id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+      send(res, "response.completed", { response: { id, status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
       res.end();
-    } catch { res.destroy(); }
+    } catch (error) { res.destroy(); t.diagnostic(error instanceof Error ? error.message : "Bad question request"); }
   });
   provider.listen(0, "127.0.0.1");
   await once(provider, "listening");

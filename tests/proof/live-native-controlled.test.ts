@@ -53,8 +53,8 @@ for (const provider of ["anthropic-api", "openai-api", "chatgpt-subscription"] a
         subscription ? "Bearer synthetic-subscription-token" : claude ? "synthetic" : "Bearer synthetic");
       assert.equal(request.headers.get("chatgpt-account-id"), subscription ? accountId : null);
       if (subscription) {
-        assert.equal(request.headers.get("originator"), "codex_sdk_ts");
-        assert.match(request.headers.get("user-agent") ?? "", /^codex_sdk_ts\//);
+        assert.equal(request.headers.get("originator"), "switchboard-codex-host");
+        assert.match(request.headers.get("user-agent") ?? "", /^switchboard-codex-host\//);
         assert.equal(z.uuid().parse(request.headers.get("session-id")), request.headers.get("thread-id"));
       }
       if (claude && url.pathname === "/v1/messages/count_tokens") return Response.json({ input_tokens: 16 });

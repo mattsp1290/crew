@@ -28,7 +28,13 @@ jobs:
             echo "The build accepted an unpinned base image" >&2
             exit 1
           fi
-          grep -Eq '^#[0-9]+ [0-9.]+ Pin NODE_IMAGE by digest' guard.log
+          plain=$(mktemp)
+          sed 's/\x1b\[[0-9;]*m//g' guard.log > "$plain"
+          if ! grep -Eq '^(#[0-9]+ )?[0-9.]* ?Pin NODE_IMAGE by digest$' "$plain"; then
+            echo "The unpinned build failed without the digest pin" >&2
+            tail -n 40 "$plain" >&2
+            exit 1
+          fi
       - run: docker buildx build --load -f packaging/service.Dockerfile --build-arg NODE_IMAGE="$NODE_IMAGE" -t crew-service:ci .
       - name: Run hardened
         run: |
