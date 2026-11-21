@@ -28,9 +28,23 @@ jobs:
             echo "The build accepted an unpinned base image" >&2
             exit 1
           fi
+          # BuildKit prints "#5 0.141 Pin NODE_IMAGE by digest" and, in the error summary,
+          # "0.141 Pin NODE_IMAGE by digest". The sentence has to end the line, so a Dockerfile
+          # RUN echo, a ">>>" source line, and an ERROR process line do not count.
+          pattern='^(#[0-9]+ )?[0-9.]* ?Pin NODE_IMAGE by digest$'
           plain=$(mktemp)
+          neg=$(mktemp)
           sed 's/\x1b\[[0-9;]*m//g' guard.log > "$plain"
-          if ! grep -Eq '^(#[0-9]+ )?[0-9.]* ?Pin NODE_IMAGE by digest$' "$plain"; then
+          cat > "$neg" << 'EOF'
+#5 [build 1/6] RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) echo "Pin NODE_IMAGE by digest" >&2; exit 1 ;; esac \
+   8 | >>> RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) echo "Pin NODE_IMAGE by digest" >&2; exit 1 ;; esac \
+#5 ERROR: process "/bin/sh -c echo \"Pin NODE_IMAGE by digest\" >&2" did not complete successfully: exit code: 1
+EOF
+          if grep -Eq "$pattern" "$neg"; then
+            echo "The pin pattern matches a Dockerfile echo" >&2
+            exit 1
+          fi
+          if ! grep -Eq "$pattern" "$plain"; then
             echo "The unpinned build failed without the digest pin" >&2
             tail -n 40 "$plain" >&2
             exit 1

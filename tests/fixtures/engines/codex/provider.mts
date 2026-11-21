@@ -94,7 +94,8 @@ export async function startProvider(onFailure = () => {},
         commentary(prompt!.slice(7) + " finished.", "final_answer");
       } else if ((prompt?.startsWith("record ") || prompt === "choose" || echoCall) && !output) {
         const ordinary = prompt === "choose";
-        const operation = ordinary ? randomUUID() : prompt!.slice(7);
+        const command = prompt!.split("\n", 1)[0] ?? "";
+        const operation = ordinary ? randomUUID() : command.slice(7);
         const callId = (echoCall ? "private." : "call_") + operation;
         if (echoCall) commentary("Before " + callId, "commentary");
         const catalog = input.filter(i => i.role === "developer" && i.type === "message").flatMap(i => {

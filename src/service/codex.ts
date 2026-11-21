@@ -293,7 +293,10 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       });
     }
     if (subscriptionHandle.kind === "error") throw new Error("Codex event subscription failed");
-    let segment = await adapter.run({ hostOperationId: requestId, prompt: input.text, recordIntent, signal: turnSignal });
+    const prompt = input.hold?.tool === "record_work_item"
+      ? input.text + "\nrecord_work_item operation_id: " + requestId
+      : input.text;
+    let segment = await adapter.run({ hostOperationId: requestId, prompt, recordIntent, signal: turnSignal });
     let announced = false;
     while (segment.kind === "pending" || (segment.kind === "complete" && !announced)) {
       failedObserver();
@@ -307,8 +310,10 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
       for (const call of segment.calls) {
         failedObserver();
         if (call.name === "request_user_input") answers.push(declineUserInput(call));
-        else if (input.hold && call.name === input.hold.tool &&
-            (input.hold.tool !== "record_work_item" || recordedOperation(call.arguments, requestId))) {
+        else if (input.hold && call.name === input.hold.tool) {
+          if (input.hold.tool === "record_work_item" && !recordedOperation(call.arguments, requestId)) {
+            throw new Error("Codex operation id is not this turn");
+          }
           const answer = await input.hold.answer(call, turnSignal);
           const data = answer.outcome.result.kind === "ok" ? answer.outcome.result.value.data : answer.outcome.result.error.data;
           const text = data && typeof data === "object" && "text" in data && typeof data.text === "string" ? data.text : undefined;

@@ -68,6 +68,19 @@ function assistantText(res: ServerResponse, text: string) {
   send(res, "response.output_item.done", { output_index: 0, item });
 }
 
+function declinedAnswers(value: unknown): unknown {
+  if (typeof value === "string") {
+    try { return declinedAnswers(JSON.parse(value)); } catch { return undefined; }
+  }
+  if (!value || typeof value !== "object") return undefined;
+  if ("answers" in value && value.answers && typeof value.answers === "object" && "q1" in value.answers) return value.answers;
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    const found = declinedAnswers(item);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 function send(res: ServerResponse, type: string, value: object) {
   res.write("event: " + type + "\ndata: " + JSON.stringify({ type, ...value }) + "\n\n");
 }
@@ -208,7 +221,7 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   const receipt = randomUUID(), denied = "denied-" + randomUUID();
   const calls: { id: string; thread: string }[] = [];
   let operation = randomUUID(), outcome: string = receipt, tool = "record_work_item";
-  const captured: string[] = [], shapes: string[][] = [];
+  const captured: string[] = [], shapes: string[][] = [], schemas: string[] = [];
   const provider = createServer(async (req, res) => {
     try {
       const parsed = request.parse(await json(req));
@@ -217,9 +230,15 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
       const tools = [...parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")
         .flatMap((row) => request.shape.tools.parse(row.tools))];
       const names = tools.map((item) => item.name ?? item.type);
-      const application = z.object({ name: z.literal("application"), tools: z.array(z.object({ name: z.string() })) })
+      const application = z.object({ name: z.literal("application"), tools: z.array(z.looseObject({ name: z.string() })) })
         .parse(tools.find((item) => item.name === "application"));
       assert.deepEqual(application.tools.map((item) => item.name), ["record_work_item"]);
+      const declared = application.tools[0]!;
+      const schema = declared.inputSchema ?? declared.parameters ?? declared.input_schema;
+      assert.ok(schema && typeof schema === "object");
+      const encoded = JSON.stringify(schema);
+      assert.equal(encoded.includes('"const"'), false);
+      schemas.push(encoded);
       shapes.push(names);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const id = "resp_" + randomUUID(), call_id = "call_" + operation;
@@ -259,8 +278,18 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
     assert.ok(captured.at(-1)?.includes(value));
   }
   assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.thread, calls[1]!.thread);
   assert.deepEqual(confirmation, [receipt, denied]);
   assert.equal(shapes.length, 4);
+  assert.ok(schemas.length >= 1);
+  assert.equal(new Set(schemas).size, 1);
+  const stale = operation;
+  await assert.rejects(runCodexTurn({ threadId, runId: randomUUID(), text: "record stale", checkpoint, signal: t.signal,
+    hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile), /Codex operation id is not this turn/);
+  assert.equal(operation, stale);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(confirmation, [receipt, denied]);
+  assert.equal(new Set(schemas).size, 1);
   operation = randomUUID();
   tool = "undeclared_private_tool";
   await assert.rejects(runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
@@ -284,7 +313,7 @@ test("request_user_input is declined when no person is attached", { timeout: 40_
           name: "request_user_input", status: "completed", arguments: JSON.stringify({ questions: [{ id: "q1", header: "Confirm",
             question: "Continue?", options: [{ label: "Yes", description: "Continue." }, { label: "No", description: "Stop." }] }] }) } });
       } else {
-        assert.match(JSON.stringify(answered.output), /No person is attached/);
+        assert.deepEqual(declinedAnswers(answered.output), { q1: { answers: ["No person is attached."] } });
         assistantText(res, "declined");
       }
       send(res, "response.completed", { response: { id, status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
