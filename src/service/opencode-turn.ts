@@ -6,7 +6,30 @@ import type { DriverInput, DriverResult } from "./activities.ts";
 import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
 import type { Conversation } from "./domain.ts";
 import { removePrivate, TextTurnFailed } from "./private-directory.ts";
-import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "./profiles.ts";
+
+export interface OpenCodeSpawnRequest {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+}
+export interface OpenCodeSpawned {
+  readonly channel: {
+    listen(sink: { (chunk: Uint8Array): void; ended(): void }): () => void;
+    write(frame: Uint8Array, signal: AbortSignal): PromiseLike<void>;
+    endInput(): void;
+  };
+  readonly processExit: PromiseLike<unknown>;
+}
+export interface OpenCodeProfile {
+  model: string;
+  executable: string;
+  cwd: string;
+  account: string;
+  env: Readonly<Record<string, string>>;
+  /** Test double. Production profiles omit it, and registration does not store it. */
+  spawn?: (request: OpenCodeSpawnRequest, signal: AbortSignal) => OpenCodeSpawned | Promise<OpenCodeSpawned>;
+}
 
 const failed = () => new TextTurnFailed();
 const maxPrompt = 1_048_576;
@@ -113,54 +136,54 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   let processExit: Promise<unknown> = Promise.resolve();
   let completed: DriverResult | undefined;
   try {
-  await removePrivate(root);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  await mkdir(tmp, { recursive: true, mode: 0o700 });
-  await chmod(root, 0o700);
-  await chmod(home, 0o700);
-  await chmod(tmp, 0o700);
-  const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
-  const opened = await opencodeHostAdapter.open({
-    model: profile.model,
-    environment: { variables: { ...profile.env }, nativeConfig: { cwd: profile.cwd, executable: profile.executable, account: profile.account } },
-    launch: {
-      kind: "spawn",
-      spawn: (request, signal) => {
-        const args = [...request.args];
-        if (args.length !== 2 || args[0] !== profile.executable || args[1] !== "acp" || request.cwd !== profile.cwd
-          || !sameEnvironment(request.env, profile.env)) throw failed();
-        if (profile.spawn) return profile.spawn(request, signal);
-        const spawned = spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; });
-        processExit = Promise.resolve(spawned.processExit);
-        return spawned;
+    await removePrivate(root);
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    await mkdir(tmp, { recursive: true, mode: 0o700 });
+    await chmod(root, 0o700);
+    await chmod(home, 0o700);
+    await chmod(tmp, 0o700);
+    const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
+    const opened = await opencodeHostAdapter.open({
+      model: profile.model,
+      environment: { variables: { ...profile.env }, nativeConfig: { cwd: profile.cwd, executable: profile.executable, account: profile.account } },
+      launch: {
+        kind: "spawn",
+        spawn: (request, signal) => {
+          const args = [...request.args];
+          if (args.length !== 2 || args[0] !== profile.executable || args[1] !== "acp" || request.cwd !== profile.cwd
+            || !sameEnvironment(request.env, profile.env)) throw failed();
+          if (profile.spawn) return profile.spawn(request, signal);
+          const spawned = spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; });
+          processExit = Promise.resolve(spawned.processExit);
+          return spawned;
+        },
       },
-    },
-  }, input.signal);
-  if (opened.kind !== "ok") throw failed();
-  const adapter = opened.value;
-  const subscription = adapter.events.subscribe((event) => {
-    if (event.kind === "text-delta") void input.onText?.(event.text);
-  });
-  try {
-    const result = await adapter.run({
-      prompt: input.text, signal: input.signal, hostOperationId: input.runId, recordIntent: async () => undefined,
+    }, input.signal);
+    if (opened.kind !== "ok") throw failed();
+    const adapter = opened.value;
+    const subscription = adapter.events.subscribe((event) => {
+      if (event.kind === "text-delta") void input.onText?.(event.text);
     });
-    const text = result.kind === "complete" ? result.text : "";
-    if (input.signal.aborted || result.kind !== "complete" || text.length === 0 || Buffer.byteLength(text) > turnTextBytes) throw failed();
-    completed = {
-      kind: "complete", text,
-      checkpoint: {
-        version: 1, engine: "opencode",
-        state: { model: profile.model, cwd: profile.cwd, executable: profile.executable, account: profile.account, session: result.session },
-      },
-    };
-  } catch (error) {
-    if (error instanceof TextTurnFailed) throw error;
-    throw failed();
-  } finally {
-    if (subscription.kind === "ok") subscription.value.dispose();
-    await bounded(adapter.close(), killGroup).catch(() => undefined);
-  }
+    try {
+      const result = await adapter.run({
+        prompt: input.text, signal: input.signal, hostOperationId: input.runId, recordIntent: async () => undefined,
+      });
+      const text = result.kind === "complete" ? result.text : "";
+      if (input.signal.aborted || result.kind !== "complete" || text.length === 0 || Buffer.byteLength(text) > turnTextBytes) throw failed();
+      completed = {
+        kind: "complete", text,
+        checkpoint: {
+          version: 1, engine: "opencode",
+          state: { model: profile.model, cwd: profile.cwd, executable: profile.executable, account: profile.account, session: result.session },
+        },
+      };
+    } catch (error) {
+      if (error instanceof TextTurnFailed) throw error;
+      throw failed();
+    } finally {
+      if (subscription.kind === "ok") subscription.value.dispose();
+      await bounded(adapter.close(), killGroup).catch(() => undefined);
+    }
   } finally {
     killGroup();
     await bounded(processExit, killGroup).catch(() => undefined);

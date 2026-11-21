@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { assertTextProfile, type MemberProfile } from "./profiles.ts";
+import type { MemberProfile } from "./profiles.ts";
 import { capabilitySchema, hasCapabilities, includesShell, type CapabilitySet } from "./capabilities.ts";
 import { configuredDestination } from "./provider-identity.ts";
 import { childConsentSchema, childRoleSchema, childTargetSchema, holdsChildTools, sameDestination, type ProfileTargetSeal } from "./child-target.ts";
@@ -41,6 +41,57 @@ function profileCeiling(name: string, entry: MemberProfile): CapabilitySet | nul
     throw new Error(`Profile ${JSON.stringify(name)} has a shell in its capability ceiling, so it must use a relay credential (createProxyProfile)`);
   }
   return ceiling;
+}
+
+const identifierLimit = 1024;
+
+function controlCharacter(value: string, c1: boolean) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (c1 && code >= 127 && code <= 159)) return true;
+  }
+  return false;
+}
+function callerModelId(value: string) {
+  return value.trim() === value && value.length > 0 && value.length <= 256 && !/\p{Cs}/u.test(value) && !controlCharacter(value, true);
+}
+function apiKeyText(value: string) {
+  return value.trim() === value && value.length > 0 && value.length <= 512 && !controlCharacter(value, false);
+}
+function identifier(value: string) {
+  return value.trim().length > 0 && value.length <= identifierLimit && !controlCharacter(value, true);
+}
+function resolvedPath(value: string) {
+  return isAbsolute(value) && resolve(value) === value;
+}
+function invalid(name: string, field: string): never {
+  throw new Error(`Profile ${JSON.stringify(name)} field ${field} is invalid`);
+}
+
+/** Rejects a cursor or opencode profile that cannot be spawned, before a member row exists. */
+function assertTextProfile(name: string, entry: MemberProfile) {
+  if (!entry.cursor && !entry.opencode) return;
+  for (const field of ["pi", "claude", "codex", "childTargets", "capabilities", "protectedTool", "humanTool", "delegateTask"] as const) {
+    if (entry[field] !== undefined) throw new Error(`Profile ${JSON.stringify(name)} refuses ${field}`);
+  }
+  const cursor = entry.cursor;
+  if (cursor) {
+    if (!callerModelId(cursor.model)) invalid(name, "cursor.model");
+    if (!apiKeyText(cursor.apiKey)) invalid(name, "cursor.apiKey");
+    if (!resolvedPath(cursor.cwd) || !identifier(cursor.cwd)) invalid(name, "cursor.cwd");
+  }
+  const opencode = entry.opencode;
+  if (opencode) {
+    if (!callerModelId(opencode.model)) invalid(name, "opencode.model");
+    if (!resolvedPath(opencode.executable) || !identifier(opencode.executable)) invalid(name, "opencode.executable");
+    if (!resolvedPath(opencode.cwd) || !identifier(opencode.cwd)) invalid(name, "opencode.cwd");
+    if (!identifier(opencode.account)) invalid(name, "opencode.account");
+    if (opencode.env === null || typeof opencode.env !== "object" || Array.isArray(opencode.env)) invalid(name, "opencode.env");
+    const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+    for (const [key, value] of Object.entries(opencode.env)) {
+      if (!envName.test(key) || typeof value !== "string" || controlCharacter(value, false)) invalid(name, "opencode.env");
+    }
+  }
 }
 
 export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string) {

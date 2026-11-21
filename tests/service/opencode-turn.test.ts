@@ -10,7 +10,7 @@ import test from "node:test";
 import type { DriverInput } from "../../src/service/activities.ts";
 import { runOpenCodeTurn } from "../../src/service/opencode-turn.ts";
 import type { Conversation } from "../../src/service/domain.ts";
-import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "../../src/service/profiles.ts";
+import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "../../src/service/opencode-turn.ts";
 
 const model = "provider/model-id";
 const peer = fileURLToPath(new URL("./opencode-acp-peer.mjs", import.meta.url));

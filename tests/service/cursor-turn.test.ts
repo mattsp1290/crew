@@ -8,7 +8,7 @@ import test from "node:test";
 import type { DriverInput } from "../../src/service/activities.ts";
 import { runCursorTurn } from "../../src/service/cursor-turn.ts";
 import type { Conversation } from "../../src/service/domain.ts";
-import type { CursorProfile, CursorRuntimeHandle } from "../../src/service/profiles.ts";
+import type { CursorProfile, CursorRuntimeHandle } from "../../src/service/cursor-turn.ts";
 
 const apiKey = "cursor-test-key";
 const model = "composer-2";

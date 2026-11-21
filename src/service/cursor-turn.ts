@@ -4,7 +4,31 @@ import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import { removePrivate, scrubTextEngineEnvironment, TextTurnFailed } from "./private-directory.ts";
-import type { CursorProfile, CursorRuntimeHandle, CursorRuntimeOptions } from "./profiles.ts";
+
+export interface CursorRuntimeOptions {
+  readonly cwd: string;
+  readonly sessionDirectory: string;
+  readonly apiKey: string;
+  readonly model: string;
+}
+export type CursorRuntimeEvent =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "tool"; readonly callId: string; readonly name: string; readonly status: "running" | "completed" | "error" }
+  | { readonly kind: "ended"; readonly outcome: "completed" | "failed" | "interrupted" };
+export interface CursorRuntimeHandle {
+  start(request: {
+    readonly text: string;
+    readonly onEvent: (event: CursorRuntimeEvent) => void;
+  }): Promise<{ readonly agentId: string; readonly finished: Promise<string>; abort(): Promise<void> }>;
+  close(): Promise<void>;
+}
+export interface CursorProfile {
+  model: string;
+  apiKey: string;
+  cwd: string;
+  /** Test double. Production profiles omit it, and registration does not store it. */
+  runtime?: (options: CursorRuntimeOptions) => CursorRuntimeHandle | Promise<CursorRuntimeHandle>;
+}
 
 const failed = () => new TextTurnFailed();
 const closeBoundMs = 5_000;
@@ -50,6 +74,34 @@ function bounded<T>(work: Promise<T>): Promise<T> {
   work.catch(() => undefined);
   timeout.catch(() => undefined);
   return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signal: AbortSignal, sessionDirectory: string, ownsSessionEnvironment: boolean) {
+  let closing: Promise<void> | undefined;
+  try { closing = runtime?.close(); }
+  catch { closing = undefined; }
+  try {
+    if (!closing) return;
+    let endWait: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => {
+      endWait = resolve;
+      if (signal.aborted) resolve();
+      else signal.addEventListener("abort", endWait, { once: true });
+    });
+    await bounded(closing).catch(() => undefined);
+    const settled = await Promise.race([
+      closing.then(() => true, () => true),
+      stopped.then(() => false),
+    ]);
+    signal.removeEventListener("abort", endWait);
+    if (settled && ownsSessionEnvironment) {
+      delete process.env.HOME;
+      delete process.env.TMPDIR;
+      delete process.env.CURSOR_DATA_DIR;
+    }
+  } finally {
+    await removePrivate(sessionDirectory);
+  }
 }
 
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
@@ -107,27 +159,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
-    const closing = runtime?.close();
-    if (closing) {
-      let endWait: () => void = () => undefined;
-      const stopped = new Promise<void>((resolve) => {
-        endWait = resolve;
-        if (input.signal.aborted) resolve();
-        else input.signal.addEventListener("abort", endWait, { once: true });
-      });
-      await bounded(closing).catch(() => undefined);
-      const settled = await Promise.race([
-        closing.then(() => true, () => true),
-        stopped.then(() => false),
-      ]);
-      input.signal.removeEventListener("abort", endWait);
-      if (settled && ownsSessionEnvironment) {
-        delete process.env.HOME;
-        delete process.env.TMPDIR;
-        delete process.env.CURSOR_DATA_DIR;
-      }
-    }
-    await removePrivate(sessionDirectory);
+    await settleCursorClose(runtime, input.signal, sessionDirectory, ownsSessionEnvironment);
   }
   if (input.signal.aborted || !result) throw failed();
   return result;

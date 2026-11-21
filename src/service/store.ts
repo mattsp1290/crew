@@ -84,8 +84,8 @@ async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string)
 }
 
 function admissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
-  if (turnLimitReached && isTextEngine(engine)) return new TextAdmissionError("input_limit", "input_limit");
-  if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("conflict", "prompt_rejected");
+  if (turnLimitReached && isTextEngine(engine)) return new TextAdmissionError("input_limit");
+  if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("prompt_rejected");
   if (turnLimitReached) return new MemberStoreError("input_limit");
   return undefined;
 }
@@ -328,9 +328,11 @@ export class MemberStore {
     if (turn.rowCount) return;
     if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
     submitSchema.parse(key);
-    const counted = isTextEngine(conversation.engine) ? await turnBudget(this.pool, key.conversationId) : undefined;
-    const refusal = admissionRefusal(conversation.engine, key.text, Boolean(counted && counted.used >= counted.limit));
-    if (refusal) throw refusal;
+    if (isTextEngine(conversation.engine)) {
+      const counted = await turnBudget(this.pool, key.conversationId);
+      const refusal = admissionRefusal(conversation.engine, key.text, counted.used >= counted.limit);
+      if (refusal) throw refusal;
+    }
     if (!await budgetApplies(this.pool, key)) return;
     // The lock waits for an admission, turn start or handoff that holds the conversation, and
     // recordAcceptance's earlier checks run again under it, so a request refused under the budget
