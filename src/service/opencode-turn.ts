@@ -109,17 +109,17 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   const root = join(stateDir, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
   const home = join(root, "home");
   const tmp = join(root, "tmp");
+  let killGroup = () => {};
+  let processExit: Promise<unknown> = Promise.resolve();
+  let completed: DriverResult | undefined;
+  try {
   await removePrivate(root);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await mkdir(tmp, { recursive: true, mode: 0o700 });
   await chmod(root, 0o700);
   await chmod(home, 0o700);
   await chmod(tmp, 0o700);
-  let killGroup = () => {};
-  let processExit: Promise<unknown> = Promise.resolve();
-  let completed: DriverResult | undefined;
   const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
-  try {
   const opened = await opencodeHostAdapter.open({
     model: profile.model,
     environment: { variables: { ...profile.env }, nativeConfig: { cwd: profile.cwd, executable: profile.executable, account: profile.account } },

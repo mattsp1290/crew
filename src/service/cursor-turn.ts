@@ -56,13 +56,13 @@ function bounded<T>(work: Promise<T>): Promise<T> {
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: string): Promise<DriverResult> {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation) throw failed();
   const sessionDirectory = join(stateDir, "cursor", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
-  await removePrivate(sessionDirectory);
-  await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
-  await chmod(sessionDirectory, 0o700);
   const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;
   let result: DriverResult | undefined;
   try {
+    await removePrivate(sessionDirectory);
+    await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
+    await chmod(sessionDirectory, 0o700);
     try {
       runtime = await (profile.runtime ?? defaultRuntime)({
         cwd: profile.cwd, sessionDirectory, apiKey: profile.apiKey, model: profile.model,
@@ -108,13 +108,25 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     throw failed();
   } finally {
     const closing = runtime?.close();
-    if (closing) await bounded(closing).catch(() => undefined);
-    if (ownsSessionEnvironment) {
-      delete process.env.HOME;
-      delete process.env.TMPDIR;
-      delete process.env.CURSOR_DATA_DIR;
+    if (closing) {
+      let endWait: () => void = () => undefined;
+      const stopped = new Promise<void>((resolve) => {
+        endWait = resolve;
+        if (input.signal.aborted) resolve();
+        else input.signal.addEventListener("abort", endWait, { once: true });
+      });
+      await bounded(closing).catch(() => undefined);
+      const settled = await Promise.race([
+        closing.then(() => true, () => true),
+        stopped.then(() => false),
+      ]);
+      input.signal.removeEventListener("abort", endWait);
+      if (settled && ownsSessionEnvironment) {
+        delete process.env.HOME;
+        delete process.env.TMPDIR;
+        delete process.env.CURSOR_DATA_DIR;
+      }
     }
-    if (closing) await closing.catch(() => undefined);
     await removePrivate(sessionDirectory);
   }
   if (input.signal.aborted || !result) throw failed();
