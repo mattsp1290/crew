@@ -32,7 +32,9 @@ export async function runLiveTool(
     answer: (call, turn) => answer(pool, temporal, launch, workflowId, tool, signal, turn, nativeThread.promise, discloseCallId, call, () => active || consumed, (value) => { active = value; if (value) consumed = true; }, deliveries, () => stopped.abort()),
     async delivered(nativeCallId, text) {
       const pending = deliveries.get(nativeCallId);
-      if (!pending || pending.text !== text) throw new Error("Native SDK result differs from the returned tool result");
+      // `text` is the continuation we stored. The delivery event has no body; confirmation is the item-completed event.
+      if (!pending) throw new Error("Native tool delivery has no answered call");
+      if (pending.text !== text) throw new Error("Native tool delivery does not match the answered call");
       await confirmDelivery(pool, launch, pending.approvalId);
       deliveries.delete(nativeCallId);
     },

@@ -267,6 +267,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     const turnSignal = AbortSignal.any([input.signal, observerStop.signal]);
     const reply = codexTranscript(input.onText);
     let observerError: unknown, observed = Promise.resolve();
+    // The host stream holds 64 events and awaits this callback. onText waits on SQL, so the
+    // chain below is the queue. Returning `observed` overflows the stream and drops the rest of the item.
     subscriptionHandle = adapter.events.subscribe((event) => {
       observed = observed.then(async () => {
         if (event.kind === "text-delta" && event.text) await reply.delta(event.nativeItemId, event.text);
@@ -332,6 +334,8 @@ async function executeCodexTurn(input: CodexInput, profile: CodexProfile): Promi
     failedObserver();
     if (segment.kind !== "complete") throw codexTurnFailure(segment.error.code, segment.error.message);
     const text = reply.text();
+    // `segment.text` is the last segment only. The preamble is already in `text`.
+    // `text === segment.text` would fail every tool turn.
     if (!text || !text.endsWith(segment.text) || Buffer.byteLength(text) > 65_536) throw new Error("Incomplete native Codex turn");
     const fingerprintApi = adapter.capabilities.fingerprint;
     if (fingerprintApi.kind !== "supported" || fingerprintApi.api.validity !== "segment-end") throw new Error("Codex history fingerprint is unavailable");

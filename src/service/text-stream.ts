@@ -4,7 +4,8 @@ import type { Pool, PoolClient } from "pg";
 export function proseCallId(id: string): string | undefined {
   try {
     const parts = JSON.parse(id);
-    return Array.isArray(parts) && typeof parts[2] === "string" && parts[2] !== "" ? parts[2] : undefined;
+    if (!Array.isArray(parts) || parts.length !== 3) return undefined;
+    return typeof parts[2] === "string" && parts[2] !== "" ? parts[2] : undefined;
   } catch {
     return undefined;
   }

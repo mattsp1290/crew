@@ -37,7 +37,7 @@ function redactCompletedItems(items: string[], ids: Set<string>, final: boolean)
   let offset = 0;
   for (const item of items) {
     const end = offset + item.length;
-    if (end > complete) break;
+    if (end > complete) break; // a trailing prefix withholds this whole item
     let text = "";
     for (let pos = offset; pos < end; pos++) {
       if (!hidden[pos]) text += joined[pos];
@@ -49,7 +49,7 @@ function redactCompletedItems(items: string[], ids: Set<string>, final: boolean)
   return visible;
 }
 
-// SDK item events and the live MCP callback arrive on separate transports.
+// `append` runs on the transcript chain. `disclose` runs on the driver task after that chain is idle. This queue orders those two publishes.
 export function codexItemWriter(knownIds: string[], awaitingCall: boolean,
   publish: (index: number, text: string, receipt: ItemReceipt) => Promise<void>) {
   const ids = new Set(knownIds);
