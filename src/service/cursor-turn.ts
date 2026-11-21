@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import { removePrivate, scrubTextEngineEnvironment, TextTurnFailed } from "./private-directory.ts";
@@ -76,28 +76,40 @@ function bounded<T>(work: Promise<T>): Promise<T> {
   return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
+/** True when close settled, false when the turn was stopped while close was still running. */
+async function waitForClose(closing: Promise<void>, signal: AbortSignal) {
+  let endWait: () => void = () => undefined;
+  const stopped = new Promise<void>((resolve) => {
+    endWait = resolve;
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", endWait, { once: true });
+  });
+  await bounded(closing).catch(() => undefined);
+  const settled = await Promise.race([
+    closing.then(() => true, () => true),
+    stopped.then(() => false),
+  ]);
+  signal.removeEventListener("abort", endWait);
+  return settled;
+}
+
 async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signal: AbortSignal, sessionDirectory: string, ownsSessionEnvironment: boolean) {
   let closing: Promise<void> | undefined;
   try { closing = runtime?.close(); }
   catch { closing = undefined; }
   try {
-    if (!closing) return;
-    let endWait: () => void = () => undefined;
-    const stopped = new Promise<void>((resolve) => {
-      endWait = resolve;
-      if (signal.aborted) resolve();
-      else signal.addEventListener("abort", endWait, { once: true });
-    });
-    await bounded(closing).catch(() => undefined);
-    const settled = await Promise.race([
-      closing.then(() => true, () => true),
-      stopped.then(() => false),
-    ]);
-    signal.removeEventListener("abort", endWait);
+    // With no close in flight (including a defaultRuntime that published the session environment
+    // and then threw), nothing still reads the session environment.
+    const settled = closing ? await waitForClose(closing, signal) : true;
     if (settled && ownsSessionEnvironment) {
       delete process.env.HOME;
       delete process.env.TMPDIR;
       delete process.env.CURSOR_DATA_DIR;
+    }
+    // An abandoned close can still write under the session directory; sweep it again when it ends.
+    if (!settled && closing) {
+      const sweep = () => removePrivate(sessionDirectory).catch(() => undefined);
+      void closing.then(sweep, sweep);
     }
   } finally {
     await removePrivate(sessionDirectory);
@@ -106,7 +118,8 @@ async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signa
 
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: string): Promise<DriverResult> {
-  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation) throw failed();
+  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation
+    || !isAbsolute(stateDir)) throw failed();
   const sessionDirectory = join(stateDir, "cursor", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
   const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;

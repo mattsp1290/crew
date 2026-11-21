@@ -132,6 +132,7 @@ test("opencode refuses a slash prompt, a checkpoint, or project context before s
     { message: "Text engine turn failed" });
   await assert.rejects(runOpenCodeTurn(input(member.conversationId, { projectContext: "notes" }), member, profile, cwd), { message: "Text engine turn failed" });
   await assert.rejects(runOpenCodeTurn(input(member.conversationId, { childResults: [] }), member, profile, cwd), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId), member, profile, "relative-state"), { message: "Text engine turn failed" });
   assert.equal(spawned, 0);
   await rm(cwd, { recursive: true, force: true });
 });

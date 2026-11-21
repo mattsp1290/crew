@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
 import type { Conversation } from "./domain.ts";
@@ -128,7 +128,8 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
 export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string): Promise<DriverResult> {
-  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation || !promptAllowed(input.text)) throw failed();
+  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation || !promptAllowed(input.text)
+    || !isAbsolute(stateDir)) throw failed();
   const root = join(stateDir, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
   const home = join(root, "home");
   const tmp = join(root, "tmp");
@@ -186,8 +187,13 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
     }
   } finally {
     killGroup();
-    await bounded(processExit, killGroup).catch(() => undefined);
+    const exited = await bounded(processExit, killGroup).then(() => true, () => false);
     await removePrivate(root);
+    // A process still alive after the bound can write under HOME after the removal; sweep again on exit.
+    if (!exited) {
+      const sweep = () => removePrivate(root).catch(() => undefined);
+      void processExit.then(sweep, sweep);
+    }
   }
   if (input.signal.aborted || !completed) throw failed();
   return completed;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -155,6 +155,7 @@ test("cursor refuses a checkpoint or project context before start", async () => 
   await assert.rejects(runCursorTurn(place.input({ checkpoint }), place.member, profile, stateDir), { message: "Text engine turn failed" });
   await assert.rejects(runCursorTurn(place.input({ projectContext: "notes" }), place.member, profile, stateDir), { message: "Text engine turn failed" });
   await assert.rejects(runCursorTurn(place.input({ childResults: [] }), place.member, profile, stateDir), { message: "Text engine turn failed" });
+  await assert.rejects(runCursorTurn(place.input(), place.member, profile, "relative-state"), { message: "Text engine turn failed" });
   assert.equal(starts, 0);
   await rm(stateDir, { recursive: true, force: true });
 });
@@ -228,6 +229,40 @@ test("abort during a hanging cursor close removes the session directory", async 
   await assert.rejects(runCursorTurn(place.input({ signal: controller.signal }), place.member, profile, stateDir), { message: "Text engine turn failed" });
   await assert.rejects(access(place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId)));
   releaseClose();
+  await rm(stateDir, { recursive: true, force: true });
+});
+
+test("a cursor close that finishes after abort has its late files swept", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
+  const place = member({ cwd: stateDir });
+  const directory = place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId);
+  const controller = new AbortController();
+  let releaseClose: () => void = () => undefined;
+  const profile: CursorProfile = {
+    model, apiKey, cwd: stateDir,
+    runtime() {
+      return {
+        async start({ onEvent }) {
+          onEvent({ kind: "text", text: "cedar remembered" });
+          onEvent({ kind: "ended", outcome: "completed" });
+          return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
+        },
+        close() {
+          controller.abort();
+          return new Promise<void>((resolve) => { releaseClose = resolve; });
+        },
+      };
+    },
+  };
+  await assert.rejects(runCursorTurn(place.input({ signal: controller.signal }), place.member, profile, stateDir), { message: "Text engine turn failed" });
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "late"), "late dispose output");
+  releaseClose();
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try { await access(directory); } catch { break; }
+    await delay(20);
+  }
+  await assert.rejects(access(directory));
   await rm(stateDir, { recursive: true, force: true });
 });
 

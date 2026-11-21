@@ -314,7 +314,8 @@ export class MemberStore {
   }
 
   /** recordAcceptance's refusals of a new request, checked before MemberClient sends any workflow
-   * update: the same refusal inside the workflow's admission activity fails the whole conversation.
+   * update. The same refusal inside the workflow's admission activity fails the whole conversation,
+   * except a text engine's input_limit or prompt_rejected (TextAdmissionError), which leaves it open.
    * recordAcceptance repeats them under the conversation's lock. The member's budget comes last,
    * so a request refused for another reason records no budget refusal. A handoff's reserved
    * request met its target's budget when the handoff committed (handoffs.ts) and is never
