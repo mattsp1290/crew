@@ -63,7 +63,10 @@ static int private_tree(const char *path) {
 
 static void permit(int rules, const char *path, uint64_t access, int optional) {
     int fd = open(path, O_PATH | O_CLOEXEC);
-    if (fd < 0 && optional && (errno == ENOENT || errno == ENOTDIR)) return;
+    // EACCES: a nested launcher already lives under the worker domain, which
+    // cannot name this process's /proc/self. Skip the optional file instead of
+    // refusing the CLI. Required paths still fail closed.
+    if (fd < 0 && optional && (errno == ENOENT || errno == ENOTDIR || errno == EACCES)) return;
     checked(fd);
     struct landlock_path_beneath_attr attr = { .allowed_access = access, .parent_fd = fd };
     checked(syscall(SYS_landlock_add_rule, rules, LANDLOCK_RULE_PATH_BENEATH, &attr, 0));
@@ -226,9 +229,18 @@ static void install_filter(int pi) {
 
 int main(int argc, char **argv) {
     const char *codex = getenv("BIRBCREW_NATIVE_BINARY");
+    // The Claude worker loads the SDK from this checkout and keeps Node's IPC socket.
+    // It may start the Claude CLI, which this program confines again. Network rules wait
+    // for C2b: the vendored adapter binds an ephemeral loopback MCP port after the ruleset is sealed.
+    const int claude_flag = getenv("BIRBCREW_CLAUDE_WORKER") != NULL;
+    if (codex && claude_flag) return 126;
+    const int claude_worker = claude_flag;
+    const char *worker_root = claude_worker ? getenv("BIRBCREW_NATIVE_SOURCE") : NULL;
     // Pi runs its SDK in a Node worker that loads Crew's code from this checkout and talks only to its host.
-    const char *source = codex ? NULL : getenv("BIRBCREW_NATIVE_SOURCE");
+    const char *source = codex || claude_worker ? NULL : getenv("BIRBCREW_NATIVE_SOURCE");
     const int pi = source != NULL;
+    int channel_fd = 3;
+    if (claude_worker && (!worker_root || !private_tree(worker_root))) return 126;
     if (!codex && argc < 3) return 126;
     pid_t parent = number(codex ? getenv("BIRBCREW_NATIVE_PARENT") : argv[1], INT_MAX);
     checked(prctl(PR_SET_PDEATHSIG, SIGKILL));
@@ -236,8 +248,11 @@ int main(int argc, char **argv) {
     char executable[PATH_MAX];
     if (!realpath(codex ? codex : argv[2], executable)) fail();
     int abi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
-    if (abi < (codex ? 4 : 3)) return 126;
+    // Pi stays on ABI 3. Claude, including its nested CLI, and Codex need ABI 4.
+    if (abi < (pi ? 3 : 4)) return 126;
     uint64_t handled = (UINT64_C(1) << (abi >= 5 ? 16 : 15)) - 1;
+    // Handled network access with no allow rule would deny every TCP connect. Claude
+    // installs none: the MCP port is chosen after this ruleset is sealed.
     struct { uint64_t fs, net; } ruleset = { handled, codex ? 3 : 0 };
     int rules = syscall(SYS_landlock_create_ruleset, &ruleset, codex ? sizeof(ruleset) : sizeof(uint64_t), 0);
     checked(rules);
@@ -273,17 +288,30 @@ int main(int argc, char **argv) {
         const char *lib[] = {"/usr/lib","/usr/lib64","/lib64",NULL};
         for (int i = 0; lib[i]; i++) permit(rules, lib[i], read | list | exec, 1);
         permit(rules, ".", private, 0);
-        if (source) {
-            // Descriptor 3 is the worker's only route out; every other inherited descriptor closes below.
+        if (claude_worker) channel_fd = (int)number(getenv("BIRBCREW_NATIVE_CHANNEL"), INT_MAX);
+        if (source || claude_worker) {
+            const char *root = source ? source : worker_root;
+            // The worker's channel stays open; every other inherited descriptor closes below.
             struct stat channel;
-            if (fstat(3, &channel) || !S_ISSOCK(channel.st_mode)) return 126;
-            permit_under(rules, source, "package.json", read);
-            permit_under(rules, source, "node_modules", read | list);
-            permit_under(rules, source, "src/service", read | list);
+            if (channel_fd < 3 || fstat(channel_fd, &channel) || !S_ISSOCK(channel.st_mode)) return 126;
+            permit_under(rules, root, "package.json", read);
+            // The Claude worker executes its CLI and the nested launcher from these trees.
+            // Pi only reads them: its filter already stops a new process.
+            uint64_t code_access = claude_worker ? read | list | exec : read | list;
+            permit_under(rules, root, "node_modules", code_access);
+            permit_under(rules, root, "src/service", code_access);
             // npm's local dependency link resolves outside node_modules to compiled shared schemas.
-            permit_under(rules, source, "packages/client/package.json", read);
-            permit_under(rules, source, "packages/client/dist", read | list);
+            permit_under(rules, root, "packages/client/package.json", read);
+            permit_under(rules, root, "packages/client/dist", read | list);
+            if (claude_worker) permit_under(rules, root, ".proof/bin/member-launch", read | exec);
+            // A rule opened through /proc/self names only this process. The nested
+            // launcher is a new pid and must open its own /proc/self entries to put
+            // them in the CLI ruleset. Landlock's ptrace scope still refuses another
+            // process's environ, mem and cmdline.
+            if (claude_worker) permit(rules, "/proc", read | list, 0);
             unsetenv("BIRBCREW_NATIVE_SOURCE");
+            unsetenv("BIRBCREW_CLAUDE_WORKER");
+            unsetenv("BIRBCREW_NATIVE_CHANNEL");
         }
         argv += 2;
     }
@@ -291,7 +319,8 @@ int main(int argc, char **argv) {
     install_filter(pi);
     checked(syscall(SYS_landlock_restrict_self, rules, 0));
     umask(0077);
-    checked(syscall(SYS_close_range, pi ? 4 : 3, UINT_MAX, 0));
+    if ((source || claude_worker) && channel_fd > 3) checked(syscall(SYS_close_range, 3, (unsigned)channel_fd - 1, 0));
+    checked(syscall(SYS_close_range, (source || claude_worker) ? (unsigned)channel_fd + 1 : 3, UINT_MAX, 0));
     execv(executable, argv);
     fail();
 }
