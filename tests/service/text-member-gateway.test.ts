@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, Connection } from "@temporalio/client";
+import { Worker } from "@temporalio/worker";
 import { Pool } from "pg";
 import { MemberClient } from "../../src/service/client.ts";
 import { createGateway } from "../../src/service/gateway.ts";
@@ -219,8 +220,15 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
       assert.equal(fulfilled[0].status === "fulfilled" && fulfilled[0].value, reply);
       assert.equal(rejectedSubmit?.status, "rejected");
       assert.equal(rejectedSubmit.reason.code, "input_limit");
-      const submitWorkflow = await temporal.workflow.getHandle(`birbcrew-ts/member/${memberId}/conversation/${submitConversation}`).describe();
+      const submitHandle = temporal.workflow.getHandle(`birbcrew-ts/member/${memberId}/conversation/${submitConversation}`);
+      const submitWorkflow = await submitHandle.describe();
       assert.notEqual(submitWorkflow.status.name, "FAILED");
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("../../src/service/workflow.ts", import.meta.url)) },
+        await submitHandle.fetchHistory(),
+        submitHandle.workflowId,
+      );
+      assert.notEqual((await submitHandle.describe()).status.name, "FAILED");
     }
   }
 });

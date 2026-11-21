@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
 import type { Conversation } from "./domain.ts";
@@ -6,6 +9,7 @@ import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "./p
 
 const failed = () => new Error("Text engine turn failed");
 const maxPrompt = 1_048_576;
+const closeBoundMs = 5_000;
 
 function promptAllowed(value: string) {
   return value.length >= 1 && Buffer.byteLength(value) <= maxPrompt && !opencodePromptRejected(value);
@@ -15,9 +19,20 @@ function sameEnvironment(left: Readonly<Record<string, string>>, right: Readonly
   const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
 }
-function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal): OpenCodeSpawned {
+function bounded<T>(work: Promise<T>, kill: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(failed()), closeBoundMs);
+    timer.unref?.();
+  });
+  return Promise.race([work, timeout]).catch((error: unknown) => {
+    kill();
+    throw error instanceof Error && error.message === "Text engine turn failed" ? error : failed();
+  }).finally(() => { if (timer) clearTimeout(timer); });
+}
+function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void): OpenCodeSpawned {
   const child = spawn(request.args[0], request.args.slice(1), {
-    cwd: request.cwd, env: { ...request.env }, stdio: ["pipe", "pipe", "pipe"],
+    cwd: request.cwd, env: { ...request.env, HOME: home, TMPDIR: tmp }, detached: true, stdio: ["pipe", "pipe", "pipe"],
   });
   child.stderr?.on("data", () => undefined);
   let settled = false;
@@ -32,9 +47,15 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal): OpenC
     else rejectExit(new Error("exit"));
   };
   const stop = () => {
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+    try { process.kill(-child.pid, "SIGKILL"); }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
     closing = true;
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   };
+  assignKill(stop);
   if (signal.aborted) stop();
   else signal.addEventListener("abort", stop, { once: true });
   child.once("exit", (code) => {
@@ -68,7 +89,6 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal): OpenC
         });
       },
       endInput() {
-        closing = true;
         child.stdin?.end();
         stop();
       },
@@ -77,9 +97,16 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal): OpenC
 }
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
-export async function runOpenCodeTurn(input: DriverInput, _member: Conversation, profile: OpenCodeProfile): Promise<DriverResult> {
+export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string): Promise<DriverResult> {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation || !promptAllowed(input.text)) throw failed();
+  const root = join(stateDir, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  const home = join(root, "home");
+  const tmp = join(root, "tmp");
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  await mkdir(tmp, { recursive: true, mode: 0o700 });
+  let killGroup = () => {};
   const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
+  try {
   const opened = await opencodeHostAdapter.open({
     model: profile.model,
     environment: { variables: { ...profile.env }, nativeConfig: { cwd: profile.cwd, executable: profile.executable, account: profile.account } },
@@ -89,7 +116,7 @@ export async function runOpenCodeTurn(input: DriverInput, _member: Conversation,
         const args = [...request.args];
         if (args.length !== 2 || args[0] !== profile.executable || args[1] !== "acp" || request.cwd !== profile.cwd
           || !sameEnvironment(request.env, profile.env)) throw failed();
-        return (profile.spawn ?? spawnProcess)(request, signal);
+        return profile.spawn ? profile.spawn(request, signal) : spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; });
       },
     },
   }, input.signal);
@@ -102,7 +129,7 @@ export async function runOpenCodeTurn(input: DriverInput, _member: Conversation,
     const result = await adapter.run({
       prompt: input.text, signal: input.signal, hostOperationId: input.runId, recordIntent: async () => undefined,
     });
-    const closed = await adapter.close();
+    const closed = await bounded(adapter.close(), killGroup);
     const text = result.kind === "complete" ? result.text : "";
     if (result.kind !== "complete" || text.length === 0 || Buffer.byteLength(text) > turnTextBytes || closed.kind !== "ok") throw failed();
     return {
@@ -113,10 +140,13 @@ export async function runOpenCodeTurn(input: DriverInput, _member: Conversation,
       },
     };
   } catch (error) {
-    await adapter.close().catch(() => undefined);
+    await bounded(adapter.close().then(() => undefined, () => undefined), killGroup);
     if (error instanceof Error && error.message === "Text engine turn failed") throw error;
     throw failed();
   } finally {
     if (subscription.kind === "ok") subscription.value.dispose();
+  }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 }

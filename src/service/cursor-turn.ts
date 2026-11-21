@@ -1,24 +1,40 @@
 import { createHash } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import type { CursorProfile, CursorRuntimeHandle, CursorRuntimeOptions } from "./profiles.ts";
 
 const failed = () => new Error("Text engine turn failed");
+const closeBoundMs = 5_000;
 
 async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRuntimeHandle> {
   const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
+  // The runner's database pool is already open. Tool shells copy process.env, so only the locale
+  // and PATH remain for the rest of this one-shot process.
+  const inherited = new Set(["PATH", "LANG", "LC_ALL", "TZ"]);
+  for (const key of Object.keys(process.env)) if (!inherited.has(key)) delete process.env[key];
   return createCursorRuntime(options);
+}
+
+function bounded<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(failed()), closeBoundMs);
+    timer.unref?.();
+  });
+  return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: string): Promise<DriverResult> {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation) throw failed();
   const sessionDirectory = join(stateDir, "cursor", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  await rm(sessionDirectory, { recursive: true, force: true });
   await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
+  await chmod(sessionDirectory, 0o700);
   let runtime: CursorRuntimeHandle | undefined;
-  let committed = false;
+  let result: DriverResult | undefined;
   try {
     try {
       runtime = await (profile.runtime ?? defaultRuntime)({
@@ -58,9 +74,13 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     const onEarlyAbort = () => rejectPending(failed());
     if (input.signal.aborted) onEarlyAbort();
     else input.signal.addEventListener("abort", onEarlyAbort);
+    const pending = started.then((handle) => {
+      if (input.signal.aborted) void handle.abort().catch(() => undefined);
+      return handle;
+    });
     let turn: Awaited<ReturnType<CursorRuntimeHandle["start"]>>;
     try {
-      turn = await Promise.race([started, aborted]);
+      turn = await Promise.race([pending, aborted]);
     } finally {
       input.signal.removeEventListener("abort", onEarlyAbort);
     }
@@ -71,10 +91,9 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
       const finished = await turn.finished;
       if (sawDisallowed || input.signal.aborted || finished !== "completed" || outcome !== "completed"
         || latest.length === 0 || Buffer.byteLength(latest) > turnTextBytes) throw failed();
-      committed = true;
-      return {
+      result = {
         kind: "complete", text: latest,
-        checkpoint: { version: 1, engine: "cursor", state: { model: profile.model, cwd: profile.cwd, sessionDirectory, agentId: turn.agentId } },
+        checkpoint: { version: 1, engine: "cursor", state: { model: profile.model, cwd: profile.cwd, agentId: turn.agentId } },
       };
     } finally {
       input.signal.removeEventListener("abort", onAbort);
@@ -83,7 +102,14 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     if (error instanceof Error && error.message === "Text engine turn failed") throw error;
     throw failed();
   } finally {
-    await runtime?.close().catch(() => undefined);
-    if (!committed) await rm(sessionDirectory, { recursive: true, force: true }).catch(() => undefined);
+    try {
+      if (runtime) await bounded(runtime.close());
+      await rm(sessionDirectory, { recursive: true, force: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Text engine turn failed") throw error;
+      throw failed();
+    }
   }
+  if (!result) throw failed();
+  return result;
 }

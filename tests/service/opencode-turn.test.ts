@@ -75,7 +75,7 @@ test("an injected opencode spawn commits both text deltas and receives only the 
   };
   const member = conversation();
   try {
-    const result = await runOpenCodeTurn({ ...input(member.conversationId), onText(delta) { published.push(delta); } }, member, profile);
+    const result = await runOpenCodeTurn({ ...input(member.conversationId), onText(delta) { published.push(delta); } }, member, profile, cwd);
     assert.equal(result.kind, "complete");
     if (result.kind !== "complete") return;
     assert.equal(result.text, "cedar remembered");
@@ -107,12 +107,12 @@ test("opencode refuses a slash prompt, a checkpoint, or project context before s
     spawn: () => { spawned += 1; throw new Error("spawned"); },
   };
   const member = conversation();
-  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { text: "/remember cedar" }), member, profile), { message: "Text engine turn failed" });
-  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { text: "remember\n/cedar" }), member, profile), { message: "Text engine turn failed" });
-  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { checkpoint: { version: 1, engine: "opencode", state: {} } }), member, profile),
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { text: "/remember cedar" }), member, profile, cwd), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { text: "remember\n/cedar" }), member, profile, cwd), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { checkpoint: { version: 1, engine: "opencode", state: {} } }), member, profile, cwd),
     { message: "Text engine turn failed" });
-  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { projectContext: "notes" }), member, profile), { message: "Text engine turn failed" });
-  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { childResults: [] }), member, profile), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { projectContext: "notes" }), member, profile, cwd), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { childResults: [] }), member, profile, cwd), { message: "Text engine turn failed" });
   assert.equal(spawned, 0);
   await rm(cwd, { recursive: true, force: true });
 });
@@ -147,7 +147,7 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
     }
     assert.fail(`peer ${pid} still running`);
   }
-  const completed = await runOpenCodeTurn(input(member.conversationId), member, profile("complete"));
+  const completed = await runOpenCodeTurn(input(member.conversationId), member, profile("complete"), cwd);
   assert.equal(completed.kind, "complete");
   if (completed.kind !== "complete") return;
   assert.equal(completed.text, "cedar remembered");
@@ -156,14 +156,14 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
   assert.equal(JSON.stringify(completed.checkpoint).includes(executable), true);
   await assertLastExited();
 
-  const lingering = await runOpenCodeTurn(input(member.conversationId), member, profile("linger"));
+  const lingering = await runOpenCodeTurn(input(member.conversationId), member, profile("linger"), cwd);
   assert.equal(lingering.kind, "complete");
   if (lingering.kind !== "complete") return;
   assert.equal(lingering.text, "cedar remembered");
   await assertLastExited();
 
   for (const mode of ["tool", "permission", "fs-read", "fs-write", "terminal"]) {
-    const error = await runOpenCodeTurn(input(member.conversationId), member, profile(mode)).then(() => undefined, (caught: unknown) => caught);
+    const error = await runOpenCodeTurn(input(member.conversationId), member, profile(mode), cwd).then(() => undefined, (caught: unknown) => caught);
     assert.ok(error instanceof Error);
     assert.equal(error.message, "Text engine turn failed");
     const encoded = String(error);

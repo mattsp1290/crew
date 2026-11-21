@@ -328,7 +328,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         // did not start. Fail this update and leave the committed turn's workflow open.
         // Older histories stay on the retryable path.
         const refused = applicationFailure(error, "input_limit") || applicationFailure(error, "prompt_rejected");
-        if (patched("text-engine-budget-v1") && isTextEngine(conversation.engine) && refused) {
+        if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
           await rejectUnstartedAdmission(request);
           turns.delete(request.requestId);
           textBudgetRejection = true;

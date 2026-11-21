@@ -122,8 +122,10 @@ export async function admittedInitiator(
  * is not a workflow or update argument, so recorded histories replay unchanged.
  * A seal lifts only through a recovery restore, so retrying it only delays the failure the workflow reaches anyway; and a
  * request that reached admission ahead of its target's reserved one must not slip in once that
- * one is admitted. Either refusal fails at once. The workflow does not inspect why an activity
- * failed, and a failure is history data, not a command, so replay is unaffected. */
+ * one is admitted. Either refusal fails at once.
+ * The workflow branches on the non-retryable types input_limit and prompt_rejected
+ * under patched("text-engine-budget-v1"). Those types are history. Keep them stable
+ * for any run that already recorded that marker; a new refusal type needs a new patch id. */
 export function ownerAdmissionActivity(store: MemberStore) {
   return async (request: TurnRequest): Promise<void> => {
     try {

@@ -62,8 +62,9 @@ test("a cursor turn commits the last snapshot and publishes only the new suffix"
   assert.equal("pending" in result, false);
   assert.deepEqual(result.checkpoint, {
     version: 1, engine: "cursor",
-    state: { model, cwd: stateDir, sessionDirectory: place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId), agentId: "agent-1" },
+    state: { model, cwd: stateDir, agentId: "agent-1" },
   });
+  await assert.rejects(access(place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId)));
   const encoded = JSON.stringify(result);
   assert.equal(encoded.includes(apiKey), false);
   assert.equal(encoded.includes("SECRET_TOOL"), false);
@@ -158,7 +159,7 @@ test("cursor refuses a checkpoint or project context before start", async () => 
   await rm(stateDir, { recursive: true, force: true });
 });
 
-test("abort before cursor start resolves closes the runtime and does not abort the turn", async () => {
+test("abort before cursor start resolves closes the runtime and aborts a late start", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
   const place = member({ cwd: stateDir });
   const controller = new AbortController();
@@ -180,7 +181,7 @@ test("abort before cursor start resolves closes the runtime and does not abort t
   assert.equal(aborted, 0);
   release({ agentId: "agent-1", finished: Promise.resolve("completed"), async abort() { aborted += 1; } });
   await delay(0);
-  assert.equal(aborted, 0);
+  assert.equal(aborted, 1);
   await rm(stateDir, { recursive: true, force: true });
 });
 
