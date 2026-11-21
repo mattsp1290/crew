@@ -12,17 +12,7 @@ import type { expiryActivity, MemberActivities, Resume } from "./activities.ts";
 
 import type { MemberStore, ownerAdmissionActivity } from "./store.ts";
 import { activityQueue, memberTaskQueue } from "./queues.ts";
-
-function applicationFailure(error: unknown, type: string): boolean {
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-  while (current instanceof Error && !seen.has(current)) {
-    seen.add(current);
-    if (current instanceof ApplicationFailure && current.type === type) return true;
-    current = current.cause;
-  }
-  return false;
-}
+import { hasFailureType } from "./failure-type.ts";
 
 export const submitTurn = defineUpdate<string, [TurnRequest]>("submitTurn");
 export const acceptTurn = defineUpdate<string, [TurnRequest]>("acceptTurn");
@@ -96,6 +86,11 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   const { quarantineDelegation } = proxyActivities<Pick<ChildStore, "quarantineDelegation">>({
     taskQueue: memberTaskQueue, startToCloseTimeout: "15 seconds",
   });
+  // keepOpen marks a rejected turn that must not fail the conversation. Exactly two places set it:
+  // segment() for a reaped text-engine stop ({kind:"stopped"}), and the admission catch for a text
+  // engine's input_limit or prompt_rejected refusal under patched("text-engine-budget-v1"). The
+  // `previous` rejection handler reads it. It stays a flag rather than a new failure type so update
+  // failure payloads already recorded in histories keep replaying unchanged.
   const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string>; keepOpen: boolean }>();
   let previous = Promise.resolve();
   let failed = false;
@@ -333,7 +328,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         // A text-engine admission activity reports input_limit or prompt_rejected when the turn
         // did not start. Fail this update and leave the committed turn's workflow open.
         // Older histories stay on the retryable path.
-        const refused = applicationFailure(error, "input_limit") || applicationFailure(error, "prompt_rejected");
+        const refused = hasFailureType(error, "input_limit") || hasFailureType(error, "prompt_rejected");
         if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
           entry.keepOpen = true;
           await rejectUnstartedAdmission(request);

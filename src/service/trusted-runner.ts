@@ -1,5 +1,5 @@
 /** Call only from a trusted backend worker, never with observer-supplied authority. */
-import { isTextEngine } from "./domain.ts";
+import { engineTraits } from "./domain.ts";
 import { TrustedContextStore, type TrustedKey } from "./trusted-context.ts";
 import { runTrustedNativeTurn, type TrustedNativeProfile } from "./trusted-native.ts";
 import { recordTrustedUsage } from "./usage.ts";
@@ -19,7 +19,7 @@ export async function runTrustedRequest(store: TrustedContextStore, key: Trusted
   const start = await store.begin(key);
   if (!start) return null;
   const engine = start.engine;
-  if (isTextEngine(engine)) throw new Error("Text engines have no trusted native execution");
+  if (!engineTraits[engine].trustedContext) throw new Error("Text engines have no trusted native execution");
   if (profile.engine !== engine || (profile.engine !== "pi" &&
       (profile.profile.ownerId !== key.ownerId || profile.profile.memberId !== start.memberId))) {
     throw new Error("Trusted native profile ownership does not match the conversation");

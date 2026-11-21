@@ -74,6 +74,7 @@ process.once("message", async (command: AdmittedTurn) => {
         };
         const provider = telemetryProvider[member.engine] ?? profile?.pi?.model.provider ?? "";
         const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => {
+          // The owning scrub for every text driver. Cursor scrubs again before its SDK import as defense in depth.
           if (isTextEngine(member.engine)) scrubTextEngineEnvironment();
           return driver(value, member);
         });

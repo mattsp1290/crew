@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
-import { chmod, mkdir } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
-import { removePrivate, scrubTextEngineEnvironment, TextTurnFailed } from "./private-directory.ts";
+import {
+  boundedBy, preparePrivate, removePrivate, scrubTextEngineEnvironment, sweepWhenSettled, TextTurnFailed, textTurnFailed, textTurnResult, textTurnRoot,
+} from "./private-directory.ts";
 
 export interface CursorRuntimeOptions {
   readonly cwd: string;
@@ -26,11 +25,13 @@ export interface CursorProfile {
   model: string;
   apiKey: string;
   cwd: string;
-  /** Test double. Production profiles omit it, and registration does not store it. */
+  /** Test double. Production profiles omit it; only then does the turn publish the process session environment. It lives on the profile, not a separate argument, because
+   * worker-level tests (text-member-gateway) can only inject doubles through the operator profile
+   * module the worker loads; assertTextProfile still validates every production field. */
   runtime?: (options: CursorRuntimeOptions) => CursorRuntimeHandle | Promise<CursorRuntimeHandle>;
 }
 
-const failed = () => new TextTurnFailed();
+const failed = textTurnFailed;
 const closeBoundMs = 5_000;
 
 async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRuntimeHandle> {
@@ -65,17 +66,6 @@ function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signa
   });
 }
 
-function bounded<T>(work: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(failed()), closeBoundMs);
-    timer.unref?.();
-  });
-  work.catch(() => undefined);
-  timeout.catch(() => undefined);
-  return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
-}
-
 /** True when close settled, false when the turn was stopped while close was still running. */
 async function waitForClose(closing: Promise<void>, signal: AbortSignal) {
   let endWait: () => void = () => undefined;
@@ -84,7 +74,7 @@ async function waitForClose(closing: Promise<void>, signal: AbortSignal) {
     if (signal.aborted) resolve();
     else signal.addEventListener("abort", endWait, { once: true });
   });
-  await bounded(closing).catch(() => undefined);
+  await boundedBy(closing, closeBoundMs).catch(() => undefined);
   const settled = await Promise.race([
     closing.then(() => true, () => true),
     stopped.then(() => false),
@@ -107,10 +97,7 @@ async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signa
       delete process.env.CURSOR_DATA_DIR;
     }
     // An abandoned close can still write under the session directory; sweep it again when it ends.
-    if (!settled && closing) {
-      const sweep = () => removePrivate(sessionDirectory).catch(() => undefined);
-      void closing.then(sweep, sweep);
-    }
+    if (!settled && closing) sweepWhenSettled(closing, sessionDirectory);
   } finally {
     await removePrivate(sessionDirectory);
   }
@@ -118,16 +105,12 @@ async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signa
 
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: string): Promise<DriverResult> {
-  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation
-    || !isAbsolute(stateDir)) throw failed();
-  const sessionDirectory = join(stateDir, "cursor", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  const sessionDirectory = textTurnRoot(input, member, "cursor", stateDir);
   const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;
   let result: DriverResult | undefined;
   try {
-    await removePrivate(sessionDirectory);
-    await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
-    await chmod(sessionDirectory, 0o700);
+    await preparePrivate(sessionDirectory);
     try {
       runtime = await (profile.runtime ?? defaultRuntime)({
         cwd: profile.cwd, sessionDirectory, apiKey: profile.apiKey, model: profile.model,
@@ -174,6 +157,5 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
   } finally {
     await settleCursorClose(runtime, input.signal, sessionDirectory, ownsSessionEnvironment);
   }
-  if (input.signal.aborted || !result) throw failed();
-  return result;
+  return textTurnResult(input.signal, result);
 }

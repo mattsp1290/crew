@@ -5,20 +5,12 @@ import type { MemberStore } from "./store.ts";
 import type { memberConversation } from "./workflow.ts";
 
 import { memberTaskQueue } from "./queues.ts";
+import { hasFailureType } from "./failure-type.ts";
 
-/** Walks an update or activity failure chain for a Temporal application-failure type.
- * usage_limit still closes the member workflow. input_limit and prompt_rejected are
+/** usage_limit still closes the member workflow. input_limit and prompt_rejected are
  * text-engine admission refusals; the workflow keeps that run open. */
-function failureType(error: unknown, type: string) {
-  const seen = new Set<unknown>();
-  for (let cause: unknown = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
-    seen.add(cause);
-    if (cause instanceof ApplicationFailure && cause.type === type) return true;
-  }
-  return false;
-}
 function usageRefusal(error: unknown) {
-  return failureType(error, "usage_limit");
+  return hasFailureType(error, "usage_limit");
 }
 
 export class MemberClient {
@@ -65,8 +57,8 @@ export class MemberClient {
         return await action(await this.workflow(conversation));
       }
       catch (error) {
-        if (failureType(error, "input_limit")) throw new MemberStoreError("input_limit");
-        if (failureType(error, "prompt_rejected")) throw new MemberStoreError("conflict");
+        if (hasFailureType(error, "input_limit")) throw new MemberStoreError("input_limit");
+        if (hasFailureType(error, "prompt_rejected")) throw new MemberStoreError("conflict");
         if (!(error instanceof WorkflowUpdateFailedError) || !(error.cause instanceof ApplicationFailure) ||
             error.cause.type !== "RolloverInProgress") throw error;
         if (Date.now() >= deadline) throw new MemberStoreError("busy");

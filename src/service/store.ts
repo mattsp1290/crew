@@ -24,7 +24,7 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  isTextEngine, MemberStoreError, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
+  engineTraits, isTextEngine, MemberStoreError, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
   type BeginTurn, type Conversation, type Engine, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 
@@ -83,10 +83,11 @@ async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string)
   return budget;
 }
 
-function admissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
-  if (turnLimitReached && isTextEngine(engine)) return new TextAdmissionError("input_limit");
+/** A text engine's admission refusals: its one-turn budget first, then OpenCode's prompt rule. */
+function textAdmissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
+  if (!isTextEngine(engine)) return undefined;
+  if (turnLimitReached) return new TextAdmissionError("input_limit");
   if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("prompt_rejected");
-  if (turnLimitReached) return new MemberStoreError("input_limit");
   return undefined;
 }
 
@@ -103,7 +104,9 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
     const budget = await turnBudget(db, key.conversationId);
-    const refusal = admissionRefusal(conversation.engine, key.text, budget.used >= budget.limit);
+    const limitReached = budget.used >= budget.limit;
+    const refusal = textAdmissionRefusal(conversation.engine, key.text, limitReached)
+      ?? (limitReached ? new MemberStoreError("input_limit") : undefined);
     if (refusal) throw refusal;
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
@@ -213,7 +216,7 @@ export class MemberStore {
     const { ownerId, requestId, engine, profile, instructions, instructionPacks = [], capabilities } = spawnRequestSchema.parse(input);
     const requested = hasCapabilities(capabilities) ? capabilities : null;
     return this.transaction(async (db) => {
-      if (isTextEngine(engine) && (instructions !== undefined || instructionPacks.length > 0)) {
+      if (!engineTraits[engine].instructions && (instructions !== undefined || instructionPacks.length > 0)) {
         throw new MemberStoreError("instructions_limit");
       }
       const { rows: [created] } = await db.query<Member>(
@@ -329,9 +332,10 @@ export class MemberStore {
     if (turn.rowCount) return;
     if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
     submitSchema.parse(key);
+    // Native engines' turn limit is enforced by recordAcceptance; only text engines pay for the count here.
     if (isTextEngine(conversation.engine)) {
       const counted = await turnBudget(this.pool, key.conversationId);
-      const refusal = admissionRefusal(conversation.engine, key.text, counted.used >= counted.limit);
+      const refusal = textAdmissionRefusal(conversation.engine, key.text, counted.used >= counted.limit);
       if (refusal) throw refusal;
     }
     if (!await budgetApplies(this.pool, key)) return;

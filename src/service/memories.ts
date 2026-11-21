@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { appendAudit } from "./audit.ts";
 import { claudeCommand } from "./claude.ts";
-import { isTextEngine, MemberStoreError, ownerText, type Conversation, type Engine } from "./domain.ts";
+import { engineTraits, MemberStoreError, ownerText, type Conversation, type Engine } from "./domain.ts";
 import { memberFixedContext } from "./instructions.ts";
 import { trustedProjectContext } from "./project-notes.ts";
 import type { MemberStore } from "./store.ts";
@@ -95,7 +95,7 @@ export async function snapshotMemories(db: Queryable, conversation: Conversation
      WHERE owner_id = $2 AND member_id = $3 AND state = 'active'`,
     [conversation.conversationId, conversation.ownerId, conversation.memberId]);
   const fixed = await memberFixedContext(db, conversation);
-  if (isTextEngine(conversation.engine)) {
+  if (!engineTraits[conversation.engine].memories) {
     const { notes } = await contextBlocks(db, conversation);
     if ((rowCount ?? 0) > 0 || fixed !== undefined || notes !== undefined) throw new MemberStoreError("instructions_limit");
     return;

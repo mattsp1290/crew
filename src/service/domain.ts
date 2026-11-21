@@ -12,15 +12,37 @@ export type ChildEngine = z.infer<typeof childEngineSchema>;
 export function isTextEngine(engine: Engine): engine is "cursor" | "opencode" {
   return engine === "cursor" || engine === "opencode";
 }
+/** What each engine supports beyond a plain turn. Gates read the trait they mean, so a new engine fills in one row. */
+export interface EngineTraits {
+  /** Hands a conversation to, or receives one from, another member. */
+  readonly handoff: boolean;
+  /** Runs trusted context and trusted native execution. */
+  readonly trustedContext: boolean;
+  /** Takes member memories, fixed context, and notes. */
+  readonly memories: boolean;
+  /** Takes member instructions and instruction packs at spawn. */
+  readonly instructions: boolean;
+  /** Reports token usage that is recorded against prices. */
+  readonly meteredUsage: boolean;
+}
+const nativeTraits: EngineTraits = { handoff: true, trustedContext: true, memories: true, instructions: true, meteredUsage: true };
+const textTraits: EngineTraits = { handoff: false, trustedContext: false, memories: false, instructions: false, meteredUsage: false };
+export const engineTraits: Readonly<Record<Engine, EngineTraits>> = {
+  pi: nativeTraits, claude: nativeTraits, codex: nativeTraits, cursor: textTraits, opencode: textTraits,
+};
+/** True when `value` holds a C0 control (0-31), or a C1 control or DEL (127-159) unless `c1` is false,
+ * other than the characters in `allow`. */
+export function hasControlCharacter(value: string, { c1 = true, allow = "" }: { c1?: boolean; allow?: string } = {}): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if ((code <= 31 || (c1 && code >= 127 && code <= 159)) && !allow.includes(value[index])) return true;
+  }
+  return false;
+}
 /** OpenCode refuses a slash command, including one later in the prompt, and C0/C1 controls other than tab, LF, and CR. */
 export function opencodePromptRejected(text: string): boolean {
   if (text.split(/\r\n|\n|\r/).some((line) => line.trimStart().startsWith("/"))) return true;
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    if (code === 9 || code === 10 || code === 13) continue;
-    if (code <= 31 || (code >= 127 && code <= 159)) return true;
-  }
-  return false;
+  return hasControlCharacter(text, { allow: "\t\n\r" });
 }
 const ownerId = boundedText(256);
 const uuid = requestIdentitySchema.shape.requestId;

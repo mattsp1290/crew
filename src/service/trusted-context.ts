@@ -5,7 +5,7 @@ import { canonical, canonicalDigest as digest } from "./canonical-json.ts";
 import { randomUUID } from "node:crypto";
 import { Client, type Pool, type PoolClient } from "pg";
 import { z } from "zod";
-import { isTextEngine, type Engine } from "./domain.ts";
+import { engineTraits, type Engine } from "./domain.ts";
 
 const text = (max: number) => z.string().min(1).refine(v => v.isWellFormed() && !v.includes("\0") && Buffer.byteLength(v) <= max);
 const keySchema = z.strictObject({ ownerId: text(256), conversationId: z.uuid() });
@@ -120,7 +120,7 @@ export class TrustedContextStore {
           FOR UPDATE OF c`,
         [key.conversationId, key.ownerId]);
       if (!member.rows[0]) throw new TrustedContextError("not_found");
-      if (isTextEngine(member.rows[0].engine)) throw new TrustedContextError("denied");
+      if (!engineTraits[member.rows[0].engine].trustedContext) throw new TrustedContextError("denied");
       if ((await db.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1",[key.conversationId])).rowCount) throw new TrustedContextError("conflict");
       // A handoff's source is sealed and its target awaits its reserved first request on the member lane.
       if ((await db.query("SELECT 1 FROM birbcrew_ts.conversation_handoffs WHERE source_conversation_id=$1 OR target_conversation_id=$1",
@@ -150,7 +150,7 @@ export class TrustedContextStore {
     const key = keySchema.parse(input);
     return this.transaction(async db => {
       const s = await this.session(db,key,true);
-      if (isTextEngine(s.engine)) throw new TrustedContextError("denied");
+      if (!engineTraits[s.engine].trustedContext) throw new TrustedContextError("denied");
       if (s.phase !== "active") throw new TrustedContextError("busy");
       const {rows:[r]} = await db.query<{request_id:string;phase:string;prompt:string;generation:number}>(`SELECT * FROM birbcrew_ts.trusted_requests
         WHERE conversation_id=$1 AND phase IN ('queued','held','running') ORDER BY position LIMIT 1 FOR UPDATE`,[key.conversationId]);

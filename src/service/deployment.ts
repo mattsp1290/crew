@@ -8,7 +8,7 @@ import { capabilitySchema, hasCapabilities, includesShell, type CapabilitySet } 
 import { configuredDestination } from "./provider-identity.ts";
 import { childConsentSchema, childRoleSchema, childTargetSchema, holdsChildTools, sameDestination, type ProfileTargetSeal } from "./child-target.ts";
 import { fixedRoles } from "@birbcrew/pi-subagents";
-import { childEngineSchema, engineSchema, type Engine, spawnSchema } from "./domain.ts";
+import { childEngineSchema, engineSchema, hasControlCharacter, type Engine, spawnSchema } from "./domain.ts";
 import { usesRelayCredential } from "./proxy-profiles.ts";
 
 async function nativeVolume(directory: string) {
@@ -45,21 +45,14 @@ function profileCeiling(name: string, entry: MemberProfile): CapabilitySet | nul
 
 const identifierLimit = 1024;
 
-function controlCharacter(value: string, c1: boolean) {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || (c1 && code >= 127 && code <= 159)) return true;
-  }
-  return false;
-}
 function callerModelId(value: string) {
-  return value.trim() === value && value.length > 0 && value.length <= 256 && !/\p{Cs}/u.test(value) && !controlCharacter(value, true);
+  return value.trim() === value && value.length > 0 && value.length <= 256 && !/\p{Cs}/u.test(value) && !hasControlCharacter(value);
 }
 function apiKeyText(value: string) {
-  return value.trim() === value && value.length > 0 && value.length <= 512 && !controlCharacter(value, false);
+  return value.trim() === value && value.length > 0 && value.length <= 512 && !hasControlCharacter(value, { c1: false });
 }
 function identifier(value: string) {
-  return value.trim().length > 0 && value.length <= identifierLimit && !controlCharacter(value, true);
+  return value.trim().length > 0 && value.length <= identifierLimit && !hasControlCharacter(value);
 }
 function resolvedPath(value: string) {
   return isAbsolute(value) && resolve(value) === value;
@@ -89,7 +82,7 @@ function assertTextProfile(name: string, entry: MemberProfile) {
     if (opencode.env === null || typeof opencode.env !== "object" || Array.isArray(opencode.env)) invalid(name, "opencode.env");
     const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
     for (const [key, value] of Object.entries(opencode.env)) {
-      if (!envName.test(key) || typeof value !== "string" || controlCharacter(value, false)) invalid(name, "opencode.env");
+      if (!envName.test(key) || typeof value !== "string" || hasControlCharacter(value, { c1: false })) invalid(name, "opencode.env");
     }
   }
 }

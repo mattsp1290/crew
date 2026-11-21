@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { chmod, mkdir } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
 import type { Conversation } from "./domain.ts";
-import { removePrivate, TextTurnFailed } from "./private-directory.ts";
+import {
+  boundedBy, preparePrivate, removePrivate, sweepWhenSettled, TextTurnFailed, textTurnFailed, textTurnResult, textTurnRoot,
+} from "./private-directory.ts";
 
 export interface OpenCodeSpawnRequest {
   readonly executable: string;
@@ -27,11 +27,13 @@ export interface OpenCodeProfile {
   cwd: string;
   account: string;
   env: Readonly<Record<string, string>>;
-  /** Test double. Production profiles omit it, and registration does not store it. */
+  /** Test double. Production profiles omit it. It lives on the profile, not a separate argument, because
+   * worker-level tests (text-member-gateway) can only inject doubles through the operator profile
+   * module the worker loads; assertTextProfile still validates every production field. */
   spawn?: (request: OpenCodeSpawnRequest, signal: AbortSignal) => OpenCodeSpawned | Promise<OpenCodeSpawned>;
 }
 
-const failed = () => new TextTurnFailed();
+const failed = textTurnFailed;
 const maxPrompt = 1_048_576;
 const closeBoundMs = 2_000;
 
@@ -42,19 +44,6 @@ function sameEnvironment(left: Readonly<Record<string, string>>, right: Readonly
   const leftKeys = Object.keys(left);
   const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
-}
-function bounded<T>(work: Promise<T>, kill: () => void): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(failed()), closeBoundMs);
-    timer.unref?.();
-  });
-  work.catch(() => undefined);
-  timeout.catch(() => undefined);
-  return Promise.race([work, timeout]).catch((error: unknown) => {
-    kill();
-    throw error instanceof TextTurnFailed ? error : failed();
-  }).finally(() => { if (timer) clearTimeout(timer); });
 }
 function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: string, tmp: string, assignKill: (kill: () => void) => void): OpenCodeSpawned {
   const child = spawn(request.args[0], request.args.slice(1), {
@@ -128,21 +117,15 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
 export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string): Promise<DriverResult> {
-  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation || !promptAllowed(input.text)
-    || !isAbsolute(stateDir)) throw failed();
-  const root = join(stateDir, "opencode", createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  if (!promptAllowed(input.text)) throw failed();
+  const root = textTurnRoot(input, member, "opencode", stateDir);
   const home = join(root, "home");
   const tmp = join(root, "tmp");
   let killGroup = () => {};
   let processExit: Promise<unknown> = Promise.resolve();
   let completed: DriverResult | undefined;
   try {
-    await removePrivate(root);
-    await mkdir(home, { recursive: true, mode: 0o700 });
-    await mkdir(tmp, { recursive: true, mode: 0o700 });
-    await chmod(root, 0o700);
-    await chmod(home, 0o700);
-    await chmod(tmp, 0o700);
+    await preparePrivate(root, ["home", "tmp"]);
     const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
     const opened = await opencodeHostAdapter.open({
       model: profile.model,
@@ -183,18 +166,14 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
       throw failed();
     } finally {
       if (subscription.kind === "ok") subscription.value.dispose();
-      await bounded(adapter.close(), killGroup).catch(() => undefined);
+      await boundedBy(adapter.close(), closeBoundMs, killGroup).catch(() => undefined);
     }
   } finally {
     killGroup();
-    const exited = await bounded(processExit, killGroup).then(() => true, () => false);
+    const exited = await boundedBy(processExit, closeBoundMs, killGroup).then(() => true, () => false);
     await removePrivate(root);
     // A process still alive after the bound can write under HOME after the removal; sweep again on exit.
-    if (!exited) {
-      const sweep = () => removePrivate(root).catch(() => undefined);
-      void processExit.then(sweep, sweep);
-    }
+    if (!exited) sweepWhenSettled(processExit, root);
   }
-  if (input.signal.aborted || !completed) throw failed();
-  return completed;
+  return textTurnResult(input.signal, completed);
 }
