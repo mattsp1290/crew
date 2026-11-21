@@ -89,6 +89,22 @@ function send(res: ServerResponse, type: string, value: object) {
   res.write("event: " + type + "\ndata: " + JSON.stringify({ type, ...value }) + "\n\n");
 }
 
+function collectDeclared(value: unknown, found: unknown[]) {
+  if (typeof value === "string") {
+    try { collectDeclared(JSON.parse(value), found); } catch { return; }
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectDeclared(item, found);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type === "function_call" || record.type === "function_call_output") return;
+  if (record.name === "record_work_item" || record.name === "application") found.push(record);
+  for (const item of Object.values(record)) collectDeclared(item, found);
+}
+
 test("Codex uses per-turn subscription credentials for the same native thread without storing them", { timeout: 40_000 }, async t => {
   const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-subscription-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
@@ -226,10 +242,11 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   const calls: { id: string; thread: string }[] = [];
   let operation = randomUUID(), outcome: string = receipt, tool = "record_work_item";
   const captured: string[] = [], shapes: string[][] = [], schemas: string[] = [];
-  let namespaces = 0;
+  let namespaces = 0, emitted = 0;
   const provider = createServer(async (req, res) => {
     try {
-      const parsed = request.parse(await json(req));
+      const body = await json(req);
+      const parsed = request.parse(body);
       const surface = JSON.stringify([parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")]);
       assert.ok(!surface.includes("undeclared_private_tool"));
       const tools = [...parsed.tools, ...parsed.input.filter((row) => row.type === "additional_tools")
@@ -240,37 +257,29 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
         namespaces++;
         const declared = z.object({ name: z.literal("application"), tools: z.array(z.looseObject({ name: z.string() })) }).parse(application);
         assert.deepEqual(declared.tools.map((item) => item.name), ["record_work_item"]);
-        const encoded = JSON.stringify(declared.tools);
+      }
+      const found: unknown[] = [];
+      collectDeclared(body, found);
+      if (found.length > 0) {
+        const encoded = JSON.stringify(found);
         assert.equal(encoded.includes('"const"'), false);
         schemas.push(encoded);
-      } else {
-        const found: unknown[] = [];
-        const visit = (value: unknown) => {
-          if (!value || typeof value !== "object") return;
-          if (Array.isArray(value)) { for (const item of value) visit(item); return; }
-          const record = value as Record<string, unknown>;
-          if (record.name === "record_work_item") found.push(record);
-          for (const item of Object.values(record)) visit(item);
-        };
-        visit(tools);
-        if (found.length > 0) {
-          const encoded = JSON.stringify(found);
-          assert.equal(encoded.includes('"const"'), false);
-          schemas.push(encoded);
-        }
       }
       shapes.push(names);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const id = "resp_" + randomUUID(), call_id = "call_" + operation;
       send(res, "response.created", { response: { id } });
       const result = parsed.input.find((item) => item.type === "function_call_output" && item.call_id === call_id);
-      if (!result) send(res, "response.output_item.done", { item: { type: "function_call", namespace: "application",
-        name: tool, call_id, arguments: JSON.stringify({ operation_id: operation }) } });
-      else if (tool !== "record_work_item") {
-        // The adapter refuses an undeclared name before the hold sees it. Completing that
-        // follow-up would settle a turn the host never answered.
-        res.destroy();
-        return;
+      if (!result) {
+        if (tool !== "record_work_item") emitted += 1;
+        send(res, "response.output_item.done", { item: { type: "function_call", namespace: "application",
+          name: tool, call_id, arguments: JSON.stringify({ operation_id: operation }) } });
+      } else if (tool !== "record_work_item") {
+        const encoded = JSON.stringify(result.output);
+        assert.equal(encoded.includes(receipt), false);
+        assert.equal(encoded.includes(denied), false);
+        captured.push(encoded);
+        assistantText(res, "undeclared-follow-up");
       } else {
         captured.push(JSON.stringify(result.output));
         assistantText(res, "settled");
@@ -317,10 +326,13 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   assert.ok(schemas.length === 0 || new Set(schemas).size === 1);
   operation = randomUUID();
   tool = "undeclared_private_tool";
-  await assert.rejects(runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
-    checkpoint, signal: t.signal, hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile), /Codex native turn failed|Unexpected native Codex tool|Incomplete native Codex turn/);
+  const refused = await runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
+    checkpoint, signal: t.signal, hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile);
+  assert.equal(refused.text, "undeclared-follow-up");
   assert.equal(calls.length, 2);
   assert.deepEqual(confirmation, [receipt, denied]);
+  assert.match(captured.at(-1) ?? "", /unsupported|unknown|not found|error|refused/i);
+  assert.equal(emitted, 1);
 });
 
 test("request_user_input is declined when no person is attached", { timeout: 40_000 }, async (t) => {
