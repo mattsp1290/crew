@@ -533,8 +533,8 @@ export class MemberStore {
         [key.conversationId, key.requestId]);
       if (conversation.engine === "codex") await interruptLiveLocked(db, key);
       const stopped = await db.query(`SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2
-        AND ($3::boolean OR NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped))`,
-        [key.conversationId, key.requestId, isTextEngine(conversation.engine)]);
+        AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped)`,
+        [key.conversationId, key.requestId]);
       const confirmedStop = Boolean(stopped.rowCount);
       await publishObservation(db, key.conversationId, { kind: confirmedStop ? "stopped" : "failed", requestId:key.requestId });
       // recovery_closed above makes this uncertain outcome final; the "recover" return is not.

@@ -6,8 +6,9 @@ import type { memberConversation } from "./workflow.ts";
 
 import { memberTaskQueue } from "./queues.ts";
 
-/** The admission activity refused the request under its member's budget (ownerAdmissionActivity).
- * A refused admission closes the conversation's workflow, so the caller is told so. */
+/** Walks an update or activity failure chain for a Temporal application-failure type.
+ * usage_limit still closes the member workflow. input_limit and prompt_rejected are
+ * text-engine admission refusals; the workflow keeps that run open. */
 function failureType(error: unknown, type: string) {
   const seen = new Set<unknown>();
   for (let cause: unknown = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {

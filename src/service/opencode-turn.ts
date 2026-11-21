@@ -52,14 +52,12 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
     else rejectExit(new Error("exit"));
   };
   const stop = () => {
-    if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-    const target = -child.pid;
-    try { process.kill(target, "SIGKILL"); }
+    if (!child.pid) return;
+    try { process.kill(-child.pid, "SIGKILL"); }
     catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : undefined;
-      if (code !== "ESRCH") {
-        try { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
-        catch { return; }
+      if (code !== "ESRCH" && child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGKILL"); } catch { /* the group signal is the stop */ }
       }
     }
     closing = true;
@@ -114,9 +112,11 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   await removePrivate(root);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await mkdir(tmp, { recursive: true, mode: 0o700 });
+  await chmod(root, 0o700);
   await chmod(home, 0o700);
   await chmod(tmp, 0o700);
   let killGroup = () => {};
+  let processExit: Promise<unknown> = Promise.resolve();
   let completed: DriverResult | undefined;
   const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
   try {
@@ -129,7 +129,10 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
         const args = [...request.args];
         if (args.length !== 2 || args[0] !== profile.executable || args[1] !== "acp" || request.cwd !== profile.cwd
           || !sameEnvironment(request.env, profile.env)) throw failed();
-        return profile.spawn ? profile.spawn(request, signal) : spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; });
+        if (profile.spawn) return profile.spawn(request, signal);
+        const spawned = spawnProcess(request, signal, home, tmp, (kill) => { killGroup = kill; });
+        processExit = Promise.resolve(spawned.processExit);
+        return spawned;
       },
     },
   }, input.signal);
@@ -160,6 +163,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   }
   } finally {
     killGroup();
+    await bounded(processExit, killGroup).catch(() => undefined);
     await removePrivate(root);
   }
   if (input.signal.aborted || !completed) throw failed();

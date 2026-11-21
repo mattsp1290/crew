@@ -59,6 +59,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
   await removePrivate(sessionDirectory);
   await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
   await chmod(sessionDirectory, 0o700);
+  const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;
   let result: DriverResult | undefined;
   try {
@@ -106,7 +107,14 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     if (error instanceof TextTurnFailed) throw error;
     throw failed();
   } finally {
-    if (runtime) await bounded(runtime.close()).catch(() => undefined);
+    const closing = runtime?.close();
+    if (closing) await bounded(closing).catch(() => undefined);
+    if (ownsSessionEnvironment) {
+      delete process.env.HOME;
+      delete process.env.TMPDIR;
+      delete process.env.CURSOR_DATA_DIR;
+    }
+    if (closing) await closing.catch(() => undefined);
     await removePrivate(sessionDirectory);
   }
   if (input.signal.aborted || !result) throw failed();

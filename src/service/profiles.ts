@@ -86,14 +86,14 @@ function invalid(name: string, field: string): never {
 /** Rejects a cursor or opencode profile that cannot be spawned, before a member row exists. */
 export function assertTextProfile(name: string, entry: MemberProfile) {
   if (!entry.cursor && !entry.opencode) return;
-  for (const field of ["capabilities", "protectedTool", "humanTool", "delegateTask"] as const) {
+  for (const field of ["pi", "claude", "codex", "childTargets", "capabilities", "protectedTool", "humanTool", "delegateTask"] as const) {
     if (entry[field] !== undefined) throw new Error(`Profile ${JSON.stringify(name)} refuses ${field}`);
   }
   const cursor = entry.cursor;
   if (cursor) {
     if (!callerModelId(cursor.model)) invalid(name, "cursor.model");
     if (!apiKeyText(cursor.apiKey)) invalid(name, "cursor.apiKey");
-    if (!resolvedPath(cursor.cwd)) invalid(name, "cursor.cwd");
+    if (!resolvedPath(cursor.cwd) || !identifier(cursor.cwd)) invalid(name, "cursor.cwd");
   }
   const opencode = entry.opencode;
   if (opencode) {

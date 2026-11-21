@@ -47,13 +47,18 @@ async function groupStopped(pid: number) {
   return false;
 }
 
+const stopGraceMs = 12_000;
+// The acknowledgement has to outlast the grace kill, groupStopped's one second poll, and the
+// stopped update. A prompt abort still returns as soon as native_launches.stopped is set.
+const stopConfirmMs = 20_000;
+
 function stopRunner(child: ChildProcess | undefined) {
   if (!child || stopping.has(child) || child.exitCode !== null || child.signalCode !== null) return;
   stopping.add(child);
   if (child.connected) child.send("stop", () => { });
   // Longer than Cursor's 5s close and OpenCode's 2s close so private files are removed first.
   // killNativeGroup still signals the group when the leader has already exited.
-  const timeout = setTimeout(() => killNativeGroup(child), 12_000);
+  const timeout = setTimeout(() => killNativeGroup(child), stopGraceMs);
   timeout.unref();
   child.once("close", () => clearTimeout(timeout));
 }
@@ -267,7 +272,7 @@ async function handle(launch: Launch, action: "start" | "stop") {
       }
     });
     stopRunner(active.get(launch.token));
-    const until = Date.now() + 6000;
+    const until = Date.now() + stopConfirmMs;
     while (Date.now() < until) {
       const { rows: [admitted] } = await pool.query<{ stopped: boolean }>(
         "SELECT stopped FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND token=$3",
