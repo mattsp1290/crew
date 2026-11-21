@@ -119,7 +119,7 @@ function toolSchema(tool: CodexHold["tool"]): Readonly<Record<string, unknown>> 
   if (tool === "choose_next_step") return { type: "object", additionalProperties: false, properties: {} };
   return {
     type: "object", additionalProperties: false, required: ["operation_id"],
-    properties: { operation_id: { type: "string" }, note: { type: "string", maxLength: 4096 } },
+    properties: { operation_id: { type: "string" }, note: { type: "string", maxLength: 4096, description: "At most 4096 UTF-8 bytes." } },
   };
 }
 

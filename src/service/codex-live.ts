@@ -1,12 +1,13 @@
 import { Client, Connection } from "@temporalio/client";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Pool } from "pg";
+import { z } from "zod";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { confirmDelivery, interruptLive, proposeLive, settleLive } from "./codex-calls.ts";
 import { codexToolContinuation, type CodexHold, type CodexToolCall } from "./codex.ts";
 import type { DeferredTool, ToolOutcome } from "./deferral.ts";
 import type { Launch } from "./supervisor.ts";
-import type { Conversation } from "./domain.ts";
+import { MemberStoreError, type Conversation } from "./domain.ts";
 import { temporalConnectionOptions, type TemporalSettings } from "./temporal-config.ts";
 
 function resultText(outcome: ToolOutcome) {
@@ -90,6 +91,10 @@ async function answer(
     }
     throw new Error("Native tool decision expired or interrupted");
   } catch (error) {
+    if ((error instanceof MemberStoreError && error.code === "conflict") || error instanceof z.ZodError) {
+      stop();
+      throw new Error("Native tool proposal was rejected", { cause: error });
+    }
     await interruptLive(pool, launch);
     stop();
     throw new Error("Native tool call interrupted", { cause: error });

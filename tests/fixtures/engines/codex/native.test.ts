@@ -31,17 +31,21 @@ async function rolloutFile(home: string, nativeId: string) {
 test("Codex resumes the pinned rollout, rejects damaged or untrusted native storage before inference", { timeout: 40_000 }, async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "birb-codex-ready-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
-  const provider = await startProvider();
+  const prompts: string[] = [];
+  const provider = await startProvider(undefined, (prompt) => { prompts.push(prompt); });
   t.after(provider.close);
   const profile = { ownerId: randomUUID(), memberId: randomUUID(), model: "gpt-5.4", baseUrl: provider.url, stateDir };
   const threadId = randomUUID(), fact = randomUUID();
   const seen: string[] = [], text: string[] = [];
   const input = { threadId, runId: randomUUID(), text: "remember " + fact, signal: t.signal, checkpoint: null,
     projectContext: "Fixture project context " + randomUUID(), onThreadStarted: (id: string) => { seen.push(id); }, onText: (s: string) => { text.push(s); } };
-  const first = await runCodexTurn(input, profile);
-  const second = await runCodexTurn({ ...input, runId: randomUUID(), text: "recall", checkpoint: first.checkpoint }, profile);
+  const hold = { tool: "record_work_item" as const, answer() { throw new Error("remember or recall became a tool call"); } };
+  const first = await runCodexTurn({ ...input, hold }, profile);
+  const second = await runCodexTurn({ ...input, hold, runId: randomUUID(), text: "recall", checkpoint: first.checkpoint }, profile);
+  assert.deepEqual(prompts, [input.text, "recall"]);
   assert.deepEqual(seen, [first.checkpoint.state.nativeId, first.checkpoint.state.nativeId]);
   assert.deepEqual(text, ["stored " + fact, "recalled " + fact]);
+  assert.deepEqual([first.text, second.text], ["stored " + fact, "recalled " + fact]);
   for (const req of provider.requests) assert.ok(JSON.stringify(req).includes(input.projectContext));
   const home = join(stateDir, "codex", first.checkpoint.state.ownerDigest, profile.memberId, threadId, "home");
   const again = { ...input, runId: randomUUID(), text: "recall", checkpoint: second.checkpoint };
@@ -271,7 +275,9 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   for (const value of [receipt, denied]) {
     operation = randomUUID();
     outcome = value;
-    const r = await runCodexTurn({ threadId, runId: operation, text: "record " + operation, checkpoint, signal: t.signal,
+    const runId = value === receipt ? operation : randomUUID();
+    if (value === denied) assert.notEqual(runId, operation);
+    const r = await runCodexTurn({ threadId, runId, text: "record " + operation, checkpoint, signal: t.signal,
       hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile);
     checkpoint = r.checkpoint;
     assert.equal(r.text, "settled");
@@ -282,8 +288,9 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   assert.equal(calls[0]!.thread, calls[1]!.thread);
   assert.deepEqual(confirmation, [receipt, denied]);
   assert.equal(shapes.length, 4);
+  assert.ok(namespaces >= 1);
   assert.equal(schemas.length, namespaces);
-  if (namespaces) assert.equal(new Set(schemas).size, 1);
+  assert.equal(new Set(schemas).size, 1);
   operation = randomUUID();
   tool = "undeclared_private_tool";
   await assert.rejects(runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
