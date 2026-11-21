@@ -75,6 +75,21 @@ export function claudeWorkerLaunch(
   directory: string, nodeArgs: string[], extraEnv: NodeJS.ProcessEnv = {}, invocationGroup?: number,
 ) {
   const source = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
+  const env: NodeJS.ProcessEnv = {
+    ...extraEnv,
+    PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
+    ...(invocationGroup ? { BIRBCREW_INVOCATION_GROUP: String(invocationGroup) } : {}),
+    HOME: directory,
+    TMPDIR: join(directory, "tmp"),
+    BIRBCREW_CLAUDE_WORKER: "1",
+    BIRBCREW_NATIVE_SOURCE: source,
+    // Descriptor 3 is the stdio index of "ipc", which Node also publishes as NODE_CHANNEL_FD.
+    BIRBCREW_NATIVE_CHANNEL: "3",
+  };
+  delete env.BIRBCREW_NATIVE_BINARY;
+  delete env.BIRBCREW_NATIVE_PARENT;
+  delete env.BIRBCREW_NATIVE_WORKSPACE;
+  delete env.BIRBCREW_NATIVE_PROVIDER_PORT;
   return {
     command: join(source, ".proof/bin/member-launch"),
     args: [String(process.pid), process.execPath, ...nodeArgs],
@@ -82,16 +97,7 @@ export function claudeWorkerLaunch(
       cwd: directory,
       detached: !invocationGroup,
       stdio: ["ignore", "ignore", "ignore", "ipc"] as ["ignore", "ignore", "ignore", "ipc"],
-      env: {
-        ...extraEnv,
-        PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
-        ...(invocationGroup ? { BIRBCREW_INVOCATION_GROUP: String(invocationGroup) } : {}),
-        HOME: directory,
-        TMPDIR: join(directory, "tmp"),
-        BIRBCREW_CLAUDE_WORKER: "1",
-        BIRBCREW_NATIVE_SOURCE: source,
-        BIRBCREW_NATIVE_CHANNEL: "3",
-      },
+      env,
     },
   };
 }

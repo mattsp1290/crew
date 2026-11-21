@@ -229,7 +229,9 @@ int main(int argc, char **argv) {
     // The Claude worker loads the SDK from this checkout and keeps Node's IPC socket.
     // It may start the Claude CLI, which this program confines again. Network rules wait
     // for C2b: the vendored adapter binds an ephemeral loopback MCP port after the ruleset is sealed.
-    const int claude_worker = !codex && getenv("BIRBCREW_CLAUDE_WORKER") != NULL;
+    const int claude_flag = getenv("BIRBCREW_CLAUDE_WORKER") != NULL;
+    if (codex && claude_flag) return 126;
+    const int claude_worker = claude_flag;
     const char *worker_root = claude_worker ? getenv("BIRBCREW_NATIVE_SOURCE") : NULL;
     // Pi runs its SDK in a Node worker that loads Crew's code from this checkout and talks only to its host.
     const char *source = codex || claude_worker ? NULL : getenv("BIRBCREW_NATIVE_SOURCE");

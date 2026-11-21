@@ -64,7 +64,8 @@ which would otherwise bypass the filter.
   `src/service`, the compiled client under `packages/client/dist`, and
   `.proof/bin/member-launch`. It may write only its conversation directory. It
   may start a process, and the Claude CLI is started again through this
-  launcher, which confines that CLI to the conversation directory. `setsid` and
+  launcher, which confines that CLI's filesystem to the conversation directory
+  and does not handle network either. `setsid` and
   `setpgid` stay denied, so the worker cannot leave the process group its host
   kills. The launcher keeps the Node IPC socket and refuses to start unless
   that descriptor is a socket. The worker's network is not restricted: the
@@ -191,15 +192,23 @@ that its worker has `no_new_privs`, one more seccomp filter than the test
 process, and only `HOME` and `TMPDIR` in its environment, and that the launcher
 refuses a Pi worker started without descriptor 3.
 `tests/fixtures/engines/claude/confinement.test.ts` proves the Claude worker
-policy. A probe may read the worker and its dependencies, write its private
-directory, and start a nested launcher process. It gets `EACCES` for a sibling
-file, a test file, the docs tree, client source, and its host's environment.
-`setsid` returns `EPERM`. A loopback TCP connect still succeeds, because
-network confinement waits for C2b with the ephemeral MCP port. The same test
-runs a fixture turn and checks that the worker has `no_new_privs`, one more
-seccomp filter than the test process, and a command of Node plus
-`claude-worker.ts`, and that the launcher flags are gone from its environment.
-The launcher refuses a Claude worker whose channel is not a socket.
+policy. A probe may read the worker and its dependencies and write its private
+directory. It gets `EACCES` when it reads or writes a sibling file, reads a
+test file, reads or appends the docs tree, reads client source, reads its
+host's environment, writes `src/service`, `node_modules`, or the compiled
+client, or executes a script it just wrote in the conversation directory.
+`setsid` returns `EPERM`. A nested launcher process cannot read the sibling
+file or the worker source: that second ruleset confines the CLI to the
+conversation directory and does not handle network either. A loopback TCP
+connect from the worker still succeeds, because network confinement waits for
+C2b with the ephemeral MCP port. The same test runs a fixture turn and checks
+that the worker has `no_new_privs`, one more seccomp filter than the test
+process, that each CLI child has one more seccomp filter than the worker, and
+a command of Node plus `claude-worker.ts`. The launcher flags and a host
+sentinel are absent from its environment. The launcher refuses a Claude worker
+whose channel is not a socket.
+`tests/fixtures/engines/claude/durable.test.ts` proves a direct CLI launch
+gets `EACCES` on a sibling owner's file.
 `tests/fixtures/engines/codex/native.test.ts` proves the Codex filesystem
 policy.
 
