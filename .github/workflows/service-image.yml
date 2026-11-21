@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Refuse a base image without a digest
         run: |
-          if docker buildx build -f packaging/service.Dockerfile --target build \
+          if docker buildx build --no-cache -f packaging/service.Dockerfile --target build \
               --build-arg NODE_IMAGE=node:24.22.3-bookworm-slim . > guard.log 2>&1; then
             echo "The build accepted an unpinned base image" >&2
             exit 1
