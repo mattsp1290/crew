@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type { DriverInput } from "../../src/service/activities.ts";
 import { runOpenCodeTurn } from "../../src/service/opencode-turn.ts";
@@ -107,9 +108,11 @@ test("opencode refuses a slash prompt, a checkpoint, or project context before s
   };
   const member = conversation();
   await assert.rejects(runOpenCodeTurn(input(member.conversationId, { text: "/remember cedar" }), member, profile), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { text: "remember\n/cedar" }), member, profile), { message: "Text engine turn failed" });
   await assert.rejects(runOpenCodeTurn(input(member.conversationId, { checkpoint: { version: 1, engine: "opencode", state: {} } }), member, profile),
     { message: "Text engine turn failed" });
   await assert.rejects(runOpenCodeTurn(input(member.conversationId, { projectContext: "notes" }), member, profile), { message: "Text engine turn failed" });
+  await assert.rejects(runOpenCodeTurn(input(member.conversationId, { childResults: [] }), member, profile), { message: "Text engine turn failed" });
   assert.equal(spawned, 0);
   await rm(cwd, { recursive: true, force: true });
 });
@@ -126,10 +129,24 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
     else process.env.BIRBCREW_DATABASE_URL = previous;
   });
   const member = conversation();
+  const pidFile = join(cwd, "pids");
   const profile = (mode: string): OpenCodeProfile => ({
     model, executable, cwd, account: "ACCOUNT LABEL",
-    env: { PATH: process.env.PATH ?? "", OPENCODE_PEER_MODE: mode, OPENCODE_TOKEN: "kept" },
+    env: { PATH: process.env.PATH ?? "", OPENCODE_PEER_MODE: mode, OPENCODE_TOKEN: "kept", OPENCODE_PEER_PID_FILE: pidFile },
   });
+  async function assertLastExited() {
+    const pid = Number((await readFile(pidFile, "utf8")).trim().split("\n").at(-1));
+    assert.ok(pid > 0);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ESRCH") return;
+        throw error;
+      }
+      await delay(25);
+    }
+    assert.fail(`peer ${pid} still running`);
+  }
   const completed = await runOpenCodeTurn(input(member.conversationId), member, profile("complete"));
   assert.equal(completed.kind, "complete");
   if (completed.kind !== "complete") return;
@@ -137,11 +154,13 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
   assert.equal(JSON.stringify(completed).includes(secretDatabase), false);
   assert.equal(JSON.stringify(completed).includes("kept"), false);
   assert.equal(JSON.stringify(completed.checkpoint).includes(executable), true);
+  await assertLastExited();
 
   const lingering = await runOpenCodeTurn(input(member.conversationId), member, profile("linger"));
   assert.equal(lingering.kind, "complete");
   if (lingering.kind !== "complete") return;
   assert.equal(lingering.text, "cedar remembered");
+  await assertLastExited();
 
   for (const mode of ["tool", "permission", "fs-read", "fs-write", "terminal"]) {
     const error = await runOpenCodeTurn(input(member.conversationId), member, profile(mode)).then(() => undefined, (caught: unknown) => caught);
@@ -153,5 +172,6 @@ test("the default opencode spawn speaks ACP with the profile environment", { tim
     assert.equal(encoded.includes("/secret/file"), false);
     assert.equal(encoded.includes("secret-command"), false);
     assert.equal("pending" in error, false);
+    await assertLastExited();
   }
 });

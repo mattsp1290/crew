@@ -12,6 +12,16 @@ export type ChildEngine = z.infer<typeof childEngineSchema>;
 export function isTextEngine(engine: Engine): engine is "cursor" | "opencode" {
   return engine === "cursor" || engine === "opencode";
 }
+/** OpenCode refuses a slash command, including one later in the prompt, and C0/C1 controls other than tab, LF, and CR. */
+export function opencodePromptRejected(text: string): boolean {
+  if (text.split(/\r\n|\n|\r/).some((line) => line.trimStart().startsWith("/"))) return true;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code === 9 || code === 10 || code === 13) continue;
+    if (code <= 31 || (code >= 127 && code <= 159)) return true;
+  }
+  return false;
+}
 const ownerId = boundedText(256);
 const uuid = requestIdentitySchema.shape.requestId;
 export const spawnSchema = createMemberSchema.extend({ ownerId });

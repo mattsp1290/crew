@@ -15,6 +15,7 @@ import { HandoffApi } from "../../src/service/handoffs.ts";
 import { MemoryApi } from "../../src/service/memories.ts";
 import type { MemberProfile } from "../../src/service/profiles.ts";
 import { MemberStore } from "../../src/service/store.ts";
+import { TrustedContextStore } from "../../src/service/trusted-context.ts";
 
 const run = promisify(execFile);
 const url = process.env.BIRBCREW_TEST_DATABASE_URL;
@@ -45,6 +46,10 @@ test("text-engine profiles store no volume and claude still requires one", async
   const claude: MemberProfile = {
     accountId, claude: { model: "claude-sonnet-4-6", apiKey: "synthetic", baseUrl: "https://api.anthropic.com" } as MemberProfile["claude"],
   };
+  const badEnv: MemberProfile = {
+    accountId, opencode: { model: "provider/model", executable: join(cwd, "opencode"), cwd, account: "ACCOUNT LABEL", env: { "NOT VALID": "x" } },
+  };
+  await assert.rejects(registerProfiles(pool, new Map([["text-bad-env.v1", badEnv]]), directory), /opencode\.env/);
   await registerProfiles(pool, new Map([["text-cursor.v1", cursor], ["text-opencode.v1", opencode], ["text-claude.v1", claude]]), directory);
   const { rows } = await pool.query<{ name: string; volume: string | null }>(
     "SELECT name, volume FROM birbcrew_ts.profiles WHERE name LIKE 'text-%' ORDER BY name");
@@ -135,6 +140,34 @@ test("a text engine admits one request and a pi conversation without a usage bud
   await store.checkAdmission({ ownerId: pi.ownerId, conversationId: piConversation, requestId: randomUUID(), text: "pi" });
   await store.recordAcceptance({ ownerId: pi.ownerId, conversationId: piConversation, requestId: randomUUID(), text: "pi" }, ownerInitiator);
   await store.checkAdmission({ ownerId: pi.ownerId, conversationId: piConversation, requestId: randomUUID(), text: "again" });
+});
+
+test("an opencode slash prompt is refused before it takes the only turn", async () => {
+  const member = await spawned("opencode");
+  const conversationId = randomUUID();
+  await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+  const rejected = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "/remember cedar" };
+  await assert.rejects(store.checkAdmission(rejected), { code: "conflict" });
+  await assert.rejects(store.recordAcceptance(rejected, ownerInitiator), { code: "conflict" });
+  const hidden = { ...rejected, requestId: randomUUID(), text: "remember\n/cedar" };
+  await assert.rejects(store.recordAcceptance(hidden, ownerInitiator), { code: "conflict" });
+  assert.equal((await pool.query("SELECT count(*) FROM birbcrew_ts.request_admissions WHERE conversation_id = $1", [conversationId])).rows[0].count, "0");
+  assert.equal((await pool.query("SELECT count(*) FROM birbcrew_ts.turns WHERE conversation_id = $1", [conversationId])).rows[0].count, "0");
+  await store.recordAcceptance({ ...rejected, requestId: randomUUID(), text: "remember cedar" }, ownerInitiator);
+  assert.equal((await pool.query("SELECT count(*) FROM birbcrew_ts.request_admissions WHERE conversation_id = $1", [conversationId])).rows[0].count, "1");
+});
+
+test("a cursor conversation cannot open a trusted session", async () => {
+  const member = await spawned("cursor");
+  const conversationId = randomUUID();
+  await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+  const trusted = new TrustedContextStore(pool, { id: "text-member", tools: [], async authorize() { return true; } });
+  await assert.rejects(trusted.open(
+    { ownerId: member.ownerId, conversationId },
+    { scope: "scope", version: "v1", text: "context" },
+  ), { code: "denied" });
+  assert.equal((await pool.query("SELECT count(*) FROM birbcrew_ts.trusted_sessions WHERE conversation_id = $1", [conversationId])).rows[0].count, "0");
+  assert.equal((await pool.query("SELECT count(*) FROM birbcrew_ts.trusted_requests WHERE conversation_id = $1", [conversationId])).rows[0].count, "0");
 });
 
 test("the database rejects a turn limit of 1 on pi and 128 on cursor", async () => {

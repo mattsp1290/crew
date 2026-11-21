@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,7 +15,7 @@ const model = "composer-2";
 const toolArguments = { command: "rm -rf SECRET_TOOL" };
 const toolResult = "SECRET_TOOL_RESULT";
 
-function member(state: { cwd: string }): { member: Conversation; input: (extra?: Partial<DriverInput>) => DriverInput; directory: (ownerId: string, memberId: string) => string } {
+function member(state: { cwd: string }): { member: Conversation; input: (extra?: Partial<DriverInput>) => DriverInput; directory: (ownerId: string, memberId: string, conversationId: string) => string } {
   const conversation: Conversation = {
     ownerId: randomUUID(), memberId: randomUUID(), conversationId: randomUUID(), engine: "cursor", profile: "cursor.v1",
   };
@@ -25,7 +25,7 @@ function member(state: { cwd: string }): { member: Conversation; input: (extra?:
       threadId: conversation.conversationId, runId: randomUUID(), text: "remember cedar", checkpoint: null,
       signal: new AbortController().signal, ...extra,
     }),
-    directory: (ownerId, memberId) => join(state.cwd, "cursor", createHash("sha256").update(ownerId).digest("hex"), memberId),
+    directory: (ownerId, memberId, conversationId) => join(state.cwd, "cursor", createHash("sha256").update(ownerId).digest("hex"), memberId, conversationId),
   };
 }
 
@@ -42,7 +42,6 @@ test("a cursor turn commits the last snapshot and publishes only the new suffix"
         async start({ onEvent }) {
           onEvent({ kind: "text", text: "cedar " });
           onEvent({ kind: "text", text: "cedar remembered" });
-          onEvent({ kind: "tool", arguments: toolArguments, result: toolResult } as { kind: string });
           onEvent({ kind: "ended", outcome: "completed" });
           return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
         },
@@ -63,7 +62,7 @@ test("a cursor turn commits the last snapshot and publishes only the new suffix"
   assert.equal("pending" in result, false);
   assert.deepEqual(result.checkpoint, {
     version: 1, engine: "cursor",
-    state: { model, cwd: stateDir, sessionDirectory: place.directory(place.member.ownerId, place.member.memberId), agentId: "agent-1" },
+    state: { model, cwd: stateDir, sessionDirectory: place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId), agentId: "agent-1" },
   });
   const encoded = JSON.stringify(result);
   assert.equal(encoded.includes(apiKey), false);
@@ -74,11 +73,27 @@ test("a cursor turn commits the last snapshot and publishes only the new suffix"
   await rm(stateDir, { recursive: true, force: true });
 });
 
-test("a cursor snapshot that does not extend the previous one stops publication and is still the reply", async () => {
+test("a cursor tool event or a snapshot that does not extend the previous one fails the turn", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
   const place = member({ cwd: stateDir });
-  const published: string[] = [];
-  const profile: CursorProfile = {
+  const tool: CursorProfile = {
+    model, apiKey, cwd: stateDir,
+    runtime: () => ({
+      async start({ onEvent }) {
+        onEvent({ kind: "text", text: "cedar " });
+        onEvent({ kind: "tool", arguments: toolArguments, result: toolResult } as { kind: string });
+        onEvent({ kind: "ended", outcome: "completed" });
+        return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
+      },
+      async close() {},
+    }),
+  };
+  const toolError = await runCursorTurn(place.input(), place.member, tool, stateDir).then(() => undefined, (caught: unknown) => caught);
+  assert.ok(toolError instanceof Error);
+  assert.equal(toolError.message, "Text engine turn failed");
+  assert.equal(String(toolError).includes("SECRET_TOOL"), false);
+  await assert.rejects(access(place.directory(place.member.ownerId, place.member.memberId, place.member.conversationId)));
+  const replaced: CursorProfile = {
     model, apiKey, cwd: stateDir,
     runtime: () => ({
       async start({ onEvent }) {
@@ -90,11 +105,7 @@ test("a cursor snapshot that does not extend the previous one stops publication 
       async close() {},
     }),
   };
-  const result = await runCursorTurn({ ...place.input(), onText(delta) { published.push(delta); } }, place.member, profile, stateDir);
-  assert.equal(result.kind, "complete");
-  if (result.kind !== "complete") return;
-  assert.equal(result.text, "replaced");
-  assert.deepEqual(published, ["cedar "]);
+  await assert.rejects(runCursorTurn(place.input(), place.member, replaced, stateDir), { message: "Text engine turn failed" });
   await rm(stateDir, { recursive: true, force: true });
 });
 
@@ -142,6 +153,7 @@ test("cursor refuses a checkpoint or project context before start", async () => 
   const checkpoint = { version: 1 as const, engine: "cursor" as const, state: {} };
   await assert.rejects(runCursorTurn(place.input({ checkpoint }), place.member, profile, stateDir), { message: "Text engine turn failed" });
   await assert.rejects(runCursorTurn(place.input({ projectContext: "notes" }), place.member, profile, stateDir), { message: "Text engine turn failed" });
+  await assert.rejects(runCursorTurn(place.input({ childResults: [] }), place.member, profile, stateDir), { message: "Text engine turn failed" });
   assert.equal(starts, 0);
   await rm(stateDir, { recursive: true, force: true });
 });

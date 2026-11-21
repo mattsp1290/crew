@@ -233,7 +233,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
     return { kind: "complete", text };
   } finally {
     const runner = active.get(launch.token);
-    if (runner && !confirmed) killNativeGroup(runner);
+    if (runner && !reaped) killNativeGroup(runner);
     active.delete(launch.token);
     if (!runner || reaped || (runner.pid && await groupStopped(runner.pid))) {
       await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND request_id=$2 AND token=$3", args);

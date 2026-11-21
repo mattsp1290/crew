@@ -1,33 +1,27 @@
 import { spawn } from "node:child_process";
 import type { DriverInput, DriverResult } from "./activities.ts";
-import { turnTextBytes } from "./domain.ts";
+import { opencodePromptRejected, turnTextBytes } from "./domain.ts";
 import type { Conversation } from "./domain.ts";
 import type { OpenCodeProfile, OpenCodeSpawnRequest, OpenCodeSpawned } from "./profiles.ts";
 
 const failed = () => new Error("Text engine turn failed");
-const exitUnobserved = "OpenCode process exit was not observed.";
 const maxPrompt = 1_048_576;
 
 function promptAllowed(value: string) {
-  if (value.length < 1 || Buffer.byteLength(value) > maxPrompt || value.startsWith("/")) return false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code === 9 || code === 10 || code === 13) continue;
-    if (code <= 31 || (code >= 127 && code <= 159)) return false;
-  }
-  return true;
+  return value.length >= 1 && Buffer.byteLength(value) <= maxPrompt && !opencodePromptRejected(value);
 }
 function sameEnvironment(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>) {
   const leftKeys = Object.keys(left);
   const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
 }
-function spawnProcess(request: OpenCodeSpawnRequest): OpenCodeSpawned {
+function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal): OpenCodeSpawned {
   const child = spawn(request.args[0], request.args.slice(1), {
     cwd: request.cwd, env: { ...request.env }, stdio: ["pipe", "pipe", "pipe"],
   });
   child.stderr?.on("data", () => undefined);
   let settled = false;
+  let closing = false;
   let resolveExit: (value: unknown) => void = () => undefined;
   let rejectExit: (error: unknown) => void = () => undefined;
   const processExit = new Promise((resolve, reject) => { resolveExit = resolve; rejectExit = reject; });
@@ -37,7 +31,16 @@ function spawnProcess(request: OpenCodeSpawnRequest): OpenCodeSpawned {
     if (ok) resolveExit(undefined);
     else rejectExit(new Error("exit"));
   };
-  child.once("exit", (code) => finish(code === 0));
+  const stop = () => {
+    closing = true;
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  };
+  if (signal.aborted) stop();
+  else signal.addEventListener("abort", stop, { once: true });
+  child.once("exit", (code) => {
+    signal.removeEventListener("abort", stop);
+    finish(code === 0 || closing);
+  });
   child.once("error", () => finish(false));
   return {
     processExit,
@@ -64,14 +67,18 @@ function spawnProcess(request: OpenCodeSpawnRequest): OpenCodeSpawned {
           });
         });
       },
-      endInput() { child.stdin?.end(); },
+      endInput() {
+        closing = true;
+        child.stdin?.end();
+        stop();
+      },
     },
   };
 }
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
 export async function runOpenCodeTurn(input: DriverInput, _member: Conversation, profile: OpenCodeProfile): Promise<DriverResult> {
-  if (input.checkpoint !== null || input.projectContext !== undefined || !promptAllowed(input.text)) throw failed();
+  if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation || !promptAllowed(input.text)) throw failed();
   const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
   const opened = await opencodeHostAdapter.open({
     model: profile.model,
@@ -97,8 +104,7 @@ export async function runOpenCodeTurn(input: DriverInput, _member: Conversation,
     });
     const closed = await adapter.close();
     const text = result.kind === "complete" ? result.text : "";
-    if (result.kind !== "complete" || text.length === 0 || Buffer.byteLength(text) > turnTextBytes) throw failed();
-    if (closed.kind === "error" && closed.error.message !== exitUnobserved) throw failed();
+    if (result.kind !== "complete" || text.length === 0 || Buffer.byteLength(text) > turnTextBytes || closed.kind !== "ok") throw failed();
     return {
       kind: "complete", text,
       checkpoint: {

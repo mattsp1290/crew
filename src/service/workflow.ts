@@ -4,7 +4,7 @@ import {
 } from "@temporalio/workflow";
 import { workflowGenerationTurnLimit, historyRequiresRollover } from "./limits.ts";
 import { acceptsChoice } from "./deferral.ts";
-import { isTextEngine, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
+import { isTextEngine, opencodePromptRejected, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
 import type { Approval, Decision, Choice } from "./approvals.ts";
 import type { ChildKey, ChildStore } from "./children.ts";
 import { childTarget } from "./child-target.ts";
@@ -320,14 +320,19 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     void admission.catch(() => {}); // Also observed by the queued runner and admission handler.
     const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string> };
     inFlight++;
+    let textBudgetRejection = false;
     const result = previous.then(async () => {
       try { await entry.admission; }
       catch (error) {
-        // A second text-engine request loses the one-turn budget. Reject the admission and leave
-        // the committed turn's workflow open. Older histories stay on the retryable path.
-        if (patched("text-engine-budget-v1") && isTextEngine(conversation.engine) && applicationFailure(error, "input_limit")) {
+        // A second text-engine request loses the one-turn budget, or OpenCode refuses the prompt
+        // before a row exists. Fail this update and leave the committed turn's workflow open.
+        // Older histories stay on the retryable path.
+        const promptRefusal = conversation.engine === "opencode" && applicationFailure(error, "conflict") && opencodePromptRejected(request.text);
+        if (patched("text-engine-budget-v1") && isTextEngine(conversation.engine) && (applicationFailure(error, "input_limit") || promptRefusal)) {
           await rejectUnstartedAdmission(request);
-          return request.requestId;
+          turns.delete(request.requestId);
+          textBudgetRejection = true;
+          throw error;
         }
         // The SQL admission may have committed even if Temporal lost every ack.
         // Persist a no-execution outcome before closing whenever storage is available.
@@ -342,7 +347,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     });
     entry.result = result;
     turns.set(request.requestId, entry);
-    previous = result.then(() => { inFlight--; }, () => { inFlight--; failed = true; });
+    previous = result.then(() => { inFlight--; }, () => { inFlight--; if (!textBudgetRejection) failed = true; });
     return entry;
   }
   setHandler(submitTurn, value => enqueue(value).result, { validator: validate });

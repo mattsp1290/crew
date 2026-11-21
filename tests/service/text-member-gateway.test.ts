@@ -103,7 +103,8 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
   const temporal = new Client({ connection, namespace: temporalSettings(process.env).namespace });
   const token = randomUUID();
   const ownerId = randomUUID();
-  const server = createGateway(store, new MemberClient(store, temporal), { [createHash("sha256").update(token).digest("hex")]: ownerId });
+  const members = new MemberClient(store, temporal);
+  const server = createGateway(store, members, { [createHash("sha256").update(token).digest("hex")]: ownerId });
   const stderr: Buffer[] = [];
   const worker = spawn(process.execPath, ["src/service/cli.ts", "worker", config], {
     cwd: fileURLToPath(new URL("../..", import.meta.url)),
@@ -203,5 +204,23 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
     assert.equal(await count(kind), before + 2);
     const described = await temporal.workflow.getHandle(`birbcrew-ts/member/${memberId}/conversation/${other}`).describe();
     assert.notEqual(described.status.name, "FAILED");
+    if (engine === "cursor") {
+      const submitConversation = randomUUID();
+      assert.equal((await call("POST", "/conversations", { memberId, conversationId: submitConversation })).status, 201);
+      const left = randomUUID();
+      const right = randomUUID();
+      const submits = await Promise.allSettled([
+        members.submit({ ownerId, conversationId: submitConversation, requestId: left, text: "remember cedar" }),
+        members.submit({ ownerId, conversationId: submitConversation, requestId: right, text: "remember cedar" }),
+      ]);
+      const fulfilled = submits.filter((entry) => entry.status === "fulfilled");
+      const rejectedSubmit = submits.find((entry) => entry.status === "rejected");
+      assert.equal(fulfilled.length, 1);
+      assert.equal(fulfilled[0].status === "fulfilled" && fulfilled[0].value, reply);
+      assert.equal(rejectedSubmit?.status, "rejected");
+      assert.equal(rejectedSubmit.reason.code, "input_limit");
+      const submitWorkflow = await temporal.workflow.getHandle(`birbcrew-ts/member/${memberId}/conversation/${submitConversation}`).describe();
+      assert.notEqual(submitWorkflow.status.name, "FAILED");
+    }
   }
 });

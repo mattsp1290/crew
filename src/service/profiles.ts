@@ -98,7 +98,10 @@ export function assertTextProfile(name: string, entry: MemberProfile) {
     if (!resolvedPath(opencode.cwd) || !identifier(opencode.cwd)) invalid(name, "opencode.cwd");
     if (!identifier(opencode.account)) invalid(name, "opencode.account");
     if (opencode.env === null || typeof opencode.env !== "object" || Array.isArray(opencode.env)) invalid(name, "opencode.env");
-    for (const value of Object.values(opencode.env)) if (typeof value !== "string") invalid(name, "opencode.env");
+    const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+    for (const [key, value] of Object.entries(opencode.env)) {
+      if (!envName.test(key) || typeof value !== "string" || controlCharacter(value, false)) invalid(name, "opencode.env");
+    }
   }
 }
 

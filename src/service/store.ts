@@ -24,7 +24,7 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  isTextEngine, MemberStoreError, openSchema, ownerInitiator, requestInitiator, submitSchema, turnRequestSchema,
+  isTextEngine, MemberStoreError, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, turnRequestSchema,
   type BeginTurn, type Conversation, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 
@@ -85,6 +85,7 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
   if(existingTurn) {
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
+    if (conversation.engine === "opencode" && opencodePromptRejected(key.text)) throw new MemberStoreError("conflict");
     const {rows:[budget]}=await db.query<{limit:number;used:number}>(`SELECT turn_limit AS "limit",
       (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
        UNION SELECT request_id FROM birbcrew_ts.turns WHERE conversation_id=$1) ids)::integer AS used
@@ -134,9 +135,18 @@ export function ownerAdmissionActivity(store: MemberStore) {
       // Retrying cannot change a budget refusal within the activity's deadline. MemberClient
       // reads this failure type back as usage_limit_closed.
       if (error instanceof MemberStoreError && error.code === "usage_limit") throw ApplicationFailure.nonRetryable("usage_limit", "usage_limit");
+      if (error instanceof MemberStoreError && error.code === "conflict") {
+        const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId }).catch(() => undefined);
+        if (conversation?.engine === "opencode" && opencodePromptRejected(request.text)) throw ApplicationFailure.nonRetryable("conflict", "conflict");
+      }
       if (error instanceof MemberStoreError && error.code === "input_limit") {
-        const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
-        if (isTextEngine(conversation.engine)) throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
+        try {
+          const conversation = await store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
+          if (isTextEngine(conversation.engine)) throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
+        } catch (readError) {
+          if (readError instanceof ApplicationFailure) throw readError;
+          throw ApplicationFailure.nonRetryable("input_limit", "input_limit");
+        }
       }
       throw error;
     }
@@ -314,6 +324,7 @@ export class MemberStore {
     if (turn.rowCount) return;
     if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
     submitSchema.parse(key);
+    if (conversation.engine === "opencode" && opencodePromptRejected(key.text)) throw new MemberStoreError("conflict");
     if (isTextEngine(conversation.engine)) {
       const { rows: [budget] } = await this.pool.query<{ limit: number; used: number }>(`SELECT turn_limit AS "limit",
         (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
