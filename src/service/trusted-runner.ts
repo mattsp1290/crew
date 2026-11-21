@@ -14,6 +14,7 @@ import { checkedPrices, operatorPrices, type PriceTable } from "./usage-prices.t
  */
 export async function runTrustedRequest(store: TrustedContextStore, key: TrustedKey, profile: TrustedNativeProfile, signal: AbortSignal,
   prices: PriceTable | null = operatorPrices()) {
+  if (profile.engine === "codex") throw new Error("Codex trusted lane was removed");
   const table = checkedPrices(prices);
   const start = await store.begin(key);
   if (!start) return null;

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { runTrustedPi } from "./trusted-pi.ts";
 import { runTrustedClaude } from "./trusted-claude.ts";
-import { runTrustedCodex } from "./trusted-codex.ts";
 import type { TrustedNativeInput, TrustedNativeProfile, TrustedNativeResult } from "./trusted-native-types.ts";
 export type { TrustedNativeInput, TrustedNativeTool, TrustedNativeProfile } from "./trusted-native-types.ts";
 
@@ -12,6 +11,7 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 
 /** Host-only seam. Never construct this input from AG-UI tools/context or client labels. */
 export async function runTrustedNativeTurn(input: TrustedNativeInput, profile: TrustedNativeProfile) {
+  if (profile.engine === "codex" || input.engine === "codex") throw new Error("Codex trusted lane was removed");
   input = {...input,signal:AbortSignal.any([input.signal,AbortSignal.timeout(170_000)])};
   input.signal.throwIfAborted();
   z.uuid().parse(input.threadId); z.uuid().parse(input.runId);
@@ -60,7 +60,7 @@ export async function runTrustedNativeTurn(input: TrustedNativeInput, profile: T
     },
   };
   const result: TrustedNativeResult = profile.engine === "pi" ? await runTrustedPi(bounded,profile.profile) :
-    profile.engine === "claude" ? await runTrustedClaude(bounded,profile.profile) : await runTrustedCodex(bounded,profile.profile);
+    await runTrustedClaude(bounded,profile.profile);
   input.signal.throwIfAborted();
   const checkpoint = envelope.parse({version:1,engine:input.engine,threadId:input.threadId,binding:input.binding,capabilities,state:result.checkpoint});
   if (Buffer.byteLength(JSON.stringify(checkpoint)) > 4 * 1024 * 1024) throw new Error("Trusted checkpoint exceeds 4 MiB");

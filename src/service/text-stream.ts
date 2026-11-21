@@ -1,11 +1,27 @@
 import type { Pool, PoolClient } from "pg";
 
+/** The third element of a Codex ledger id is the id the model can write. Other stored ids stay as they are. */
+export function proseCallId(id: string): string | undefined {
+  try {
+    const parts = JSON.parse(id);
+    if (!Array.isArray(parts) || parts.length !== 3) return undefined;
+    return typeof parts[2] === "string" && parts[2] !== "" ? parts[2] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Native correlation IDs can also appear in model-generated prose, including across delta boundaries.
 export async function nativeCallIds(db: Pool | PoolClient, conversationId: string) {
   const { rows } = await db.query<{ native_call_id: string }>(
     `SELECT native_call_id FROM birbcrew_ts.deferred_calls WHERE conversation_id=$1
      UNION SELECT native_call_id FROM birbcrew_ts.pi_children WHERE conversation_id=$1`, [conversationId]);
-  return rows.map((row) => row.native_call_id).sort((a, b) => b.length - a.length);
+  const ids = new Set(rows.map((row) => row.native_call_id));
+  for (const id of [...ids]) {
+    const prose = proseCallId(id);
+    if (prose) ids.add(prose);
+  }
+  return [...ids].sort((a, b) => b.length - a.length);
 }
 
 export async function textProjection(db: Pool | PoolClient, conversationId: string) {

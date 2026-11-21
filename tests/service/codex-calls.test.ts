@@ -5,12 +5,12 @@ import {setTimeout as delay} from "node:timers/promises";
 import {Pool} from "pg";
 import {ApprovalStore, type Approval, type Decision} from "../../src/service/approvals.ts";
 import {ApplicationFailure} from "@temporalio/client";
-import {answerLive,cancelLive,confirmDelivery,decideLiveActivity,interruptLive,proposeLive,settleLive} from "../../src/service/codex-calls.ts";
+import {answerLive,boundLiveArguments,cancelLive,confirmDelivery,decideLiveActivity,interruptLive,proposeLive,settleLive} from "../../src/service/codex-calls.ts";
+import {recordWorkItemArguments, type DeferredTool} from "../../src/service/deferral.ts";
+import {MemberStoreError, ownerInitiator} from "../../src/service/domain.ts";
 import {requestNativeStop,withNativeAdmission} from "../../src/service/native-admission.ts";
 import {readSnapshot} from "../../src/service/observation.ts";
 import {MemberStore} from "../../src/service/store.ts";
-import type {DeferredTool} from "../../src/service/deferral.ts";
-import {ownerInitiator} from "../../src/service/domain.ts";
 
 const pool = new Pool({connectionString:process.env.BIRBCREW_TEST_DATABASE_URL});
 const store = new MemberStore(pool);
@@ -51,6 +51,25 @@ function decision(a:Approval,choice:Decision["choice"]):Decision {
   const {ownerId,memberId,conversationId,requestId,invocationId,nativeCallId,approvalId,argumentDigest,version}=a;
   return {ownerId,memberId,conversationId,requestId,invocationId,nativeCallId,approvalId,argumentDigest,version,choice};
 }
+
+test("a live record stores the request id and the store still rejects the model's id", async () => {
+  const runId = randomUUID(), operation = randomUUID();
+  assert.notEqual(operation, runId);
+  assert.deepEqual(boundLiveArguments("record_work_item", runId, { operation_id: operation, note: "private fixture note" }),
+    { operation_id: runId, note: "private fixture note" });
+  assert.deepEqual(boundLiveArguments("record_work_item", runId, { operation_id: operation }), { operation_id: runId });
+  assert.deepEqual(boundLiveArguments("record_work_item", runId, { operation_id: operation, note: "" }), { operation_id: runId, note: "" });
+  assert.deepEqual(boundLiveArguments("choose_next_step", runId, {}), {});
+  assert.throws(() => recordWorkItemArguments.parse({ operation_id: runId, note: "é".repeat(4096) }),
+    /Expected valid UTF-8 text of at most 4096 bytes/);
+  const { scope, launch } = await conversation(await member("record_work_item"));
+  const ledger = new ApprovalStore(pool);
+  await assert.rejects(() => ledger.transaction(db => ledger.proposeLocked(db, {
+    ownerId: scope.ownerId, memberId: scope.memberId, conversationId: scope.conversationId, requestId: runId,
+    token: launch.token, invocationId: runId, nativeCallId: "call-bound", toolName: "record_work_item",
+    arguments: { operation_id: operation, note: "private fixture note" },
+  })), (error: unknown) => error instanceof MemberStoreError && error.code === "conflict");
+});
 
 test("live MCP consumes one authenticated decision and confirms native delivery once", async () => {
   const {scope,launch,proposal,writes,view}=await conversation(await member("record_work_item"));
@@ -202,9 +221,14 @@ for (const first of ["stop","effect"] as const) {
       const settling=()=>settleLive(pool,launch,a.approvalId);
       if (first==="stop") stop=stopping();
       else settle=settling();
+      // The operation's own statement, not another backend the gate happens to block.
+      const waiting = first === "stop"
+        ? "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE"
+        : "FOR UPDATE OF c";
       let blocked=false;
       for (let i=0;i<100 && !blocked;i++) {
-        const current=await pool.query("SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))",[blocker.pid]);
+        const current=await pool.query(`SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock'
+          AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE $2`, [blocker.pid, `%${waiting}%`]);
         blocked=Boolean(current.rowCount);
         if (!blocked) await delay(10);
       }

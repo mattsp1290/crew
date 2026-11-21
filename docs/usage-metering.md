@@ -26,14 +26,14 @@ fixture providers (`tests/service/usage-capture.test.ts`).
 
 | | Pi | Claude | Codex |
 | --- | --- | --- | --- |
-| SDK | `@earendil-works/pi-ai` 1.5.2 | `@anthropic-ai/claude-agent-sdk` 0.3.306 (CLI 2.1.306) through the vendored AG-UI adapter 0.0.8 | `@openai/codex-sdk` and CLI 0.167.1 |
-| Where Crew sees it | `usage` and `model` on each reply the host relayed from the provider to the segment's confined worker (`pi-launch.ts`, `pi.ts`) | `result.usage` on the adapter's `RUN_FINISHED` event, and `model` on its `system:init` event (`claude-worker.ts`) | `usage` on the `turn.completed` event (`codex.ts`) |
+| SDK | `@earendil-works/pi-ai` 1.5.2 | `@anthropic-ai/claude-agent-sdk` 0.3.306 (CLI 2.1.306) through the vendored AG-UI adapter 0.0.8 | Codex app-server 0.169.0 through Switchboard's host adapter |
+| Where Crew sees it | `usage` and `model` on each reply the host relayed from the provider to the segment's confined worker (`pi-launch.ts`, `pi.ts`) | `result.usage` on the adapter's `RUN_FINISHED` event, and `model` on its `system:init` event (`claude-worker.ts`) | the host adapter's cumulative `token-usage.total` (`codex.ts`) |
 | Input tokens | `input` + `cacheRead` + `cacheWrite` | `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` | `input_tokens`, which already includes cached tokens |
 | Cached input | `cacheRead` | `cache_read_input_tokens` | `cached_input_tokens` |
 | Cache writes | `cacheWrite` | `cache_creation_input_tokens` | `cache_write_input_tokens` |
 | Output tokens | `output` | `output_tokens` | `output_tokens` |
 | Reasoning tokens | `reasoning` when the provider reports it | not reported | `reasoning_output_tokens` |
-| Model | the one that answered: `responseModel` when the provider named a model other than the one requested, else `model`; null when the segment's calls name different models | as the CLI's `init` message reports it | the `turn_context` entries the CLI writes to the turn's rollout; null when they name none or more than one |
+| Model | the one that answered: `responseModel` when the provider named a model other than the one requested, else `model`; null when the segment's calls name different models | as the CLI's `init` message reports it | the profile model; the host adapter does not name the model that answered |
 | Billed cost | `cost.total` only when `cost.totalFromProvider` is true; otherwise pi-ai computed it from its model catalog, and Crew drops it | never: `total_cost_usd` is the SDK's estimate from a price lookup | never: nothing reported |
 | Estimated cost | from the operator's table when the segment has no billed cost | from the operator's table | from the operator's table |
 | Granularity | one model call per assistant message, summed over the segment | the one `query()` call that runs the segment | the native thread's running total |
@@ -41,14 +41,13 @@ fixture providers (`tests/service/usage-capture.test.ts`).
 
 Two of these needed a correction:
 
-- **Codex reports a running total, not the turn's usage.** The SDK's type comment
-  says the usage is "during the turn", but CLI 0.167.1 reports the total for the whole
-  native thread, carried across resumed turns. Against a fixture whose calls used 100,
-  200 and 300 input tokens, three turns reported 100, 300 and 600. The rollout that the
-  Codex checkpoint pins by SHA-256 holds the same total in its last `token_count`
-  event. So before a turn, Crew reads that total from the prior rollout, and after the
-  turn it records the new total minus the old one. If the prior rollout cannot be read,
-  or any count goes down, the segment is `unknown`.
+- **Codex reports a running total, not the turn's usage.** The host adapter's
+  cumulative `token-usage.total` counts the whole native thread, carried across resumed
+  turns. Against a fixture whose calls used 100, 200 and 300 input tokens, three turns
+  reported 100, 300 and 600. Crew stores that total on the checkpoint as `priorTotal`
+  and records the new total minus the previous one. A missing total, or an input or
+  output count that goes down, leaves the segment `unknown`. A cached, cache-write, or
+  reasoning count that cannot be read stays null on a reported segment.
 - **A count of zero input means nothing was reported.** pi-ai and the Codex CLI fill
   usage with zeros when a provider sends none. A model call always reads some input, so
   a segment whose input total is zero is recorded as `unknown`, never as zero. Pi's
@@ -205,7 +204,7 @@ refuses (`lanesCounted`, `lanesRefused`), the refusal codes (`refusal` and
 IDs. `cost` and each engine's `cost` still describe `costUsd`, which is still a billed
 cost only, so their values are unchanged; each engine gains `estimate`, and Pi
 `modelSource`. One existing value changed, because it stopped being true: Codex's
-`model`, from `not-reported` to `from-rollout-turn-context`.
+`model`, from `from-rollout-turn-context` to `profile-model`.
 
 ## Estimated cost
 
@@ -265,11 +264,8 @@ Which model is priced matters, so each engine's model was checked:
 
 - **Claude.** The CLI's `system:init` message names the model the main loop runs, which
   is the profile's model. Usage covers that loop only, so the two match.
-- **Codex.** `turn.completed` names no model. The rollout that Crew already reads and pins
-  by SHA-256 after each turn has a `turn_context` entry after each `task_started`
-  naming the model the CLI requested; Crew takes the turn's, and none when the turn's
-  entries disagree. The CLI keeps no record of the model name the API answered with, so
-  the requested name is the one the operator prices.
+- **Codex.** The host adapter does not name the model that answered. Crew prices the
+  profile model, which is the name the member was launched with.
 - **Pi.** pi-ai sets `responseModel` when the provider names a model other than the one
   requested, as a router or a fallback does. Crew records the model that answered, and
   none when the segment's calls disagree, so a routed call is priced as the model that
@@ -293,7 +289,7 @@ The [trusted-context lane](trusted-application-context.md) recorded no usage bef
 change, for three reasons:
 
 - Its drivers returned only text and a checkpoint (`trusted-native.ts`, `trusted-pi.ts`,
-  `trusted-claude.ts`, `trusted-codex.ts`).
+  `trusted-claude.ts`). The Codex trusted lane has been removed.
 - Its runner, `runTrustedRequest`, runs in the embedding backend's process, not the
   supervisor host, which was the one place rows were written.
 - A ledger row needed a `native_launches` row (migration 31's foreign key), which
@@ -303,9 +299,7 @@ change, for three reasons:
 Each trusted driver now returns what its SDK reported, through the same capture
 functions as the member lane: Pi the replies the host relayed to its confined worker for
 the request; Claude the sum of the request's queries, one per tool round trip, and
-`unknown` if any query reported nothing usable; Codex the running total in the rollout
-before and after the turn, since the app-server reports no per-turn usage, and the
-turn's model from the same rollout. `runTrustedRequest` writes one row per trusted
+`unknown` if any query reported nothing usable. `runTrustedRequest` writes one row per trusted
 request with the same writer, after the native turn returns and before the reply
 commits, priced from the operator's table like any other row. It reads
 `BIRBCREW_USAGE_PRICES_PATH` in the embedding process, once; pass a table as its fifth
@@ -321,8 +315,9 @@ The unit is coarser than the member lane's: there each segment of a request has 
 row, while a trusted request is one row, written only when its whole native turn
 returns. A trusted request that fails, is cancelled or loses its lease to a rotation
 records nothing, including the model calls it had already finished (a Claude tool round
-trip, a Pi or Codex tool call), so the lane undercounts more on failure. One whose
-commit then finds the generation stale keeps its row, because the tokens were spent.
+trip or a Pi tool call), so the lane undercounts more on failure. Codex has no trusted
+lane. One whose commit then finds the generation stale keeps its row, because the tokens
+were spent.
 
 The lane's guarantees do not change. The row holds counts and a model name, never the
 context, prompt, reply or tool data; nothing enters Temporal. `erase()` leaves the row,
@@ -619,8 +614,8 @@ answer, and `unknown` for the faux fixture. It starts the real supervisor host a
 runners, with no Temporal, and checks one ledger row per launch for all three engines,
 no second row for a repeated start, and the `model.invoke` attributes. It also checks
 the mapping rules: a billed cost kept only when billed, counts that go down or cannot be
-read. It checks the model each engine names: Codex's from its rollout, the last turn's
-only and none when that turn's entries disagree, and Pi's answering model, including a
+read. It checks the model each engine names: Codex's profile model on a native turn,
+the rollout helper's last turn only when that turn's entries agree, and Pi's answering model, including a
 routed answer taken from the reply the host relayed to the confined worker. It prices
 segments with every part of the input, exactly at the largest counts and rates the
 ledger and table accept, and refuses an estimate with no table, no price, no model, a
@@ -681,14 +676,14 @@ limit and the earlier total, unchanged by resume, and admits the request the sou
 refused.
 
 `trusted-runner.test.ts` (`npm run test:trusted`) runs `runTrustedRequest` with the real
-Pi, Claude and Codex SDKs against fixtures that report usage, through a tool round trip
-and a context rotation, and checks one priced row per trusted request with the counts
-of every model call it made.
+Pi and Claude SDKs against fixtures that report usage, through a tool round trip and a
+context rotation, and checks one priced row per trusted request with the counts of
+every model call it made. A Codex profile is refused before a request is claimed.
 
 `npm run test:api:service` (the integration API workflow's `actual-service` job, with
 Temporal) gives its worker a price table and reads `/v1/usage` back over HTTP: each of
-six Claude and six Codex turns carries its estimate, the Codex model comes from its
-rollout, Pi's fixture reports nothing, and the owner's billed and estimated totals stay
+six Claude and six Codex turns carries its estimate, the Codex model is the profile
+model, Pi's fixture reports nothing, and the owner's billed and estimated totals stay
 apart. The other service proofs run the same supervisor host but do not read the ledger.
 So these are not exercised end to end: a refusal by the admission activity inside a real
 workflow (the mapping is tested with a constructed failure), the workflow closing that conversation,

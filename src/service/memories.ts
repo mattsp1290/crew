@@ -63,13 +63,13 @@ export const injectedBytesPerConversation = Buffer.byteLength(largestBlock) + 1;
 /** Linux refuses one argument string of MAX_ARG_STRLEN bytes or more (32 pages of 4 KiB),
  * counting its terminating NUL. */
 export const argumentBytes = 131_072;
-/** codex.ts passes the context as developer_instructions, which the Codex SDK hands its CLI as
- * one `--config developer_instructions=<JSON string>` argument, escaping the context again. */
+/** codex.ts sends this string as developerInstructions on thread/start. The byte budget stays one
+ * historical CLI argument, so a context that fit the process limit still fits the protocol message. */
 export function codexArgument(context: string) {
   return "developer_instructions=" + JSON.stringify("You are a BirbCrew coworker.\n" + context);
 }
 /** Whether a native launch of this engine can carry the context. Claude checks the length of
- * its project context (claude.ts); Codex passes it in one argument; the Pi host sends it in the first
+ * its project context (claude.ts); Codex budgets it as one argument; the Pi host sends it in the first
  * frame on its confined worker's channel, never on a command line. */
 export function contextFits(engine: Engine, context: string | undefined): boolean {
   if (context === undefined) return true;

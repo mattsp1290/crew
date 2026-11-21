@@ -13,7 +13,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev linux-libc-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY vendor/ag-ui/*.tgz vendor/ag-ui/
 COPY vendor/switchboard/*.tgz vendor/switchboard/
 COPY vendor/opentelemetry/*.tgz vendor/opentelemetry/

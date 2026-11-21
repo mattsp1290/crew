@@ -18,7 +18,7 @@ import { runPiSegment, runPiTurn } from "../../src/service/pi.ts";
 import { createProxyProfile } from "../../src/service/proxy-profiles.ts";
 import { MemberStore } from "../../src/service/store.ts";
 import { startSupervisor } from "../../src/service/supervisor.ts";
-import { claudeUsage, codexRolloutModel, codexRolloutTotal, codexUsage, combinedUsage, piUsage, type SegmentUsage } from "../../src/service/usage-capture.ts";
+import { claudeUsage, codexAdapterTotal, codexRolloutModel, codexRolloutTotal, codexUsage, combinedUsage, piUsage, type SegmentUsage } from "../../src/service/usage-capture.ts";
 import { checkedPrices, estimateCost, readPrices, type Price } from "../../src/service/usage-prices.ts";
 import { startClaudeFixtureProvider } from "../fixtures/engines/claude/index.mts";
 import { startProvider } from "../fixtures/engines/codex/provider.mts";
@@ -40,7 +40,7 @@ test("Codex reports a native thread's running total; each turn records only its 
   const first = await runCodexTurn(input, profile);
   const second = await runCodexTurn({ ...input, runId: randomUUID(), text: "recall", checkpoint: first.checkpoint }, profile);
   const third = await runCodexTurn({ ...input, runId: randomUUID(), text: "recall", checkpoint: second.checkpoint }, profile);
-  // The model is the one each turn's turn_context entry in the rollout names.
+  // The host adapter does not name the answering model, so the segment records the profile model.
   const share = (n: number) => ({ ...reported, model: "gpt-5.4", inputTokens: 100 * n, outputTokens: 7 * n, cachedInputTokens: 10 * n,
     cacheWriteTokens: 0, reasoningTokens: 2 * n });
   assert.deepEqual([first.usage, second.usage, third.usage], [share(1), share(2), share(3)]);
@@ -89,6 +89,13 @@ test("a Codex rollout that cannot be read, or a total that went backwards, is un
     inputTokens: 50, outputTokens: 11, cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null });
   assert.equal(codexUsage(now, { input_tokens: 200, output_tokens: 9 }).state, "unknown");
   assert.equal(codexUsage({ input_tokens: 1.5, output_tokens: 2 }, null).state, "unknown");
+  const camel = { inputTokens: 130, outputTokens: 20, cachedInputTokens: 4, reasoningOutputTokens: 3 };
+  assert.deepEqual(codexAdapterTotal({ total: camel }), { input_tokens: 130, output_tokens: 20, cached_input_tokens: 4, reasoning_output_tokens: 3 });
+  assert.deepEqual(codexAdapterTotal({ input_tokens: 80, output_tokens: 9 }), { input_tokens: 80, output_tokens: 9 });
+  assert.equal(codexAdapterTotal(null), null);
+  assert.equal(codexAdapterTotal({ total: { totalTokens: 1 } }), null);
+  assert.deepEqual(codexUsage(codexAdapterTotal({ total: camel }), codexAdapterTotal({ inputTokens: 80, outputTokens: 9 })), {
+    ...reported, model: null, inputTokens: 50, outputTokens: 11, cachedInputTokens: 4, cacheWriteTokens: null, reasoningTokens: 3 });
 });
 
 test("Claude records each query's own usage, for a chat turn, a proposal and its resumed answer", { timeout: 120_000 }, async t => {

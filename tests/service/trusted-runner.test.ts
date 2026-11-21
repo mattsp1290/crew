@@ -12,7 +12,7 @@ import { MemberStore } from "../../src/service/store.ts";
 import { TrustedContextStore,type TrustedApplication } from "../../src/service/trusted-context.ts";
 import { runTrustedRequest } from "../../src/service/trusted-runner.ts";
 import { createProxyProfile } from "../../src/service/proxy-profiles.ts";
-import type { TrustedNativeProfile } from "../../src/service/trusted-native.ts";
+import { runTrustedNativeTurn, type TrustedNativeInput, type TrustedNativeProfile } from "../../src/service/trusted-native.ts";
 import { startProvider } from "../fixtures/engines/codex/provider.mts";
 import type { PriceTable } from "../../src/service/usage-prices.ts";
 
@@ -60,7 +60,14 @@ async function providerFixture(engine:"pi"|"claude"|"codex") {
   return {seen,url:`http://127.0.0.1:${address.port}`,async close(){server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}};
 }
 
-for(const engine of ["pi","claude","codex"] as const) {
+test("codex: trusted lane was removed", async () => {
+  await assert.rejects(runTrustedNativeTurn(
+    { engine: "codex" } as TrustedNativeInput,
+    { engine: "codex" } as TrustedNativeProfile,
+  ), /Codex trusted lane was removed/);
+});
+
+for(const engine of ["pi","claude"] as const) {
   test(`${engine}: real SDK and PostgreSQL runner preserve receipts, queue and conversation through context rotation`,{timeout:150000},async t=>{
     const scopeA="PRIVATE-A-"+randomUUID(),scopeB="CHANNEL-B-"+randomUUID();
     const pool=new Pool({connectionString:database,max:12});t.after(()=>pool.end());

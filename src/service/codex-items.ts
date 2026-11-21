@@ -24,7 +24,8 @@ function redactCompletedItems(items: string[], ids: Set<string>, final: boolean)
       hidden.fill(1, at, at + id.length);
     }
     if (final) continue;
-    // The next item may finish a private ID. Wait to publish the item containing its prefix.
+    // Hold a prefix of the id at the end of the buffer: "After private." waits for "<uuid> finished.".
+    // A finished id does not match ("…7890".endsWith("private.…789") is false). A suffix check would publish the split early.
     for (let n = Math.min(id.length - 1, joined.length); n > 0; n--) {
       if (joined.endsWith(id.slice(0, n))) {
         complete = Math.min(complete, joined.length - n);
@@ -36,7 +37,7 @@ function redactCompletedItems(items: string[], ids: Set<string>, final: boolean)
   let offset = 0;
   for (const item of items) {
     const end = offset + item.length;
-    if (end > complete) break;
+    if (end > complete) break; // a trailing prefix withholds this whole item
     let text = "";
     for (let pos = offset; pos < end; pos++) {
       if (!hidden[pos]) text += joined[pos];
@@ -48,7 +49,7 @@ function redactCompletedItems(items: string[], ids: Set<string>, final: boolean)
   return visible;
 }
 
-// SDK item events and the live MCP callback arrive on separate transports.
+// `append` runs on the transcript chain. `disclose` runs on the driver task after that chain is idle. This queue orders those two publishes.
 export function codexItemWriter(knownIds: string[], awaitingCall: boolean,
   publish: (index: number, text: string, receipt: ItemReceipt) => Promise<void>) {
   const ids = new Set(knownIds);
@@ -73,8 +74,8 @@ export function codexItemWriter(knownIds: string[], awaitingCall: boolean,
       items.push(text);
       return flush(false);
     },
-    disclose(id: string) {
-      ids.add(id);
+    disclose(...names: string[]) {
+      for (const name of names) ids.add(name);
       awaitingCall = false;
       return flush(false);
     },

@@ -47,6 +47,13 @@ async function launchRecord(db: PoolClient, launch: Launch, protect = false) {
   return record;
 }
 
+/** The model’s operation id is not the approval key. A live record stores the request id and keeps a note only when the model sent one. */
+export function boundLiveArguments(tool: DeferredTool, requestId: string, args: unknown) {
+  if (tool !== "record_work_item") return args;
+  const record = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  return { operation_id: requestId, ...("note" in record ? { note: record.note } : {}) };
+}
+
 export async function proposeLive(pool: Pool, launch: Launch, input: LiveProposal): Promise<Approval> {
   const threadId = z.uuid().parse(input.threadId);
   const expiresAt = z.iso.datetime({offset:true}).parse(input.expiresAt);
@@ -79,7 +86,7 @@ export async function proposeLive(pool: Pool, launch: Launch, input: LiveProposa
          FROM birbcrew_ts.request_admissions WHERE conversation_id=$1 AND request_id=$2)) AS deadline`,
       [key.conversationId,key.requestId,expiresAt]);
     const liveDeadline = live.deadline.toISOString();
-    const approval = await ledger.proposeLocked(db, {...key,toolName:tool,arguments:input.args},
+    const approval = await ledger.proposeLocked(db, {...key,toolName:tool,arguments:boundLiveArguments(tool, key.requestId, input.args)},
       undefined, {liveDeadline});
     const inserted = await db.query(`INSERT INTO birbcrew_ts.codex_live_calls
       (approval_id,conversation_id,request_id,token,thread_id,expires_at)

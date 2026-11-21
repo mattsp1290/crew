@@ -31,7 +31,7 @@ export const usageCapabilities = {
     pi: { usage: "per-model-call", model: "reported", modelSource: "answering-model", cost: "when-provider-billed",
       estimate: "when-priced-and-not-billed" },
     claude: { usage: "per-query", model: "reported", cost: "never", estimate: "when-priced" },
-    codex: { usage: "per-turn-from-thread-total", model: "from-rollout-turn-context", cost: "never", estimate: "when-priced" },
+    codex: { usage: "per-turn-from-thread-total", model: "profile-model", cost: "never", estimate: "when-priced" },
   },
   budget: { route: "/v1/usage/budgets/{memberId}", period: "utc_day", counts: "input+output", scope: "member",
     lanesCounted: ["member", "trusted"], lanesRefused: ["member"],
