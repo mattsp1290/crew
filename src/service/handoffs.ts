@@ -176,10 +176,11 @@ export class HandoffApi {
         }
         return prior;
       }
+      if (isTextEngine(source.engine)) throw new MemberStoreError("conflict");
       const { rows: [target] } = await db.query<{ engine: Engine }>(
         "SELECT engine FROM birbcrew_ts.members WHERE owner_id=$1 AND member_id=$2", [ownerId, body.memberId]);
       if (!target) throw new MemberStoreError("not_found");
-      if (isTextEngine(source.engine) || isTextEngine(target.engine)) throw new MemberStoreError("conflict");
+      if (isTextEngine(target.engine)) throw new MemberStoreError("conflict");
       if ((await db.query("SELECT 1 FROM birbcrew_ts.trusted_sessions WHERE conversation_id=$1", [sourceConversationId])).rowCount) {
         throw new MemberStoreError("trusted_conversation");
       }
