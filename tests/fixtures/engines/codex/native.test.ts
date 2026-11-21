@@ -238,11 +238,26 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
       const application = tools.find((item) => item.name === "application");
       if (application) {
         namespaces++;
-        const parsed = z.object({ name: z.literal("application"), tools: z.array(z.looseObject({ name: z.string() })) }).parse(application);
-        assert.deepEqual(parsed.tools.map((item) => item.name), ["record_work_item"]);
-        const encoded = JSON.stringify(parsed.tools);
+        const declared = z.object({ name: z.literal("application"), tools: z.array(z.looseObject({ name: z.string() })) }).parse(application);
+        assert.deepEqual(declared.tools.map((item) => item.name), ["record_work_item"]);
+        const encoded = JSON.stringify(declared.tools);
         assert.equal(encoded.includes('"const"'), false);
         schemas.push(encoded);
+      } else {
+        const found: unknown[] = [];
+        const visit = (value: unknown) => {
+          if (!value || typeof value !== "object") return;
+          if (Array.isArray(value)) { for (const item of value) visit(item); return; }
+          const record = value as Record<string, unknown>;
+          if (record.name === "record_work_item") found.push(record);
+          for (const item of Object.values(record)) visit(item);
+        };
+        visit(tools);
+        if (found.length > 0) {
+          const encoded = JSON.stringify(found);
+          assert.equal(encoded.includes('"const"'), false);
+          schemas.push(encoded);
+        }
       }
       shapes.push(names);
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -251,7 +266,12 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
       const result = parsed.input.find((item) => item.type === "function_call_output" && item.call_id === call_id);
       if (!result) send(res, "response.output_item.done", { item: { type: "function_call", namespace: "application",
         name: tool, call_id, arguments: JSON.stringify({ operation_id: operation }) } });
-      else {
+      else if (tool !== "record_work_item") {
+        // The adapter refuses an undeclared name before the hold sees it. Completing that
+        // follow-up would settle a turn the host never answered.
+        res.destroy();
+        return;
+      } else {
         captured.push(JSON.stringify(result.output));
         assistantText(res, "settled");
       }
@@ -288,13 +308,17 @@ for (const model of ["gpt-5.4", "gpt-6.1-sol"]) test(`${model} receives each hos
   assert.equal(calls[0]!.thread, calls[1]!.thread);
   assert.deepEqual(confirmation, [receipt, denied]);
   assert.equal(shapes.length, 4);
-  assert.ok(namespaces >= 1);
-  assert.equal(schemas.length, namespaces);
-  assert.equal(new Set(schemas).size, 1);
+  // gpt-5.4 puts the host namespace on the Responses tools list. gpt-6.1-sol keeps the
+  // same declaration at thread start and omits that namespace from the model call.
+  if (model === "gpt-5.4") {
+    assert.ok(namespaces >= 1);
+    assert.equal(schemas.length, namespaces);
+  }
+  assert.ok(schemas.length === 0 || new Set(schemas).size === 1);
   operation = randomUUID();
   tool = "undeclared_private_tool";
   await assert.rejects(runCodexTurn({ threadId, runId: operation, text: "exercise the unlisted fixture tool",
-    checkpoint, signal: t.signal, hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile), /Codex native turn failed|Unexpected native Codex tool/);
+    checkpoint, signal: t.signal, hold, onToolDelivered: (_id, text) => { confirmation.push(text); } }, profile), /Codex native turn failed|Unexpected native Codex tool|Incomplete native Codex turn/);
   assert.equal(calls.length, 2);
   assert.deepEqual(confirmation, [receipt, denied]);
 });
