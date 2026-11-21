@@ -4,13 +4,18 @@ Crew runs durable Claude, Codex and Pi coding coworkers through their TypeScript
 
 ## Repository name and compatibility
 
-The canonical repository is [mattsp1290/crew](https://github.com/mattsp1290/crew),
-formerly `mattsp1290/birbcrew`. Use the new URL for clones and Git remotes:
+The canonical repository is [operatorworks/crew](https://github.com/operatorworks/crew),
+formerly `mattsp1290/crew` and before that `mattsp1290/birbcrew`. GitHub redirects the old
+URLs, but use the new one for clones and Git remotes:
 
 ```sh
-git clone https://github.com/mattsp1290/crew.git
-git remote set-url origin https://github.com/mattsp1290/crew.git
+git clone https://github.com/operatorworks/crew.git
+git remote set-url origin https://github.com/operatorworks/crew.git
 ```
+
+Switchboard moved the same way, to
+[operatorworks/switchboard](https://github.com/operatorworks/switchboard). Its package
+name is still `@mattsp1290/switchboard`, so imports do not change.
 
 This repository rename does not migrate existing installations or published
 contracts. Python imports/distribution (`birbcrew`), the `@birbcrew/pi-subagents`
