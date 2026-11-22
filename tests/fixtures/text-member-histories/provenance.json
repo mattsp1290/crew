@@ -1,0 +1,12 @@
+{
+  "producingCommit": "86fddc3bf2b8d53e1b77701c703e32a21fcb02f7",
+  "node": "24.22.3",
+  "temporalCLI": "1.10.0",
+  "server": "1.32.2",
+  "sdk": "1.25.0",
+  "source": "Baseline text-member gateway fixture; synthetic remember-cedar prompt and cedar-remembered reply, no provider inference. Captured before policy changes; baseline build and 12 text-member tests passed.",
+  "histories": {
+    "cursor.json": "5107a3445df9cdb3ddc54fc44ccde58b048eee8ab8e9f6b3fc9e0654d692de2f",
+    "opencode.json": "f4b7947b9325d27be1307a57274b0382645395aed05355ed9fd2272cb0a510fe"
+  }
+}

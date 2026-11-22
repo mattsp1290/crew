@@ -1,3 +1,6 @@
+import { boundedText, promptBytes } from "@birbcrew/client/contract";
+import { storedRequestTextBytes } from "./text-profile-validation.ts";
+import { warn } from "./diagnostics.ts";
 import { matchesNativeReply, type ItemReceipt } from "./codex-items.ts";
 import { interruptLiveLocked } from "./codex-calls.ts";
 import { captureProjectNotes } from "./project-notes.ts";
@@ -24,7 +27,7 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  engineTraits, isTextEngine, MemberStoreError, textEngines, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
+  engineTraits, isTextEngine, memberSubmitEnvelopeSchema, MemberStoreError, textEngines, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, TextAdmissionError, turnRequestSchema,
   type BeginTurn, type Conversation, type Engine, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
 import { conversationTurnLimit, textConversationTurnLimit } from "./limits.ts";
@@ -93,6 +96,23 @@ function turnRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
   return undefined;
 }
 
+async function requestTextPolicy(db: Pool | PoolClient, conversation: Conversation) {
+  const { rows: [row] } = await db.query<{ request_text_bytes: unknown }>(
+    "SELECT request_text_bytes FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2",
+    [conversation.engine, conversation.profile]);
+  return row ? storedRequestTextBytes(row.request_text_bytes) : promptBytes;
+}
+
+async function validateRequestTextPolicy(db: Pool | PoolClient, key: TurnRequest, conversation: Conversation, lane: RequestInitiator) {
+  if (lane.kind === "handoff") return;
+  const limit = isTextEngine(conversation.engine) && lane.kind === "owner" ? await requestTextPolicy(db, conversation) : promptBytes;
+  const bytes = Buffer.byteLength(key.text, "utf8");
+  if (bytes > limit) warn("request_text_refused", {
+    conversationId: key.conversationId, requestId: key.requestId, profile: conversation.profile, limit, bytes,
+  });
+  boundedText(limit).parse(key.text);
+}
+
 /** recordAcceptance's checks of a request with no admission row that come before its member's
  * budget, in its order, inside the caller's transaction after it locked the conversation: a turn
  * a legacy submit already started, the conversation's request bound, a handoff's seal or
@@ -111,7 +131,7 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
   const recorded=handoff??await firingInitiator(db,key,conversation)??attested;
-  if(recorded.kind!=="handoff")submitSchema.parse(key);
+  if (!existingTurn) await validateRequestTextPolicy(db, key, conversation, recorded);
   return {recorded,started:Boolean(existingTurn)};
 }
 
@@ -191,7 +211,7 @@ export class MemberStore {
       await db.query("CREATE TABLE IF NOT EXISTS birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
       const migrations = [[1, "001-members.sql"], [2, "002-approvals.sql"], [3, "003-native-launches.sql"],
       [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"], [37, "037-named-child-targets.sql"], [38, "038-delegation-control.sql"], [39, "039-decision-receipts.sql"],
-      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"], [42, "042-text-members.sql"]] as const;
+      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"], [42, "042-text-members.sql"], [43, "043-profile-request-text.sql"]] as const;
       // Number a new migration above every one already released.
       const { rows: [{ latest }] } = await db.query<{ latest: number | null }>("SELECT max(version) AS latest FROM birbcrew_ts.schema_versions");
       for (const [version, name] of migrations) {
@@ -308,8 +328,11 @@ export class MemberStore {
     return conversationFor(this.pool, conversationKey.parse(key), false);
   }
 
-  async requestAdmission(input: z.input<typeof turnRequestSchema>): Promise<{phase:"accepted"|"rejected";reason:string|null}|undefined> {
-    const key=turnRequestSchema.parse(input);
+  async requestAdmission(input: z.input<typeof turnRequestSchema>) {
+    return this.requestAdmissionTerms(turnRequestSchema.parse(input));
+  }
+
+  private async requestAdmissionTerms(key: TurnRequest): Promise<{phase:"accepted"|"rejected";reason:string|null}|undefined> {
     const {rows:[row]}=await this.pool.query<{phase:"accepted"|"rejected";reason:string|null;prompt_digest:Buffer;approval_deadline_seconds:number|null}>(`
       SELECT a.phase,a.reason,a.prompt_digest,a.approval_deadline_seconds FROM birbcrew_ts.request_admissions a
       JOIN birbcrew_ts.conversations c USING(conversation_id)
@@ -326,22 +349,28 @@ export class MemberStore {
    * so a request refused for another reason records no budget refusal. A handoff's reserved
    * request met its target's budget when the handoff committed (handoffs.ts) and is never
    * refused by it afterwards: a refusal then would strand a sealed source. */
-  async checkAdmission(input: z.input<typeof turnRequestSchema>): Promise<void> {
-    const key = turnRequestSchema.parse(input);
-    const conversation = await conversationFor(this.pool, key, false);
-    if (await this.requestAdmission(key) !== undefined) return;
-    const turn = await this.pool.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",
-      [key.conversationId, key.requestId]);
-    if (turn.rowCount) return;
-    if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
-    submitSchema.parse(key);
+  async checkAdmission(input: unknown): Promise<TurnRequest> {
+    const envelope = memberSubmitEnvelopeSchema.parse(input);
+    const conversation = await conversationFor(this.pool, envelope, false);
+    const key = isTextEngine(conversation.engine) ? envelope : turnRequestSchema.parse(envelope);
+    if (await this.requestAdmissionTerms(key) !== undefined) return turnRequestSchema.parse(key);
+    const turn = await this.legacyTurn(key);
+    if (turn) {
+      if (!turn.prompt_digest.equals(createHash("sha256").update(key.text, "utf8").digest())) throw new MemberStoreError("conflict");
+      return turnRequestSchema.parse(key);
+    }
+    const handoff = await handoffAdmission(this.pool, key);
+    if (handoff?.kind === "handoff") return turnRequestSchema.parse(key);
+    const lane = isTextEngine(conversation.engine) ? await firingInitiator(this.pool, key, conversation) ?? ownerInitiator : ownerInitiator;
+    await validateRequestTextPolicy(this.pool, key, conversation, lane);
+    const validated = turnRequestSchema.parse(key);
     // Native engines' turn limit is enforced by recordAcceptance; only text engines pay for the count here.
     if (isTextEngine(conversation.engine)) {
       const counted = await turnBudget(this.pool, key.conversationId);
       const refusal = turnRefusal(conversation.engine, key.text, counted.used >= counted.limit);
       if (refusal) throw refusal;
     }
-    if (!await budgetApplies(this.pool, key)) return;
+    if (!await budgetApplies(this.pool, key)) return validated;
     // The lock waits for an admission, turn start or handoff that holds the conversation, and
     // recordAcceptance's earlier checks run again under it, so a request refused under the budget
     // and audited as such is one admission would refuse for the budget alone.
@@ -359,6 +388,7 @@ export class MemberStore {
         && refuseOverBudget(db, key, conversation.memberId, recorded.kind === "routine" ? recorded.id : undefined);
     });
     if (refused) throw new MemberStoreError("usage_limit");
+    return validated;
   }
 
   /** A replay of an admitted request keeps the initiator its first admission recorded. A routine
@@ -461,15 +491,20 @@ export class MemberStore {
     return turn?.run ?? undefined;
   }
 
-  async committedReply(input: z.input<typeof turnRequestSchema>): Promise<string | undefined> {
-    const key = turnRequestSchema.parse(input);
-    if((await this.requestAdmission(key))?.phase === "rejected")throw new MemberStoreError("request_rejected");
+  private async legacyTurn(key: TurnRequest) {
     const { rows: [turn] } = await this.pool.query<Pick<TurnRow, "prompt_digest" | "phase" | "reply">>(
       `SELECT t.prompt_digest, t.phase, t.reply
          FROM birbcrew_ts.turns t JOIN birbcrew_ts.conversations c USING (conversation_id)
         WHERE c.owner_id = $1 AND c.conversation_id = $2 AND t.request_id = $3`,
       [key.ownerId, key.conversationId, key.requestId],
     );
+    return turn;
+  }
+
+  async committedReply(input: z.input<typeof turnRequestSchema>): Promise<string | undefined> {
+    const key = turnRequestSchema.parse(input);
+    if((await this.requestAdmission(key))?.phase === "rejected")throw new MemberStoreError("request_rejected");
+    const turn = await this.legacyTurn(key);
     if (!turn) return undefined;
     const digest = createHash("sha256").update(key.text, "utf8").digest();
     if (!turn.prompt_digest.equals(digest) || turn.phase === "uncertain") throw new MemberStoreError("conflict");

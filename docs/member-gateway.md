@@ -78,3 +78,10 @@ tool calls and results carry the same `subagentRunId` until it finishes.
 Connecting during a sibling’s approval restores open child scopes and any
 partial text before further deltas arrive. Cancelling the parent closes active
 children and publishes a cancelled result for pending work items.
+
+Text profiles can opt into an immutable `requestTextBytes` limit from 16,384 to
+65,536 UTF-8 bytes; omission keeps 16,384. Read the effective value in
+`GET /v1/members`. Existing profile names cannot change policy. See
+[request text limits](request-text-limits.md) for configuration, exact refusal
+and replay behavior, transport overhead, persistence, qualification and upgrade
+requirements. Native, routine, handoff and reply bounds remain unchanged.

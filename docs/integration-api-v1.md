@@ -219,7 +219,7 @@ reported in the health body itself.
 
 The identity is **(authenticated owner, conversation UUID, request UUID)**.
 UUIDs are normalized to lowercase. Payload equivalence is exact UTF-8 text equality:
-whitespace and Unicode normalization are not changed. The 16 KiB text limit and valid
+whitespace and Unicode normalization are not changed. The default 16 KiB text limit (or the text profile's advertised `requestTextBytes`) and valid
 Unicode rules of the existing input contract apply. Only a conversation handoff's
 reserved first request, which the server submits, may be longer (see below). Reusing an identity with changed
 text returns `409 conflict`; it never creates a second turn. The optional
@@ -507,7 +507,7 @@ would, and records a transcript of the source's newest whole committed turns, at
 submits that request through the normal path; the target model gets the transcript as a
 user message, quoted as data. The source keeps its snapshot and receipts but admits no
 new request (`409 handed_off`), and the target admits no other request before the
-reserved one (`409 handoff_pending`). Every other request keeps the 16 KiB limit. Retry a
+reserved one (`409 handoff_pending`). Other native requests and routines keep the 16 KiB limit; owner text-member requests use their profile limit. Retry a
 POST with the same `requestId`: it returns the same handoff and submits the reserved request again
 if a failure interrupted it. A target whose workflow has closed stays unadmitted. See [conversation handoff](handoffs.md) for what is carried, the
 errors, costs and the trust boundary.
@@ -625,3 +625,10 @@ The fixtures use synthetic credentials and local protocol servers. Record the ex
 commit and each command result. Live application/proxy-provider acceptance is separate
 and requires existing authorized access and any required spend approval. Do not print
 real credentials, publish test tokens, or claim production identity-provider coverage.
+
+Text profiles can opt into an immutable `requestTextBytes` limit from 16,384 to
+65,536 UTF-8 bytes; omission keeps 16,384. Read the effective value in
+`GET /v1/members`. Existing profile names cannot change policy. See
+[request text limits](request-text-limits.md) for configuration, exact refusal
+and replay behavior, transport overhead, persistence, qualification and upgrade
+requirements. Native, routine, handoff and reply bounds remain unchanged.

@@ -96,6 +96,12 @@
           "profile": {
             "type": "string"
           },
+          "requestTextBytes": {
+            "description": "Effective immutable request-text byte limit, emitted for text members in listings. Absence means assume 16384.",
+            "type": "integer",
+            "minimum": 16384,
+            "maximum": 65536
+          },
           "subagents": {
             "default": {
               "mode": "legacy",
@@ -2488,8 +2494,8 @@
           "profile": {
             "type": "string",
             "minLength": 1,
-            "x-maxUtf8Bytes": 128,
-            "x-forbidden": "NUL; unpaired surrogates"
+            "x-forbidden": "NUL; unpaired surrogates",
+            "x-maxUtf8Bytes": 128
           },
           "instructions": {
             "type": "string",
@@ -2548,8 +2554,8 @@
           "text": {
             "type": "string",
             "minLength": 1,
-            "x-maxUtf8Bytes": 16384,
-            "x-forbidden": "NUL; unpaired surrogates"
+            "x-forbidden": "NUL; unpaired surrogates",
+            "description": "Exact decoded UTF-8 text. Fresh text-member requests use the profile requestTextBytes (default 16384, ceiling 65536); native HTTP requests use 16384. Reused UUIDs compare exact terms before text-member sizing. Raw JSON is independently limited to 128 KiB."
           },
           "approvalDeadlineSeconds": {
             "type": "integer",

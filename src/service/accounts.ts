@@ -2,6 +2,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
+import { requestTextBytesSchema } from "@birbcrew/client/contract";
+import { textModelSchema, textPathSchema, textIdentifierSchema, textEnvNameSchema } from "./text-profile-validation.ts";
+
 export const goEndpoint = "https://opencode.ai/inference/go/openai/v1";
 export const goModel = "glm-5.3-flash";
 export const userAgent = "birbcrew-coding-proof/0.1.0";
@@ -24,8 +27,8 @@ export const codexSubscriptionAccount = z.strictObject({
 });
 export const codexAccount = z.discriminatedUnion("provider", [codexApiAccount, codexSubscriptionAccount]);
 
-const textEngineAccount = z.strictObject({ account, model: z.string().min(1).max(256), cwd: z.string().min(1) });
-const opencodeAccount = textEngineAccount.extend({ executable: z.string().min(1), env: z.array(z.string().min(1)) });
+const textEngineAccount = z.strictObject({ account, model: textModelSchema, cwd: textPathSchema, requestTextBytes: requestTextBytesSchema.optional() });
+const opencodeAccount = textEngineAccount.extend({ account: account.pipe(textIdentifierSchema), executable: textPathSchema, env: z.array(textEnvNameSchema) });
 
 /** The live member accounts of one worker. Unknown keys are refused, so a provider attestation is not a configuration. */
 export const liveProfiles = z.strictObject({

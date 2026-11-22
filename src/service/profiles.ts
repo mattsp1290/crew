@@ -11,6 +11,7 @@ import type { CapabilityInput } from "./capabilities.ts";
 
 export interface MemberProfile {
   accountId: string;
+  requestTextBytes?: number;
   /** The capability ceiling for members of this profile (docs/member-capabilities.md). Absent
    * means none. Set it here, in trusted operator code; no request can. A ceiling with a shell
    * needs a profile from createProxyProfile. No engine offers a capability tool yet. */

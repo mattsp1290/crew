@@ -21,7 +21,7 @@ import { HandoffApi } from "./handoffs.ts";
 import { MemoryApi, memoryListParameterNames } from "./memories.ts";
 import { readInstructions } from "./instructions.ts";
 import { PackApi, packListParameterNames } from "./instruction-packs.ts";
-import { MemberStoreError, turnKey } from "./domain.ts";
+import { isTextEngine, submitSchema, MemberStoreError, turnKey } from "./domain.ts";
 import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
 import { IntegrationApi, integrationCapabilities, ReceiptContractError } from "./integration-api.ts";
@@ -376,7 +376,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       const conversationId = z.uuid().parse(requestRoute[1]);
       if (!requestRoute[2] && request.method === "POST") {
         const prompt = routes.submit.body.parse(await body(request));
-        return json(response, 202, await integration.submit({ ownerId, conversationId, ...prompt }));
+        return json(response, 202, await integration.submit({ ...prompt, ownerId, conversationId }));
       }
       if (requestRoute[2]) {
         const requestId = z.uuid().parse(requestRoute[2]);
@@ -408,13 +408,15 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     if (!parts) throw new HttpError(404, "not_found");
     const conversationId = z.uuid().parse(parts[1]);
     if (!parts[2] && request.method === "GET") return json(response, 200, await readSnapshot(store.pool, ownerId, conversationId));
-    await store.getConversation({ ownerId, conversationId });
+    const conversation = await store.getConversation({ ownerId, conversationId });
     if (request.method !== "POST") throw new HttpError(405, "method_not_allowed");
     const input = await body(request);
     switch (parts[2]) {
       case "inputs": {
         const prompt = routes.submit.body.parse(input);
-        return json(response, 202, await members.accept({ ownerId, conversationId, ...prompt }));
+        const request = { ...prompt, ownerId, conversationId };
+        if (!isTextEngine(conversation.engine)) submitSchema.parse(request);
+        return json(response, 202, await members.accept(request));
       }
       case "cancel": {
         const key = turnKey.omit({ ownerId: true, conversationId: true }).parse(input);

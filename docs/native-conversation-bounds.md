@@ -8,7 +8,7 @@ native checkpoint. It does not summarize, truncate or translate native history.
 
 - At most 128 application turns per logical conversation, enforced by the member
   workflow and database. Pi also validates at most 128 completed native turns.
-- Application input: 16 KiB; committed reply: 64 KiB; serialized checkpoint: 4 MiB.
+- Native application input: 16 KiB; text profiles default to 16 KiB and can opt into 64 KiB; committed reply: 64 KiB; serialized checkpoint: 4 MiB.
   Pi checks the serialized checkpoint before rebuilding its in-memory session.
 - Claude original JSONL transcript: 32 MiB, checked before the SDK reads it;
   its parsed transcript is also limited to 32 MiB. Missing, linked, duplicate or
@@ -53,3 +53,10 @@ Pi), Node 24.22.3 and a C compiler: Pi's SDK and Claude's worker also run in the
 This native test is separate from Temporal rollover/replay qualification. A
 successful fixture run is not live-model acceptance or evidence of forced
 compaction behavior.
+
+Text profiles can opt into an immutable `requestTextBytes` limit from 16,384 to
+65,536 UTF-8 bytes; omission keeps 16,384. Read the effective value in
+`GET /v1/members`. Existing profile names cannot change policy. See
+[request text limits](request-text-limits.md) for configuration, exact refusal
+and replay behavior, transport overhead, persistence, qualification and upgrade
+requirements. Native, routine, handoff and reply bounds remain unchanged.

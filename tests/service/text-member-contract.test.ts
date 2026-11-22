@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeSync } from "node:fs";
+import { forwardWarnings } from "../../src/service/diagnostics.ts";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -283,4 +285,79 @@ test("migration 042 fails closed with 55P03 and applies nothing when a native tu
   });
   assert.equal((await upgraded.query(applied42)).rows[0].n, 0);
   assert.equal((await upgraded.query(engineCheck)).rows[0].def, before);
+});
+
+test("migration 043 preserves registrations and fails atomically on a held profile lock", async t => {
+  const { upgraded, current } = await runningTurnAt(t, 42);
+  await upgraded.query(`INSERT INTO birbcrew_ts.profiles(name,engine,account_digest)
+    VALUES ('historical','cursor',decode(repeat('ab',32),'hex'))`);
+  const before = (await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile;
+  const lock = await upgraded.connect();
+  try {
+    await lock.query("BEGIN");
+    await lock.query("LOCK TABLE birbcrew_ts.profiles IN ACCESS SHARE MODE");
+    await assert.rejects(current.migrate(), { code: "55P03" });
+    assert.equal((await upgraded.query("SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=43")).rowCount, 0);
+    assert.deepEqual((await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile, before);
+  } finally { await lock.query("ROLLBACK"); lock.release(); }
+  await current.migrate();
+  await current.migrate();
+  const after = (await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile;
+  assert.deepEqual(after, { ...before, request_text_bytes: 16_384 });
+  await assert.rejects(upgraded.query("UPDATE birbcrew_ts.profiles SET request_text_bytes=32768 WHERE name='historical'"));
+});
+
+test("immutable text policy is shared by preflight, locked admission, restart and discovery", async t => {
+  const diagnosticLines: string[] = [];
+  forwardWarnings(line => diagnosticLines.push(line));
+  t.after(() => forwardWarnings(line => { writeSync(2, line + "\n"); }));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "text-policy-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { IntegrationApi } = await import("../../src/service/integration-api.ts");
+  const { MemberClient } = await import("../../src/service/client.ts");
+  const { Client } = await import("@temporalio/client");
+  const api = new IntegrationApi(store, new MemberClient(store, new Client()));
+  for (const engine of ["cursor", "opencode"] as const) {
+    const profile: MemberProfile = { accountId: "policy-fixture", ...(engine === "cursor"
+      ? { cursor: { model: "composer-2", apiKey: "marker-secret", cwd: directory } }
+      : { opencode: { model: "provider/model", executable: join(directory, "opencode"), cwd: directory, account: "account", env: {} } }) };
+    const name = `policy-${engine}-${randomUUID()}`;
+    for (const requestTextBytes of [0, 16_383, 65_537, 1.5]) {
+      await assert.rejects(registerProfiles(pool, new Map([[name, { ...profile, requestTextBytes }]]), directory),
+        (error: Error) => error.message.includes("requestTextBytes") && !error.message.includes("marker-secret"));
+    }
+    await registerProfiles(pool, new Map([[name, profile]]), directory);
+    await registerProfiles(pool, new Map([[name, { ...profile, requestTextBytes: 16_384 }]]), directory);
+    await assert.rejects(registerProfiles(pool, new Map([[name, { ...profile, requestTextBytes: 65_536 }]]), directory),
+      (error: Error) => error.message.includes(name) && error.message.includes("requestTextBytes") && error.message.includes("new profile name") && !error.message.includes("marker-secret"));
+    for (const n of [16_384, 32_768, 65_536]) {
+      const wideName = `${name}-${n}`;
+      await registerProfiles(pool, new Map([[wideName, { ...profile, requestTextBytes: n }]]), directory);
+      const member = await store.spawn({ ownerId: randomUUID(), requestId: randomUUID(), engine, profile: wideName });
+      const listing = await api.listMembers(member.ownerId, {});
+      assert.equal(listing.members.find(m => m.memberId === member.memberId)?.requestTextBytes, n);
+      assert.equal((await api.listMembers(randomUUID(), {})).members.some(m => m.memberId === member.memberId), false);
+      const conversationId = randomUUID();
+      await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+      const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "é".repeat(n / 2) };
+      const restarted = new MemberStore(pool);
+      await assert.rejects(restarted.checkAdmission({ ...request, text: "private-input-marker" + "x".repeat(n) }), { name: "ZodError" });
+      const diagnosticCount = diagnosticLines.length;
+      await assert.rejects(restarted.checkAdmission({ ...request, text: "\0" }), { name: "ZodError" });
+      assert.equal(diagnosticLines.length, diagnosticCount, "malformed text has no size-refusal diagnostic");
+      await assert.rejects(restarted.recordAcceptance({ ...request, text: request.text + "x" }, ownerInitiator), { name: "ZodError" });
+      assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.request_admissions WHERE conversation_id=$1", [conversationId])).rowCount, 0);
+      assert.deepEqual(await restarted.checkAdmission(request), request);
+      await restarted.recordAcceptance(request, ownerInitiator);
+      assert.deepEqual(await restarted.checkAdmission(request), request);
+      for (const text of ["different", "x".repeat(n + 1), "x".repeat(65_537)]) {
+        await assert.rejects(restarted.checkAdmission({ ...request, text }), { code: "conflict" });
+      }
+      await assert.rejects(restarted.checkAdmission({ ...request, text: "\0" }), { name: "ZodError" });
+      await assert.rejects(restarted.checkAdmission({ ...request, ownerId: randomUUID() }), { code: "not_found" });
+    }
+  }
+  assert.ok(diagnosticLines.some(line => line.includes('"event":"request_text_refused"') && line.includes('"limit":65536')));
+  assert.equal(diagnosticLines.join("\n").includes("private-input-marker"), false);
+  await assert.rejects(registerProfiles(pool, new Map([["native-policy", { accountId: "native", requestTextBytes: 16_384 }]]), directory), /requestTextBytes/);
 });

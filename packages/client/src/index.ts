@@ -13,7 +13,7 @@ import {
   openConversationSchema,
   requestIdentitySchema,
   routes,
-  submitRequestSchema,
+  memberSubmitEnvelopeSchema,
   type ApprovalDetailIdentity,
   type OwnerApprovalDetail,
   type CreateMember,
@@ -406,7 +406,7 @@ export class CrewClient {
     });
   }
   async submit(input: SubmitRequest, options: CallOptions = {}) {
-    const { conversationId, ...body } = submitRequestSchema.parse(input);
+    const { conversationId, ...body } = memberSubmitEnvelopeSchema.parse(input);
     return this.#receipt(
       routes.submit,
       { conversationId, requestId: body.requestId },

@@ -262,3 +262,10 @@ Finish or reconcile those children under the prerequisite release, or explicitly
 Drain native calls before the upgrade. Migration 037 needs exclusive locks on profiles, members, and children. It retries `NOWAIT` acquisition for up to 60 seconds and rolls back the migration if those tables stay busy. Retry after the calls drain. This does not change model or approval deadlines.
 
 After restoring a backup, reconcile outstanding work through the existing recovery procedure. Activation permanently removes all named roles under restored profile names. It also globally disables delegation and permanently retires unfinished restored children without changing their sealed identity. Matching workers reconcile those children as failed, or cancelled when request cancellation already applies. Re-enabling delegation permits future children only. Create a new parent profile name to enable new named delegation, then use the private [delegation-control CLI](delegation-control.md#re-enable-future-delegation). Backups do not retain removals made after the backup was captured.
+
+Text profiles can opt into an immutable `requestTextBytes` limit from 16,384 to
+65,536 UTF-8 bytes; omission keeps 16,384. Read the effective value in
+`GET /v1/members`. Existing profile names cannot change policy. See
+[request text limits](request-text-limits.md) for configuration, exact refusal
+and replay behavior, transport overhead, persistence, qualification and upgrade
+requirements. Native, routine, handoff and reply bounds remain unchanged.
