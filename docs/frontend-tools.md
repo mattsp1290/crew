@@ -1000,7 +1000,7 @@ binding must handle each item below. Each names the Crew-side signal it uses.
 ## Restore after process loss
 
 Crew is the importing application under Switchboard's
-[frontend restore contract](https://github.com/mattsp1290/switchboard/blob/main/docs/architecture/frontend-restore.md).
+[frontend restore contract](https://github.com/operatorworks/switchboard/blob/main/docs/architecture/frontend-restore.md).
 Switchboard owns no persistence. Crew persists, in its own tables:
 
 - the `PendingFrontendBatch` envelope (`formatVersion: 1`, `adapter`, `session`,

@@ -107,11 +107,11 @@
   "description": "Durable Claude, Codex and Pi coding coworkers",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mattsp1290/crew.git"
+    "url": "https://github.com/operatorworks/crew.git"
   },
-  "homepage": "https://github.com/mattsp1290/crew#readme",
+  "homepage": "https://github.com/operatorworks/crew#readme",
   "bugs": {
-    "url": "https://github.com/mattsp1290/crew/issues"
+    "url": "https://github.com/operatorworks/crew/issues"
   },
   "overrides": {
     "@opentelemetry/otlp-exporter-base": "$@opentelemetry/otlp-exporter-base"

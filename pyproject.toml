@@ -17,8 +17,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/mattsp1290/crew"
-Issues = "https://github.com/mattsp1290/crew/issues"
+Repository = "https://github.com/operatorworks/crew"
+Issues = "https://github.com/operatorworks/crew/issues"
 
 [dependency-groups]
 dev = ["pytest==9.2.0", "ruff==0.17.4"]
