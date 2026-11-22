@@ -68,6 +68,7 @@ export class MemberClient {
 
   async describeClosure(key: Pick<Conversation,"ownerId"|"conversationId">): Promise<ClosureEvidence> {
     const candidate = await this.store.transaction(async db => {
+      await db.query("SET LOCAL lock_timeout='2000ms'; SET LOCAL statement_timeout='2000ms'");
       const row = await contentErasureState(db,key,true);
       if (!isTextEngine(row.engine)) throw new MemberStoreError("content_erasure_unsupported");
       if ((await db.query("SELECT 1 FROM birbcrew_ts.conversation_workflow_starts WHERE conversation_id=$1 AND state IN ('reserved','ambiguous') LIMIT 1", [key.conversationId])).rowCount) throw new MemberStoreError("content_start_unresolved");

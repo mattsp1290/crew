@@ -33,3 +33,11 @@ export async function spawnHistoricalMember(store: MemberStore, input: { ownerId
     return { ...member, ownerId: input.ownerId };
   });
 }
+
+/** Released migrations use both literal CHECKs and dynamic SQL that preserves a
+ * catalog expression. Unescape the latter's SQL string before collecting names. */
+export function auditTypesNamedInMigration(source: string): string[] {
+  const normalized = source.replaceAll("''", "'");
+  const check = /ADD CONSTRAINT audit_events_type_check CHECK \(([\s\S]*?)\) NOT VALID'?;/.exec(normalized);
+  return [...(check?.[1].matchAll(/'([a-z_]+\.[a-z_]+)'/g) ?? [])].map(match => match[1]);
+}

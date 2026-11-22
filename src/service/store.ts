@@ -180,7 +180,7 @@ export class MemberStore {
         await db.query("ROLLBACK");
         if (error instanceof Error && "code" in error && ["40001","40P01"].includes(String(error.code)) && attempt<2) continue;
         if(error instanceof Error && "code" in error && error.code==="23514" &&
-          (error.message==="conversation_erased" || error.message==="conversation_open")) throw new MemberStoreError(error.message);
+          (error.message==="conversation_erased" || error.message==="conversation_open" || error.message==="content_output_busy")) throw new MemberStoreError(error.message);
         throw error;
       } finally { db.release(); }
     }

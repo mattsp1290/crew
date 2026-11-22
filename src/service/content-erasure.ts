@@ -38,7 +38,22 @@ export async function eraseConversationContent({
   if (!state.content_erasure_id) {
     await preflightContentErasure(store, key);
     await lifecycle.describeClosure(key);
-    await beginContentErasure(store, key);
+    for (;;) {
+      try {
+        await beginContentErasure(store, key);
+        break;
+      } catch (error) {
+        if (
+          !(
+            error instanceof MemberStoreError &&
+            error.code === "content_output_busy"
+          ) ||
+          Date.now() >= deadline
+        )
+          throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
     state = await contentErasureState(store.pool, key);
   }
   try {

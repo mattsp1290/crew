@@ -494,7 +494,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       if (error instanceof ReceiptContractError) return json(response, 500, { error: "retry_same_request" });
       if (error instanceof z.ZodError) return json(response, 400, { error: "invalid_input" });
       if (error instanceof CapabilityCeilingError) return json(response, 400, { error: error.message });
-      if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : error.code === "conversation_erased" ? 410 : error.code === "content_erasure_pending" ? 503 : 409, { error: error.code });
+      if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : error.code === "conversation_erased" ? 410 : (error.code === "content_erasure_pending" || error.code === "content_output_busy") ? 503 : 409, { error: error.code });
       if (error instanceof WorkflowUpdateFailedError) return json(response, 409, { error: "update_rejected" });
       if (error instanceof AuditUnsettledError) return json(response, 503, { error: "audit_unsettled" }, { "Retry-After": "1" });
       // No reason: which names resolve to private addresses is not the caller's to learn.

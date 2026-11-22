@@ -15,6 +15,7 @@ END $$;
 
 ALTER TABLE birbcrew_ts.conversations
   ADD COLUMN content_erasure_id uuid,
+  ADD COLUMN content_output_epoch bigint NOT NULL DEFAULT 0 CHECK(content_output_epoch>=0),
   ADD COLUMN text_location_inventory_complete boolean NOT NULL DEFAULT false,
   ADD COLUMN text_start_generation bigint NOT NULL DEFAULT 0,
   ADD COLUMN text_lifecycle text NOT NULL DEFAULT 'startable' CHECK (text_lifecycle IN ('startable','sealed_closed')),
@@ -74,6 +75,30 @@ CREATE TABLE birbcrew_ts.text_request_no_launch_proofs (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(conversation_id,request_id),
   FOREIGN KEY(conversation_id,request_id) REFERENCES birbcrew_ts.request_admissions
 );
+-- A row lock alone disappears on backend loss while a paused gateway can still emit.
+-- A committed output reservation instead prevents the fence until emit has returned.
+CREATE TABLE birbcrew_ts.content_output_reservations (
+  output_id uuid PRIMARY KEY, conversation_id uuid NOT NULL REFERENCES birbcrew_ts.conversations,
+  gateway_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX content_output_reservations_conversation ON birbcrew_ts.content_output_reservations(conversation_id);
+CREATE TABLE birbcrew_ts.content_output_drains (
+  drain_id uuid NOT NULL, conversation_id uuid NOT NULL REFERENCES birbcrew_ts.conversations,
+  output_ids uuid[] NOT NULL, confirmed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY(drain_id,conversation_id)
+);
+CREATE FUNCTION birbcrew_ts.reserve_content_output() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE fence uuid;
+BEGIN
+  SELECT content_erasure_id INTO fence FROM birbcrew_ts.conversations WHERE conversation_id=NEW.conversation_id FOR UPDATE;
+  IF fence IS NOT NULL THEN RAISE EXCEPTION 'conversation_erased' USING ERRCODE='23514'; END IF;
+  -- Touch the tuple: a stale REPEATABLE READ fence must serialize-abort rather than
+  -- miss a ticket that committed after its snapshot while this lock was held.
+  UPDATE birbcrew_ts.conversations SET content_output_epoch=content_output_epoch+1 WHERE conversation_id=NEW.conversation_id;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER reserve_content_output BEFORE INSERT ON birbcrew_ts.content_output_reservations
+  FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.reserve_content_output();
 CREATE TABLE birbcrew_ts.conversation_content_erasures (
   conversation_id uuid PRIMARY KEY REFERENCES birbcrew_ts.conversations, erasure_id uuid NOT NULL UNIQUE,
   requested_at timestamptz NOT NULL DEFAULT clock_timestamp(), erased_at timestamptz,
@@ -181,12 +206,18 @@ BEGIN
   IF NEW.text_start_generation<OLD.text_start_generation OR (OLD.text_location_inventory_complete AND NOT NEW.text_location_inventory_complete) THEN
     RAISE EXCEPTION 'Text lifecycle evidence is monotonic' USING ERRCODE='23514';
   END IF;
+  IF NEW.content_erasure_id IS NOT NULL AND EXISTS(SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=NEW.conversation_id) THEN
+    RAISE EXCEPTION 'content_output_busy' USING ERRCODE='23514';
+  END IF;
+  IF NEW.content_output_epoch<OLD.content_output_epoch THEN RAISE EXCEPTION 'Output epoch is monotonic' USING ERRCODE='23514'; END IF;
   IF NEW.content_erasure_id IS NOT NULL AND (NEW.text_lifecycle<>'sealed_closed' OR NOT NEW.text_location_inventory_complete OR
     NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_erasures WHERE conversation_id=NEW.conversation_id AND erasure_id=NEW.content_erasure_id)) THEN
     RAISE EXCEPTION 'Incomplete erasure evidence' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END $$;
+CREATE TRIGGER keep_output_reservations BEFORE TRUNCATE ON birbcrew_ts.content_output_reservations FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_content_identity();
+CREATE TRIGGER content_output_identity BEFORE UPDATE ON birbcrew_ts.content_output_reservations FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_content_identity();
 CREATE TRIGGER conversations_content_fence BEFORE UPDATE ON birbcrew_ts.conversations FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_content_fence();
 CREATE FUNCTION birbcrew_ts.keep_fenced_parents() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -209,11 +240,11 @@ BEGIN
     EXECUTE format('CREATE TRIGGER keep_fenced_parent BEFORE DELETE ON birbcrew_ts.%I FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
     EXECUTE format('CREATE TRIGGER keep_fenced_rows BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
   END LOOP;
-  FOREACH name IN ARRAY ARRAY['text_state_locations','text_conversation_locations','text_request_no_launch_proofs','text_runtime_cleanup_proofs','conversation_workflow_starts','conversation_content_erasures','conversation_content_cleanup'] LOOP
+  FOREACH name IN ARRAY ARRAY['text_state_locations','text_conversation_locations','text_request_no_launch_proofs','text_runtime_cleanup_proofs','conversation_workflow_starts','conversation_content_erasures','conversation_content_cleanup','content_output_drains'] LOOP
     EXECUTE format('CREATE TRIGGER keep_identity BEFORE UPDATE OR DELETE ON birbcrew_ts.%I FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_content_identity()',name);
     EXECUTE format('CREATE TRIGGER keep_identity_truncate BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_content_identity()',name);
   END LOOP;
-  FOREACH name IN ARRAY ARRAY['text_state_locations','text_conversation_locations','text_request_no_launch_proofs','text_runtime_cleanup_proofs','conversation_workflow_starts','conversation_content_erasures','conversation_content_cleanup','text_closure_scan'] LOOP
+  FOREACH name IN ARRAY ARRAY['text_state_locations','text_conversation_locations','text_request_no_launch_proofs','text_runtime_cleanup_proofs','conversation_workflow_starts','conversation_content_erasures','conversation_content_cleanup','text_closure_scan','content_output_reservations','content_output_drains'] LOOP
     EXECUTE format('CREATE TRIGGER recovery_write_barrier BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.require_active_installation()',name);
   END LOOP;
 END $$;

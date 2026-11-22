@@ -12,6 +12,7 @@ import {
   terminalWorkflowStatuses,
 } from "./content-erasure-store.ts";
 import { isTextEngine, MemberStoreError } from "./domain.ts";
+import type { PoolClient } from "pg";
 import type { MemberStore } from "./store.ts";
 
 const locationSchema = z.strictObject({
@@ -37,6 +38,27 @@ export const erasureInventorySchema = z.strictObject({
     )
     .min(1),
 });
+
+/** Trusted teardown evidence only: the caller must first await every gateway's termination.
+ * There is deliberately no expiry or heartbeat shortcut for a gateway that could resume. */
+export async function clearQuiescedContentOutputs(
+  db: PoolClient,
+  key: { ownerId: string; conversationId: string },
+  drainId: string,
+) {
+  z.uuid().parse(drainId);
+  await assertContentWritable(db, key);
+  await db.query(
+    `INSERT INTO birbcrew_ts.content_output_drains(drain_id,conversation_id,output_ids)
+    SELECT $2,conversation_id,array_agg(output_id ORDER BY output_id) FROM birbcrew_ts.content_output_reservations
+    WHERE conversation_id=$1 GROUP BY conversation_id`,
+    [key.conversationId, drainId],
+  );
+  await db.query(
+    "DELETE FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1",
+    [key.conversationId],
+  );
+}
 
 /** Trusted operator only. quiesce must drain ALL old senders and writer descendants,
  * fence/drain Temporal RPCs, then make Temporal available for observation with pollers still stopped. */
@@ -85,6 +107,7 @@ export async function enrollErasureInventory(
     )) {
       await assertContentWritable(db, key);
       const row = await contentErasureState(db, key);
+      await clearQuiescedContentOutputs(db, key, drainId);
       if (key.inventory.kind === "no_launch") {
         if (
           (

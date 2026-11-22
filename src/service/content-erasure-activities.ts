@@ -33,6 +33,9 @@ export function contentErasureActivities(store: MemberStore) {
       const key = conversationKey.parse(input);
       try {
         await store.transaction(async (db) => {
+          await db.query(
+            "SET LOCAL lock_timeout='2000ms'; SET LOCAL statement_timeout='2000ms'",
+          );
           await contentErasureState(db, key, true);
           await terminalTextRequests(db, key);
           await textStopProofs(db, key);

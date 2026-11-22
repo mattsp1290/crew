@@ -710,3 +710,98 @@ test("published raw OpenAPI rejects result presence on erased receipts", () => {
   assert.equal(validate({ ...receipt, result: { text: "leak" } }), false);
   assert.equal(validate({ ...receipt, result: null }), false);
 });
+for (const mode of ["before_commit", "after_commit"] as const) {
+  test(
+    `backend loss cannot bypass output fencing while the gateway is paused ${mode}`,
+    { timeout: 20000 },
+    async () => {
+      const { spawn } = await import("node:child_process");
+      const { clearQuiescedContentOutputs } = await import(
+        "../../src/service/erasure-inventory.ts"
+      );
+      const { key } = await fixture();
+      await seal(key);
+      const name = "output-race-" + randomUUID();
+      const child = spawn(
+        process.execPath,
+        [
+          "tests/service/output-reservation-child.mjs",
+          mode,
+          JSON.stringify(key),
+          name,
+        ],
+        { env: process.env, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let output = "",
+        errors = "";
+      child.stdout.on("data", (chunk) => (output += chunk));
+      child.stderr.on("data", (chunk) => (errors += chunk));
+      const ended = once(child, "close");
+      try {
+        const deadline = Date.now() + 10000;
+        while (!output.includes("FROZEN ")) {
+          if (Date.now() > deadline)
+            throw Error("Gateway did not pause: " + errors);
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        const pid = Number(/FROZEN (\d+)/.exec(output)?.[1]);
+        const terminated = await pool.query(
+          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND application_name=$2",
+          [pid, name],
+        );
+        assert.equal(terminated.rowCount, 1);
+        if (mode === "before_commit") {
+          await beginContentErasure(store, key);
+          await finishContentErasure(store, key);
+        } else {
+          await assert.rejects(beginContentErasure(store, key), {
+            code: "content_output_busy",
+          });
+          assert.equal(
+            (await contentErasureState(pool, key)).content_erasure_id,
+            null,
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1",
+                [key.conversationId],
+              )
+            ).rowCount,
+            1,
+          );
+        }
+        child.kill("SIGCONT");
+        await ended;
+        assert.equal(
+          output.includes("ENQUEUED"),
+          mode === "after_commit",
+          output,
+        );
+        if (mode === "after_commit") {
+          // Positive process reaping proves this test gateway cannot emit again. No age-based cleanup.
+          const drainId = randomUUID();
+          await store.transaction((db) =>
+            clearQuiescedContentOutputs(db, key, drainId),
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT 1 FROM birbcrew_ts.content_output_drains WHERE drain_id=$1",
+                [drainId],
+              )
+            ).rowCount,
+            1,
+          );
+          await beginContentErasure(store, key);
+          await finishContentErasure(store, key);
+        }
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await ended;
+        }
+      }
+    },
+  );
+}

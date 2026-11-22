@@ -1,4 +1,4 @@
-import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
+import { auditTypesNamedInMigration, migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -1140,8 +1140,7 @@ test("the webhook migration keeps every constraint, trigger, function, index and
   // The registry also holds the types later migrations add to the CHECK, read from their files.
   const later = new Set<string>();
   for (const file of migrations.filter(file => Number(file.split("-")[0]) > webhookVersion)) {
-    const check = /ADD CONSTRAINT audit_events_type_check CHECK \(([\s\S]*?)\) NOT VALID;/.exec(await readFile(new URL(file, sql), "utf8"));
-    for (const [, type] of check?.[1].matchAll(/'([a-z_]+\.[a-z_]+)'/g) ?? []) later.add(type);
+    for (const type of auditTypesNamedInMigration(await readFile(new URL(file, sql), "utf8"))) later.add(type);
   }
   assert.deepEqual([...new Set([...types(replaced), ...later])].sort(), [...auditEventTypes].sort());
 });

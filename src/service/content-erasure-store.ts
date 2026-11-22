@@ -19,6 +19,17 @@ export type ClosureEvidence = {
   namespace: string;
   generation: string;
 };
+async function erasureTransaction<T>(
+  store: MemberStore,
+  action: (db: PoolClient) => Promise<T>,
+) {
+  return store.transaction(async (db) => {
+    await db.query(
+      "SET LOCAL lock_timeout='2000ms'; SET LOCAL statement_timeout='2000ms'",
+    );
+    return action(db);
+  });
+}
 export const terminalWorkflowStatuses = [
   "COMPLETED",
   "FAILED",
@@ -173,7 +184,7 @@ export async function preflightContentErasure(
   key: Key,
   inventory = true,
 ) {
-  return store.transaction(async (db) => {
+  return erasureTransaction(store, async (db) => {
     const row = await contentErasureState(db, key, true);
     await terminalTextRequests(db, key);
     await textStopProofs(db, key);
@@ -188,7 +199,7 @@ export async function reserveTextWorkflowStart(
   key: Key,
   workflowId: string,
 ) {
-  return store.transaction(async (db) => {
+  return erasureTransaction(store, async (db) => {
     await assertContentWritable(db, key);
     const row = await contentErasureState(db, key);
     if (row.text_lifecycle === "sealed_closed") return null;
@@ -212,7 +223,7 @@ export async function settleTextWorkflowStart(
   attemptId: string,
   runId?: string,
 ) {
-  await store.transaction(async (db) => {
+  await erasureTransaction(store, async (db) => {
     await assertContentWritable(db, key);
     await db.query(
       "UPDATE birbcrew_ts.conversation_workflow_starts SET state=$3,run_id=$4 WHERE conversation_id=$1 AND attempt_id=$2 AND state IN ('reserved','ambiguous')",
@@ -232,7 +243,7 @@ export async function sealTextClosure(
 ) {
   if (!terminalWorkflowStatuses.includes(evidence.status))
     throw new MemberStoreError("conversation_open");
-  return store.transaction(async (db) => {
+  return erasureTransaction(store, async (db) => {
     const row = await contentErasureState(db, key, true);
     if (row.text_lifecycle === "sealed_closed") return row.text_closure!;
     if (row.text_start_generation !== evidence.generation)
@@ -250,9 +261,18 @@ export async function sealTextClosure(
   });
 }
 export async function beginContentErasure(store: MemberStore, key: Key) {
-  return store.transaction(async (db) => {
+  return erasureTransaction(store, async (db) => {
     const row = await contentErasureState(db, key, true);
     if (row.content_erasure_id) return row.content_erasure_id;
+    if (
+      (
+        await db.query(
+          "SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1 LIMIT 1",
+          [key.conversationId],
+        )
+      ).rowCount
+    )
+      throw new MemberStoreError("content_output_busy");
     const receipts = await terminalTextRequests(db, key);
     await textStopProofs(db, key);
     await resolvedStarts(db, key);
@@ -291,7 +311,7 @@ export async function beginContentErasure(store: MemberStore, key: Key) {
   });
 }
 export async function finishContentErasure(store: MemberStore, key: Key) {
-  return store.transaction(async (db) => {
+  return erasureTransaction(store, async (db) => {
     const row = await contentErasureState(db, key, true);
     if (row.erased_at) return contentTombstone(db, key);
     if (!row.content_erasure_id) throw new MemberStoreError("conflict");
