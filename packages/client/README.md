@@ -10,7 +10,7 @@ const snapshot = await crew.conversation({ conversationId });
 const command = { conversationId, requestId, text };
 try {
   const receipt = await crew.submit(command);
-  if (receipt.status === "completed") console.log(receipt.result.text);
+  if (receipt.status === "completed" && !receipt.erased) console.log(receipt.result.text);
 } catch (error) {
   if (!(error instanceof CrewUnknownOutcomeError)) throw error;
   // Persist the command identity and exact text before dispatch. The host decides when to reconcile.
@@ -146,3 +146,5 @@ if (edge !== null && edge.firstRequestAdmitted) {
 The handoff command's `requestId` and the reserved target's `firstRequestId` identify separate roles. The server chooses the reserved ID. `CreateHandoff`, `HandoffRecord`, `CreateHandoffResponse`, `ConversationHandoff`, `HandoffsCapability` and `HandoffsCapabilityV1` are schema-derived exports at the root and `/contract` entry points. `HandoffCommandIdentity` is exported at the root. The `/contract` entry point also exports the shared schemas.
 
 `capabilities().handoffs` is optional. Use `/contract`'s `handoffsCapabilityV1Schema.safeParse(metadata)` to recognize supported version 1 routes, delivery and transcript limits. Absent metadata or an unknown positive version leaves handoffs unsupported for feature discovery. Unknown versions remain opaque metadata. Malformed advertised version 1 metadata fails validation. Capability discovery is an explicit application call.
+
+Owners can close eligible text conversations with `closeConversation({conversationId})`, then erase their content with `eraseConversationContent({conversationId})`. Erased receipts preserve their terminal status and carry `erased: true` without a result. Pending cleanup returns 503; repeat the same erasure command. See the integration API retention and operator inventory requirements.

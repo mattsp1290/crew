@@ -83,7 +83,7 @@ const invalidGrant: PublicGrant = {grantId:'id', memberId:'id', toolName:'record
 export const detail = (key: ApprovalDetailIdentity): Promise<OwnerApprovalDetail> => client.approvalDetail(key);
 export const detailFromContract = (value: ContractDetail): OwnerApprovalDetail => value;
 export const completeArguments = (value: OwnerApprovalDetail): RecordWorkItemArguments => value.arguments;
-export function result(receipt: RequestReceipt): string | undefined { if (receipt.status === 'completed') return receipt.result.text; }
+export function result(receipt: RequestReceipt): string | undefined { if (receipt.status === 'completed' && !receipt.erased) return receipt.result.text; }
 // @ts-expect-error completed receipts require result
 const invalid: RequestReceipt = {apiVersion:'1',conversationId:'id',requestId:'id',acceptance:{boundary:'sql_admission_and_temporal_queue'},status:'completed'};
 // @ts-expect-error owner identity comes only from bearer authentication

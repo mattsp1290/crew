@@ -1,24 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
 import { CrewClient, CrewHttpError } from "@birbcrew/client";
+import { requestReceiptResponseSchema } from "@birbcrew/client/contract";
 
-test("raw OpenAPI rejects a result on erased receipts; portable erasure and close calls preserve identity", async () => {
-  const document = JSON.parse(
-    await readFile(
-      new URL("../../packages/client/openapi.json", import.meta.url),
-      "utf8",
-    ),
-  );
-  const ajv = new Ajv2020({ strict: false });
-  addFormats(ajv);
-  const validate = ajv.compile({
-    ...document.components.schemas.RequestReceipt,
-    components: document.components,
-  });
+test("erased receipts forbid results; portable erasure and close calls preserve identity", async () => {
   const conversationId = randomUUID(),
     requestId = randomUUID();
   const receipt = {
@@ -29,14 +15,13 @@ test("raw OpenAPI rejects a result on erased receipts; portable erasure and clos
     erased: true,
     acceptance: { boundary: "sql_admission_and_temporal_queue" },
   };
-  assert.equal(validate(receipt), true, JSON.stringify(validate.errors));
-  assert.equal(validate({ ...receipt, result: { text: "leak" } }), false);
-  assert.ok(
-    document.paths["/v1/conversations/{conversationId}/content"].delete,
-  );
-  assert.ok(
-    document.paths["/v1/conversations/{conversationId}/close"].post
-      .responses[202],
+  assert.equal(requestReceiptResponseSchema.safeParse(receipt).success, true);
+  assert.equal(
+    requestReceiptResponseSchema.safeParse({
+      ...receipt,
+      result: { text: "leak" },
+    }).success,
+    false,
   );
   const seen: { path: string; method: string | undefined; body: unknown }[] =
     [];

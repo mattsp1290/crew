@@ -615,7 +615,7 @@ test("migration 031 takes its locks without queueing, rewrites nothing, leaves i
     // The registry also holds the types later migrations add to the CHECK, read from their files.
     const later = new Set<string>();
     for (const file of (await readdir(sql)).filter(file => Number(file.split("-")[0]) > 31)) {
-      const check = /ADD CONSTRAINT audit_events_type_check CHECK \(([\s\S]*?)\) NOT VALID;/.exec(await readFile(new URL(file, sql), "utf8"));
+      const check = /ADD CONSTRAINT audit_events_type_check CHECK \(([\s\S]*?)\) NOT VALID'?;/.exec((await readFile(new URL(file, sql), "utf8")).replaceAll("''", "'"));
       for (const [, type] of check?.[1].matchAll(/'([a-z_]+\.[a-z_]+)'/g) ?? []) later.add(type);
     }
     assert.deepEqual([...new Set([...types(replaced), ...later])].sort(), [...auditEventTypes].sort(), "the registry and the CHECKs name the same types");

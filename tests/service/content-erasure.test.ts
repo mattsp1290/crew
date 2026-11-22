@@ -1,3 +1,4 @@
+import { responseValidator } from "./gateway-fixtures.ts";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { createGateway } from "../../src/service/gateway.ts";
@@ -693,4 +694,19 @@ test("043 upgrades retained native/text data from 042, is idempotent, and protec
   } finally {
     client.release();
   }
+});
+
+test("published raw OpenAPI rejects result presence on erased receipts", () => {
+  const validate = responseValidator("requestStatus", 200);
+  const receipt = {
+    apiVersion: "1",
+    conversationId: randomUUID(),
+    requestId: randomUUID(),
+    status: "completed",
+    erased: true,
+    acceptance: { boundary: "sql_admission_and_temporal_queue" },
+  };
+  assert.equal(validate(receipt), true);
+  assert.equal(validate({ ...receipt, result: { text: "leak" } }), false);
+  assert.equal(validate({ ...receipt, result: null }), false);
 });
