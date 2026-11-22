@@ -296,7 +296,14 @@ test("migration 043 preserves registrations and fails atomically on a held profi
   try {
     await lock.query("BEGIN");
     await lock.query("LOCK TABLE birbcrew_ts.profiles IN ACCESS SHARE MODE");
-    await assert.rejects(current.migrate(), { code: "55P03" });
+    const migrating = current.migrate().then(() => ({ code: "applied" }), (error: Error & { code?: string }) => ({ code: error.code }));
+    await delay(100);
+    const reader = await upgraded.connect();
+    try {
+      await reader.query("SET statement_timeout='250ms'");
+      await reader.query("SELECT 1 FROM birbcrew_ts.profiles LIMIT 1");
+    } finally { await reader.query("RESET statement_timeout"); reader.release(); }
+    assert.deepEqual(await migrating, { code: "55P03" });
     assert.equal((await upgraded.query("SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=43")).rowCount, 0);
     assert.deepEqual((await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile, before);
   } finally { await lock.query("ROLLBACK"); lock.release(); }
@@ -360,4 +367,37 @@ test("immutable text policy is shared by preflight, locked admission, restart an
   assert.ok(diagnosticLines.some(line => line.includes('"event":"request_text_refused"') && line.includes('"limit":65536')));
   assert.equal(diagnosticLines.join("\n").includes("private-input-marker"), false);
   await assert.rejects(registerProfiles(pool, new Map([["native-policy", { accountId: "native", requestTextBytes: 16_384 }]]), directory), /requestTextBytes/);
+});
+
+
+test("a concurrent admission does not make an exact preflight retry exhaust its own slot", { timeout: 10_000 }, async () => {
+  for (const changed of [false, true]) {
+    const member = await spawned("cursor");
+    const conversationId = randomUUID();
+    await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+    const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original" };
+    let resume = () => {}, pause = () => {}, intercept = true;
+    const resumed = new Promise<void>(resolve => { resume = resolve; });
+    const paused = new Promise<void>(resolve => { pause = resolve; });
+    const concurrent = new MemberStore(new Proxy(pool, {
+      get(target, property, receiver) {
+        if (property !== "query") return Reflect.get(target, property, receiver);
+        return async (...args: unknown[]) => {
+          const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
+          if (intercept && typeof args[0] === "string" && args[0].includes("SELECT t.prompt_digest, t.phase, t.reply")) {
+            intercept = false;
+            pause();
+            await resumed;
+          }
+          return result;
+        };
+      },
+    }));
+    const retry = concurrent.checkAdmission({ ...request, text: changed ? "changed" : request.text });
+    const expected = changed ? assert.rejects(retry, { code: "conflict" }) : retry;
+    await paused;
+    try { await store.recordAcceptance(request, ownerInitiator); }
+    finally { resume(); }
+    await expected;
+  }
 });

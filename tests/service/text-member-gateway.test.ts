@@ -53,7 +53,7 @@ function acp() {
       configOptions: [{ id: "model", currentValue: message.params.value }] } });
     else if (message.method === "session/prompt") {
       send(sink, { jsonrpc: "2.0", method: "session/update", params: { sessionId: "session-1", update: {
-        sessionUpdate: "agent_message_chunk", messageId: "m", content: { type: "text", text: message.params.prompt[0].text.startsWith("MAX_REPLY") ? "r".repeat(65_536) : message.params.prompt[0].text.startsWith("OVERFLOW") ? "r".repeat(65_537) : "cedar remembered" } } } });
+        sessionUpdate: "agent_message_chunk", messageId: "m", content: { type: "text", text: message.params.prompt[0].text.startsWith("ESCAPED_REPLY") ? ${JSON.stringify("\u0001")}.repeat(65_536) : message.params.prompt[0].text.startsWith("MAX_REPLY") ? "r".repeat(65_536) : message.params.prompt[0].text.startsWith("OVERFLOW") ? "r".repeat(65_537) : "cedar remembered" } } } });
       send(sink, { jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn", usage: {} } });
     } else if (message.method === "session/close") send(sink, { jsonrpc: "2.0", id: message.id, result: {} });
   }
@@ -72,8 +72,8 @@ export const profiles = new Map([
     cursor: { model: "composer-2", apiKey: "cursor-secret", cwd, runtime() {
       appendFileSync(log, "start\\n");
       return { async start({ text, onEvent }) {
-        onEvent({ kind: "text", text: text.startsWith("MAX_REPLY") || text.startsWith("OVERFLOW") ? "r" : "cedar " });
-        onEvent({ kind: "text", text: text.startsWith("MAX_REPLY") ? "r".repeat(65_536) : text.startsWith("OVERFLOW") ? "r".repeat(65_537) : ${JSON.stringify(reply)} });
+        onEvent({ kind: "text", text: text.startsWith("ESCAPED_REPLY") ? ${JSON.stringify("\u0001")} : text.startsWith("MAX_REPLY") || text.startsWith("OVERFLOW") ? "r" : "cedar " });
+        onEvent({ kind: "text", text: text.startsWith("ESCAPED_REPLY") ? ${JSON.stringify("\u0001")}.repeat(65_536) : text.startsWith("MAX_REPLY") ? "r".repeat(65_536) : text.startsWith("OVERFLOW") ? "r".repeat(65_537) : ${JSON.stringify(reply)} });
         onEvent({ kind: "ended", outcome: "completed" });
         return { agentId: "agent-1", finished: Promise.resolve("completed"), async abort() {} };
       }, async close() {} };
@@ -123,6 +123,7 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
   const temporal = new Client({ connection, namespace: temporalSettings(process.env).namespace });
   const token = randomUUID();
   const ownerId = randomUUID();
+  const lookups = t.mock.method(store, "getConversation");
   const getHandle = t.mock.method(temporal.workflow, "getHandle");
   const startWorkflow = t.mock.method(temporal.workflow, "start");
   function workflowCalls(memberId: string, conversationId: string) {
@@ -266,6 +267,13 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
       assert.notEqual((await submitHandle.describe()).status.name, "FAILED");
     }
   }
+  for (const conversationId of [randomUUID(), randomUUID()]) {
+    for (const route of [`/conversations/${conversationId}/inputs`, `/v1/conversations/${conversationId}/requests`]) {
+      assert.deepEqual(await call("POST", route, { requestId: randomUUID(), text: "\0" }),
+        { status: 400, payload: { error: "invalid_input" } });
+      assert.equal(lookups.mock.calls.filter(call => call.arguments[0].conversationId === conversationId).length, 0);
+    }
+  }
   const native = await store.spawn({ ownerId, requestId: randomUUID(), engine: "pi", profile: "native-http-fixture" });
   const nativeConversation = randomUUID();
   await store.openConversation({ ownerId, memberId: native.memberId, conversationId: nativeConversation });
@@ -317,9 +325,9 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
         // A legal decoded maximum can exceed the independent JSON transport cap.
         if (n === 65_536) assert.deepEqual(await call("POST", route, { requestId, text: '"'.repeat(n) }),
           { status: 413, payload: { error: "request_too_large" } });
-        const text = n === 65_536 ? "MAX_REPLY " + (versioned ? '"'.repeat(32_768) + "x".repeat(n - 10 - 32_768) : "é".repeat((n - 10) / 2)) : "é".repeat(n / 2);
+        const text = n === 65_536 ? (versioned ? "ESCAPED_REPLY " + '"'.repeat(32_768) + "x".repeat(n - 14 - 32_768) : "MAX_REPLY " + "é".repeat((n - 10) / 2)) : "é".repeat(n / 2);
         assert.equal(Buffer.byteLength(text), n);
-        const expectedReply = n === 65_536 ? "r".repeat(65_536) : reply;
+        const expectedReply = n === 65_536 ? (versioned ? "\u0001" : "r").repeat(65_536) : reply;
         assert.equal((await call("POST", route, { requestId, text })).status, 202);
         await until(`${engine} ${n} committed`, async () => {
           const status = await call("GET", `/conversations/${conversationId}/requests/${requestId}`);
@@ -348,7 +356,32 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
         assert.ok(observed?.success);
         assert.deepEqual(observed.data.messages, messages, "observer preserves the exact input and reply");
         const handle = temporal.workflow.getHandle(`birbcrew-ts/member/${memberId}/conversation/${conversationId}`);
+        await until("workflow task and activities settle before sizing", async () => {
+          const described = await temporal.connection.workflowService.describeWorkflowExecution({
+            namespace: temporalSettings(process.env).namespace, execution: { workflowId: handle.workflowId },
+          });
+          return !described.pendingWorkflowTask && !described.pendingActivities?.length;
+        });
         const history = await handle.fetchHistory();
+        assert.equal(history.events?.at(-1)?.eventType, temporalProto.api.enums.v1.EventType.EVENT_TYPE_WORKFLOW_TASK_COMPLETED);
+        for (const activity of ["recordAcceptance", "executeTurn"]) {
+          const scheduled = history.events?.find(event => event.activityTaskScheduledEventAttributes?.activityType?.name === activity);
+          assert.ok(scheduled);
+          const input = scheduled.activityTaskScheduledEventAttributes?.input?.payloads?.[0];
+          assert.ok(input);
+          const decodedInput: unknown = defaultPayloadConverter.fromPayload(input);
+          assert.ok(decodedInput && typeof decodedInput === "object" && "text" in decodedInput);
+          assert.equal(decodedInput.text, text);
+          const completed = history.events?.find(event => event.activityTaskCompletedEventAttributes?.scheduledEventId?.toString() === scheduled.eventId?.toString());
+          assert.ok(completed, `${activity} completion must be present`);
+          if (activity === "executeTurn") {
+            const result = completed.activityTaskCompletedEventAttributes?.result?.payloads?.[0];
+            assert.ok(result);
+            const decoded: unknown = defaultPayloadConverter.fromPayload(result);
+            assert.ok(decoded && typeof decoded === "object" && "text" in decoded);
+            assert.equal(decoded.text, expectedReply, "history must carry the complete bounded reply");
+          }
+        }
         await Worker.runReplayHistory({ workflowsPath: fileURLToPath(new URL("../../src/service/workflow.ts", import.meta.url)) }, history, handle.workflowId);
         const encodedHistory = temporalProto.api.history.v1.History.encode(history).finish().length;
         const events = (history.events ?? []).map(event => ({

@@ -636,6 +636,8 @@ test("migration 40 upgrades a v39 database without rewriting a table or waiting 
   const directory = await mkdtemp(join(tmpdir(), "birb-capabilities-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const old: MemberProfile = { accountId: "fixture-account", pi: {} as never, protectedTool: "record_work_item" };
+  // Today's registration requires the complete current schema, after the historical lock assertions.
+  await current.migrate();
   await registerProfiles(upgraded, new Map([[plain, old]]), directory);
   await assert.rejects(registerProfiles(upgraded, new Map([[plain, { ...old, capabilities: { version: 1, workspace: { files: "read" } } }]]), directory),
     /different tools or capabilities/);

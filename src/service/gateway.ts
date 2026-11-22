@@ -408,16 +408,17 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     if (!parts) throw new HttpError(404, "not_found");
     const conversationId = z.uuid().parse(parts[1]);
     if (!parts[2] && request.method === "GET") return json(response, 200, await readSnapshot(store.pool, ownerId, conversationId));
-    const conversation = await store.getConversation({ ownerId, conversationId });
+    if (parts[2] === "inputs" && request.method === "POST") {
+      const prompt = routes.submit.body.parse(await body(request));
+      const conversation = await store.getConversation({ ownerId, conversationId });
+      const input = { ...prompt, ownerId, conversationId };
+      if (!isTextEngine(conversation.engine)) submitSchema.parse(input);
+      return json(response, 202, await members.accept(input));
+    }
+    await store.getConversation({ ownerId, conversationId });
     if (request.method !== "POST") throw new HttpError(405, "method_not_allowed");
     const input = await body(request);
     switch (parts[2]) {
-      case "inputs": {
-        const prompt = routes.submit.body.parse(input);
-        const request = { ...prompt, ownerId, conversationId };
-        if (!isTextEngine(conversation.engine)) submitSchema.parse(request);
-        return json(response, 202, await members.accept(request));
-      }
       case "cancel": {
         const key = turnKey.omit({ ownerId: true, conversationId: true }).parse(input);
         await members.cancelPending({ ownerId, conversationId, ...key });

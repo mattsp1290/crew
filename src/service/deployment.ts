@@ -128,7 +128,7 @@ export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, M
         const match = await db.query(`SELECT 1 FROM birbcrew_ts.profiles WHERE name=$1 AND engine=$2
                          AND account_digest=$3 AND volume IS NOT DISTINCT FROM $4::uuid AND protected_tool IS NOT DISTINCT FROM $5::text AND delegate_task=$6 AND human_tool IS NOT DISTINCT FROM $7::text
                          AND capabilities IS NOT DISTINCT FROM $8::jsonb AND request_text_bytes=$9`, key);
-        if (!match.rowCount) throw new Error(`Profile ${JSON.stringify(name)} registered for another account or native state volume, or with different tools, capabilities or requestTextBytes; use a new profile name in a trusted module`);
+        if (!match.rowCount) throw new Error(`Profile ${JSON.stringify(name)} registered for another account or native state volume, or with different tools or capabilities or requestTextBytes; use a new profile name in a trusted module`);
         if (declaration?.mode === "named") {
           const { rows: [row] } = await db.query<{ child_target_seal: unknown; child_target_active: string[] }>(
             "SELECT child_target_seal,child_target_active FROM birbcrew_ts.profiles WHERE name=$1 AND engine=$2", [name, engine]);

@@ -368,7 +368,16 @@ export class MemberStore {
     if (isTextEngine(conversation.engine)) {
       const counted = await turnBudget(this.pool, key.conversationId);
       const refusal = turnRefusal(conversation.engine, key.text, counted.used >= counted.limit);
-      if (refusal) throw refusal;
+      if (refusal) {
+        // An admission committed after the first identity reads may account for this slot.
+        if (await this.requestAdmissionTerms(key) !== undefined) return validated;
+        const concurrentTurn = await this.legacyTurn(key);
+        if (concurrentTurn) {
+          if (!concurrentTurn.prompt_digest.equals(createHash("sha256").update(key.text, "utf8").digest())) throw new MemberStoreError("conflict");
+          return validated;
+        }
+        throw refusal;
+      }
     }
     if (!await budgetApplies(this.pool, key)) return validated;
     // The lock waits for an admission, turn start or handoff that holds the conversation, and

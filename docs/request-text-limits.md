@@ -30,7 +30,9 @@ and conversations keep their policy. No profile setter or automatic rebind exist
 registered PostgreSQL policy, scoped to the authenticated owner. Native listings
 omit it. Spawn responses do not promise the field. Clients reading an older
 server or a response without it must assume 16,384, never a larger value.
-Historical text members with no profile registration also use 16,384.
+Historical text members with no profile registration use 16,384 until the first
+registration; a first registration may retain or raise that fallback. HTTP spawn
+requires a published profile. Once registered, the policy is immutable.
 
 ## Submission and error order
 
@@ -86,17 +88,21 @@ See `tests/fixtures/request-text-sizing.json` for measured budgets. Set
 `tests/service/text-member-gateway.test.ts`. The dedicated `text-members` CI job
 runs both text-member suites and shared-validation tests without paid inference.
 
-A text conversation completes after one turn, below the normal four-turn
-rollover threshold. The maximum-size path has no Continue-As-New. Existing
-rollover regressions test native routing independently. Workflow code, command
+A text conversation completes its public one-turn outcome below the normal
+four-turn rollover threshold. Its Temporal run remains open and idle. Sizing
+waits for all activities and the workflow task to settle, then verifies the
+recorded admission/turn inputs and exact reply before measuring and replaying
+the complete recorded history prefix. The maximum-size path has no
+Continue-As-New. Existing rollover regressions test native routing independently. Workflow code, command
 ordering, failure types and serialized Conversation/update shapes are unchanged.
 
 ## Upgrade and recovery
 
 Back up the existing database normally. Migration 043 adds a defaulted immutable
-column without resetting content or rebinding registrations. Its five-second
-DDL lock timeout aborts the whole migration, including the version record;
-drain calls and retry if it cannot acquire the lock.
+column without resetting content or rebinding registrations. It retries the
+DDL lock with NOWAIT for at most five seconds, keeping later profile readers
+out of the lock queue. Exhaustion aborts the whole migration, including the
+version record. Drain calls and retry if it cannot acquire the lock.
 
 Upgrade **all workers first**, while the old gateway still admits at most 16 KiB.
 Record worker revision and queue-poller evidence that no old worker can take
