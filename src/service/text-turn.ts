@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { isAbsolute, join } from "node:path";
+import { textTurnRootPath } from "./text-state-location.ts";
+import { isAbsolute } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import type { Conversation, TextEngine } from "./domain.ts";
 
@@ -34,7 +34,7 @@ export const textTurnFailed = () => new TextTurnFailed();
 export function textTurnRoot(input: DriverInput, member: Conversation, engine: TextEngine, stateDir: string) {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation
     || !isAbsolute(stateDir)) throw textTurnFailed();
-  return join(stateDir, engine, createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+  return textTurnRootPath(stateDir, member, engine);
 }
 
 /** Rejects with TextTurnFailed after `ms`. `onFailure` runs when the work rejects or the bound wins. */

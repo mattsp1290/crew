@@ -1,3 +1,4 @@
+import { completeTextWriterInventory } from "./text-runtime-inventory.ts";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import { preparePrivate, removePrivate, sweepWhenSettled } from "./private-directory.ts";
@@ -19,6 +20,8 @@ export interface CursorRuntimeHandle {
     readonly onEvent: (event: CursorRuntimeEvent) => void;
   }): Promise<{ readonly agentId: string; readonly finished: Promise<string>; abort(): Promise<void> }>;
   close(): Promise<void>;
+  /** Trusted runtime adapter attestation; absent means unknown helper groups. */
+  writerGroups?(): readonly number[] | null;
 }
 export interface CursorProfile {
   model: string;
@@ -158,6 +161,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     throw textTurnFailed();
   } finally {
     await settleCursorClose(runtime, input.signal, sessionDirectory, ownsSessionEnvironment);
+    if (!input.signal.aborted) completeTextWriterInventory(runtime?.writerGroups?.());
   }
   return textTurnResult(input.signal, result);
 }

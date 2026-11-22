@@ -373,9 +373,13 @@ const pendingStatuses = z.enum([
 ]);
 function receiptWith<I extends z.ZodType>(initiator: I) {
   const base = receiptBase.extend({ initiator: initiator.optional() });
-  return z.discriminatedUnion("status", [
-    base.extend({ status: z.literal("completed"), result }),
-    base.extend({ status: pendingStatuses }),
+  const retained = base.extend({ erased: z.literal(false).optional() });
+  return z.union([
+    z.discriminatedUnion("status", [
+      retained.extend({ status: z.literal("completed"), result }),
+      retained.extend({ status: pendingStatuses }),
+    ]),
+    base.extend({ status: z.enum(["completed", "failed", "cancelled"]), erased: z.literal(true), result: z.never().optional() }),
   ]);
 }
 /** Response-only initiators accept additive fields and new kinds without changing server admission. */
@@ -434,7 +438,24 @@ export const memberPageSchema = z.object({
   members: z.array(memberSchema),
   next: z.string().nullable(),
 });
+export const conversationContentTombstoneSchema = z.strictObject({
+  apiVersion: z.literal("1"), conversationId: uuid, memberId: uuid,
+  engine: z.enum(["cursor", "opencode"]), erasureId: uuid, erased: z.literal(true), erasedAt: z.iso.datetime(),
+});
+export const conversationClosureSchema = z.strictObject({
+  apiVersion: z.literal("1"), conversationId: uuid, closure: z.enum(["requested", "closed"]),
+});
+export const contentErasureCapabilityV1Schema = z.strictObject({
+  version: z.literal(1), route: z.literal("/v1/conversations/{conversationId}/content"),
+  closeRoute: z.literal("/v1/conversations/{conversationId}/close"), engines: z.tuple([z.literal("cursor"), z.literal("opencode")]),
+  preconditions: z.literal("closed-workflow; terminal-requests; stopped-writers; complete-location-inventory"),
+  retry: z.literal("same-conversation-until-200"),
+  residuals: z.tuple([z.literal("Temporal-history-until-retention"), z.literal("WAL-backups-provider-copies-and-logs")]),
+});
+export type ConversationContentTombstone = z.infer<typeof conversationContentTombstoneSchema>;
+export type ConversationClosure = z.infer<typeof conversationClosureSchema>;
 export const conversationStateSchema = z.object({
+  erased: z.literal(true).optional(), contentState: z.literal("erasing").optional(),
   conversationId: z.uuid(),
   memberId: z.uuid(),
   engine: engineSchema,
@@ -453,6 +474,7 @@ export const conversationSnapshotSchema = conversationStateSchema.extend({
 });
 export const jsonValueSchema = z.json();
 export const snapshotWireSchema = z.object({
+  erased: z.literal(true).optional(),
   cursor: z.int().nonnegative(),
   state: conversationStateSchema,
   messages: z.array(jsonValueSchema),
@@ -472,6 +494,7 @@ export const capabilitiesSchema = z.looseObject({
   standingGrants: standingGrantsCapabilitySchema.optional(),
   handoffs: handoffsCapabilitySchema.optional(),
   decisionReceipts: decisionReceiptsCapabilitySchema.optional(),
+  contentErasure: contentErasureCapabilityV1Schema.optional(),
 });
 const dependencyStatus = z.enum(["ready", "unavailable"]);
 export const healthSchema = z.object({
@@ -586,6 +609,14 @@ export const routes = {
     response: snapshotWireSchema,
     statuses: [201],
     command: true,
+  },
+  eraseConversationContent: {
+    method: "DELETE", path: "/v1/conversations/{conversationId}/content",
+    response: conversationContentTombstoneSchema, statuses: [200], command: true,
+  },
+  closeConversation: {
+    method: "POST", path: "/v1/conversations/{conversationId}/close", body: z.strictObject({}),
+    response: conversationClosureSchema, statuses: [200, 202], command: true,
   },
   conversation: {
     method: "GET",

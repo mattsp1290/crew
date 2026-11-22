@@ -41,6 +41,8 @@ export const auditEvents = {
   // routineId: the routine firing that opened it, read from the firing row.
   "conversation.opened": { actor: "owner", key: "(conversation_id) WHERE event_type = 'conversation.opened'",
     payload: z.strictObject({ routineId: uuid.optional() }) },
+  "conversation.content_erased": { actor: "owner", key: "(conversation_id) WHERE event_type = 'conversation.content_erased'",
+    payload: z.strictObject({ erasureId: uuid }) },
   "request.accepted": { actor: "owner", key: requestFact, payload: z.strictObject({ promptDigest: sha256 }) },
   "approval.decided": { actor: "owner", key: "((payload->>'approvalId')) WHERE event_type = 'approval.decided'",
     payload: z.strictObject({

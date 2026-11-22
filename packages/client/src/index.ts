@@ -48,6 +48,8 @@ export type {
   ObservedRequestReceipt,
   RequestReceipt,
   ServerRequestReceipt,
+  ConversationContentTombstone,
+  ConversationClosure,
   InstructionsSummary,
   Member,
   MemberPage,
@@ -347,6 +349,16 @@ export class CrewClient {
           value.state.memberId === body.memberId,
       }),
     );
+  }
+  async eraseConversationContent(input: { readonly conversationId: string }, options: CallOptions = {}) {
+    const params = conversationIdentitySchema.parse(input);
+    return this.#call(routes.eraseConversationContent, { ...options, params,
+      command: { kind: "conversation", ...params }, expect: value => value.conversationId === params.conversationId });
+  }
+  async closeConversation(input: { readonly conversationId: string }, options: CallOptions = {}) {
+    const params = conversationIdentitySchema.parse(input);
+    return this.#call(routes.closeConversation, { ...options, params, body: {},
+      command: { kind: "conversation", ...params }, expect: value => value.conversationId === params.conversationId });
   }
   async conversation(
     input: { readonly conversationId: string },

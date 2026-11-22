@@ -46,7 +46,7 @@ async function fixture(t: TestContext) {
       const config: unknown = args[0];
       const sql = typeof config === "string" ? config :
         typeof config === "object" && config !== null && "text" in config ? config.text : undefined;
-      const read = typeof sql === "string" && sql.includes("FROM birbcrew_ts.public_events e JOIN");
+      const read = typeof sql === "string" && sql.startsWith("SELECT e.cursor,e.event");
       return (read ? beforeLedgerRead?.() : undefined) ?? query(...args);
     }) as typeof client.query;
   });
@@ -185,7 +185,7 @@ test("a lock-blocked ledger read releases its hub and observers resume at the sa
     await lock.query("LOCK TABLE birbcrew_ts.public_events IN ACCESS EXCLUSIVE MODE");
     const blockedPid = await until(async () => {
       const { rows } = await f.pool.query<{ pid: number }>(`SELECT pid FROM pg_stat_activity
-        WHERE wait_event_type='Lock' AND query LIKE 'SELECT e.cursor,e.event FROM birbcrew_ts.public_events%'`);
+        WHERE wait_event_type='Lock' AND query LIKE 'SELECT e.cursor,e.event%'`);
       return rows.length === 1 ? rows[0].pid : undefined;
     }, "one PostgreSQL hub read blocked on the ledger lock");
     const reconnect = observe(hub.socketPath, f.owner, cid, runId);

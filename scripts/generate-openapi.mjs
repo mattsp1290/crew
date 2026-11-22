@@ -25,6 +25,9 @@ const content = (value) => {
   return { "application/json": { schema: { $ref: reference(entry.id) } } };
 };
 for (const [id, value] of Object.entries({
+  ConversationContentTombstone: routes.eraseConversationContent.response,
+  ConversationClosure: routes.closeConversation.response,
+  CloseConversation: routes.closeConversation.body,
   JsonValue: jsonValueSchema,
   Error: errorSchema,
   InstructionsSummary: instructionsSummarySchema,
@@ -83,7 +86,7 @@ const errorResponses = {
 };
 const errors = (command) =>
   Object.fromEntries(
-    [400, 401, 404, 405, 409, 413, 500, 503].map((status) => [
+    [400, 401, 404, 405, 409, 410, 413, 500, 503].map((status) => [
       status,
       {
         $ref: `#/components/responses/${status < 500 ? "Error" : command ? "CommandUnavailable" : "Unavailable"}`,

@@ -189,3 +189,9 @@ Temporal lookup failure is surfaced as unavailable after a ten-second deadline,
 not permission to replay. Ownership is checked before the Temporal lookup.
 Migration 20 permits the new reason; migrations 18/19 belong to downstream API
 and backup work and are not prerequisites for this isolated change.
+
+## Text content erasure
+
+Text conversations close naturally after their single settled turn, behind the Temporal `text-conversation-close-v1` replay patch. Existing idle histories can use the separate owner close command; DELETE never changes an open workflow. See [the integration API](integration-api-v1.md#erase-text-conversation-content).
+
+Erasure preserves conversation/request identities, original terminal receipt outcomes, prompt digest fences, publication identities and cursors. A permanent conversation-row fence serializes admission, launches, direct SQL content writes and HTTP content output. Pending cleanup survives restarts. Any UUID or text replay after fencing returns 410 before digest comparison and never executes inference. Uncertainty remains an explicit refusal; erasure does not resolve it.

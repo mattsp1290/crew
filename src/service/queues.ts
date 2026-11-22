@@ -7,3 +7,5 @@ export function activityQueue(engine: Engine, profile: string) {
 export const childWorkflowId = (childId: string) => `birbcrew-ts/child/${childId}`;
 export const conversationWorkflowId = (memberId: string, conversationId: string) =>
   `birbcrew-ts/member/${memberId}/conversation/${conversationId}`;
+
+export const textCleanupQueue = (locationId: string) => "birbcrew-ts/text-cleanup/" + locationId;

@@ -13,7 +13,7 @@ import { temporalConnectionOptions, temporalSettings } from "./temporal-config.t
 
 async function main() {
   const [operation, configPath] = process.argv.slice(2);
-  if (!["spawn", "open", "turn", "pending", "decide", "cancel-pending", "worker"].includes(operation)) {
+  if (!["spawn", "open", "turn", "pending", "decide", "cancel-pending", "worker", "erasure-inventory"].includes(operation)) {
     throw new Error("Use spawn, open, turn, pending, decide, cancel-pending, or worker <trusted-profile-module>");
   }
   const url = process.env.BIRBCREW_DATABASE_URL;
@@ -50,7 +50,7 @@ async function main() {
       }
       return;
     }
-    const input: unknown = await json(process.stdin);
+    const input: unknown = operation==="erasure-inventory" ? undefined : await json(process.stdin);
     if (operation === "spawn") {
       const spawn = spawnRequestSchema.parse(input);
       const registered = await pool.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2",
@@ -62,6 +62,11 @@ async function main() {
     const connection = await Connection.connect(await temporalConnectionOptions(temporal));
     try {
       const members = new MemberClient(store, new Client({ connection, namespace: temporal.namespace }));
+      if(operation==="erasure-inventory"){
+        const {runErasureInventoryCommand}=await import("./erasure-inventory.ts");
+        console.log(JSON.stringify(await runErasureInventoryCommand(store,new Client({connection,namespace:temporal.namespace}),process.argv.slice(3))));
+        return;
+      }
       let result;
       switch (operation) {
         case "open": result = await members.open(input); break;

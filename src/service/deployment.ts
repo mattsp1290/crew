@@ -1,3 +1,4 @@
+import { textStateLocation } from "./text-state-location.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
@@ -113,6 +114,11 @@ export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, M
       }
       declarations.set(JSON.stringify([engine, name]), resolved);
     }
+  }
+  for (const engine of ["cursor", "opencode"] as const) {
+    if (![...config.values()].some(entry => entry[engine])) continue;
+    const { locationId } = await textStateLocation(directory, engine);
+    await pool.query("INSERT INTO birbcrew_ts.text_state_locations(location_id,engine) VALUES($1,$2) ON CONFLICT DO NOTHING", [locationId,engine]);
   }
   const profiles = [...config.values()];
   const volumes: Record<Engine, string | null> = {

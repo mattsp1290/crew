@@ -215,7 +215,9 @@ function createFixture(selected?: Engine, label = basename(process.argv[1] ?? "s
     const { stdout } = await run("docker", ["port", db, "5432/tcp"], { timeout: 2_000, killSignal: "SIGKILL", signal: controller.signal });
     const port = /127\.0\.0\.1:(\d+)/.exec(stdout)?.[1];
     assert.ok(port, "Expected a loopback-only PostgreSQL port");
-    env.BIRBCREW_DATABASE_URL = env.BIRBCREW_TEST_DATABASE_URL = "postgres://postgres:" + password + "@127.0.0.1:" + port + "/birbcrew_ts";
+    const databaseHost = process.env.BIRBCREW_PROOF_DATABASE_HOST ?? "127.0.0.1";
+    assert.ok(["127.0.0.1","host.docker.internal"].includes(databaseHost),"Use the local Docker host for fixture PostgreSQL");
+    env.BIRBCREW_DATABASE_URL = env.BIRBCREW_TEST_DATABASE_URL = "postgres://postgres:" + password + "@" + databaseHost + ":" + port + "/birbcrew_ts";
   }
   async function sql(statement: string) {
     ensureOpen();

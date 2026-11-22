@@ -625,3 +625,17 @@ The fixtures use synthetic credentials and local protocol servers. Record the ex
 commit and each command result. Live application/proxy-provider acceptance is separate
 and requires existing authorized access and any required spend approval. Do not print
 real credentials, publish test tokens, or claim production identity-provider coverage.
+
+### Erase text conversation content
+
+After durably storing a reply, an owner can call `DELETE /v1/conversations/{conversationId}/content` with no body or query parameters. `CrewClient.eraseConversationContent({conversationId})` exposes the same command. Only `cursor` and `opencode` conversations qualify. Native and trusted conversations return `409 content_erasure_unsupported`.
+
+The latest logical workflow must be closed, every receipt terminal, every writer confirmed stopped, and the storage-location inventory complete. New text workflows close after one settled turn. To close an existing idle text workflow, call `POST /v1/conversations/{conversationId}/close` with `{}` (`CrewClient.closeConversation`). It returns 202 with `closure: requested`, or 200 with `closure: closed` once a terminal execution is durably observed. DELETE never closes an open workflow. Unknown or wrong-owner identities return 404.
+
+A successful DELETE returns 200 and one immutable tombstone: `apiVersion`, `conversationId`, `memberId`, `engine`, `erasureId`, `erased: true`, `erasedAt`. Repeats return the same object. A committed pending fence returns `503 content_erasure_pending`; retry the same conversation. Pending content reads also return 503. Ineligible requests return 409 without changing content. Missing legacy location evidence gives `content_location_unknown`; missing process proof gives `content_runtime_unconfirmed`; unresolved start RPCs give `content_start_unresolved`.
+
+Successful request reads retain their original completed/failed/cancelled status and metadata, add `erased: true`, and omit `result` entirely. Conversation snapshots contain empty messages, no partial text/tools, and a minimal erased state. Legacy receipts omit `reply`. Any replay, changed-text replay, new request, cancellation or repeated open against the fenced identity returns `410 conversation_erased` before comparing digests. Request/admission identities, digest fences, event cursors and publication keys remain permanently; digests can confirm guesses.
+
+Crew clears `turns.reply`, `turns.checkpoint`, snapshot `messages`, `state`, `open_text`, `open_tools`, `child_open_text`, and event payloads, and removes the conversation root on every enrolled worker volume before returning 200. Events retain their cursor with a content-free CUSTOM sentinel. After the fence commits, gateways do not newly enqueue conversation content to HTTP. Bytes already accepted by the transport before that boundary can arrive later; previously retained client copies cannot be recalled.
+
+Temporal history remains until namespace retention expires; configure short retention for sensitive workloads (at least one day allows the closure reconciler time to capture evidence). See [trusted-context residuals](trusted-application-context.md#retention-and-deletion-contract). WAL, backups, provider copies and logs follow deployment policy. This command does not promise physical-media erasure or provider deletion. Launched failures/cancellations whose receipts remain uncertain cannot erase. Unknown legacy histories that expired before closure was observed also remain ineligible.

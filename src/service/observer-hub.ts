@@ -1,3 +1,4 @@
+import { MemberStoreError } from "./domain.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { createEventStream, type EventStream, type SubscriptionEnd } from "@mattsp1290/switchboard";
 import type { Pool } from "pg";
@@ -249,6 +250,10 @@ export class ObserverHubs {
     };
   }
 
+  invalidate(owner:string,conversationId:string) {
+    const hub=this.#hubs.get(JSON.stringify([owner,conversationId]));
+    if (hub) this.#close(hub);
+  }
   /** Stops every reader. Observers still attached end with their subscription and read the database themselves. */
   close() {
     this.#closed = true;
@@ -277,6 +282,7 @@ export class ObserverHubs {
       }
     } catch (error) {
       if (signal.aborted) return;
+      if (error instanceof MemberStoreError && error.code === "conversation_erased") { this.#close(hub); return; }
       // Closing sends every observer of this hub back to the database, where its own read reports the failure.
       warn("observer_hub_failed", { ...errorSummary(error), observers: hub.observers });
       this.#close(hub);

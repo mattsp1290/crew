@@ -1,3 +1,5 @@
+import { contentErasureState } from "../../src/service/content-erasure-store.ts";
+import { MemberStoreError } from "../../src/service/domain.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -42,6 +44,17 @@ export async function gatewayFixture(store: MemberStore, automaticallyComplete =
     }
   }
   const members = {
+    async describeClosure(input:Parameters<MemberClient["describeClosure"]>[0]) {
+      const row=await contentErasureState(store.pool,input);
+      if(!row.text_closure)throw new MemberStoreError("conversation_open");
+      return row.text_closure;
+    },
+    async ensureCleanupWorkflow(){throw Error("fixture has no worker locations");},
+    async closeTextConversation(input:Parameters<MemberClient["closeTextConversation"]>[0]) {
+      const row=await contentErasureState(store.pool,input);
+      if(!row.text_closure)throw new MemberStoreError("conversation_open");
+      return {apiVersion:"1",conversationId:row.conversationId,closure:"closed"};
+    },
     async open(input: Parameters<MemberStore["openConversation"]>[0]) { return store.openConversation(input); },
     async decide(input: Parameters<ApprovalStore["decide"]>[0]) { return new ApprovalStore(store.pool).decide(input); },
     async accept(input: TurnRequest) {

@@ -640,3 +640,7 @@ not assert audit rows. Codex live answers and dispatch share the audited
 or `settleLive` and then reads the trail. A trusted effect whose conversation has
 vanished fails rather than commit without its row, but the foreign key from
 trusted sessions makes that unreachable, so no test drives it.
+
+## Text conversation erasure
+
+`conversation.content_erased` is one owner-authorized fact per conversation, appended in the same transaction as the final database scrub and immutable erased timestamp. Its strict payload contains only `{erasureId}`. A pending operation emits no completed audit fact. Repeated DELETEs and cleanup retries append nothing. Request outcome audit facts and request/admission identities remain unchanged. The SQL vocabulary and partial unique index are added by migration 043.

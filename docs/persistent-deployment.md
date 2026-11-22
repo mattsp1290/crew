@@ -491,3 +491,27 @@ development server, not in the hardened image:
   gateway and checks that the worker's heartbeat advances.
 
 **Unverified:** these probes have not been run under kubelet.
+
+## Coordinated text erasure upgrade (schema 043)
+
+Stop all old gateways, workers, CLI senders and detached descendants before applying 043. Back up according to policy, recognizing that backups contain content. Fence/drain the Temporal service after stopping old RPC senders, then restart Temporal for observation while engine pollers remain stopped. Migration lock acquisition is bounded; on failure nothing applies. Deploy the schema, matching workers, gateway and client together, with no feature flag.
+
+Every text engine root has an opaque `.birbcrew-text-volume` marker. Workers enroll locations and associate a conversation before its runner can create files. Only workers holding that exact marker poll its cleanup queue. A gateway never deletes from its own state directory. Cloned/restored writable copies require fresh marker IDs and separate inventory entries; do not serve two independent copies under one ID.
+
+Legacy conversations start with incomplete inventory. Enumerate **all** historical volumes, including unavailable and cloned copies; restore access to each before declaring completeness. Enroll roots by starting the matching registration against the stopped installation (or registering profiles in trusted operator code). Then run:
+
+```
+npm run members -- erasure-inventory --manifest /absolute/inventory.json --quiesce-module /absolute/quiesce.mjs --confirm-complete
+```
+
+The manifest is `{"version":1,"conversations":[{"ownerId":"owner","conversationId":"UUID","inventory":{"kind":"locations","locations":[{"locationId":"UUID","engine":"cursor","profile":"profile-name"}]}}]}`. A provably never-launched conversation uses `{"kind":"no_launch"}` instead of a locations list. Empty locations lists are invalid. No paths or content enter cleanup workflow arguments. Keep the manifest private.
+
+The trusted module exports `async function quiesce()`. It must stop and await **all** old senders, engine pollers, runner groups, detached helpers and descendants across the complete enrolled location set, fence/drain outstanding Temporal start RPCs, and make Temporal available again for observation without restarting pollers. Throw if uncertain. This is the same trust contract as `RecoveryHooks.quiesce`, without snapshot/restore. A thrown hook or invalid manifest commits no inventory/proof changes. Resume pollers only after the command commits. Its returned drain ID identifies the durable teardown proof; it never changes receipt outcomes.
+
+The installed opaque SDKs can create detached helpers. If an adapter cannot attest the complete writer inventory, runner exit alone does not qualify: `content_runtime_unconfirmed` requires the trusted drain above, even for a completed receipt. A trusted runtime adapter may expose `writerGroups()` only when it can enumerate every writer group after close; absent/null means unknown. An empty process scan, missing PID, elapsed lease, failed close or Temporal cancellation is not proof. Never signal saved numeric process IDs after restart.
+
+The command reconciles ambiguous/legacy start records against current retained Temporal identities after the trusted drain. A negative observation records `absent_after_trusted_drain`, never a fabricated closed history. An unobserved history that expired stays ineligible. Closure reconciliation runs every 30 seconds in batches of 64 with a durable cursor; hints older than five minutes degrade worker health. Recommend at least one day of namespace retention and monitor backlog/health so observation lag remains below retention. An outage longer than retention cannot be repaired by inferring closure from age.
+
+Start matching location workers and the gateway, then qualify a synthetic erase before serving requests. Missing volumes/cleanup failures remain permanently fenced and retryable; restart reconciliation reuses the original erasure identity. No old binary may serve after the first fence. The rollback floor is the first erasure-aware revision: retain schema/tombstones and recover forward, or stop service. Do not restore pre-erasure data into a serving installation; reapply a separately retained erasure manifest before reopening after disaster recovery.
+
+See [trusted-context erasure](trusted-application-context.md#retention-and-deletion-contract) for WAL/backups and Temporal residuals. Provider-held copies, logs and previously delivered client data follow their own policies.

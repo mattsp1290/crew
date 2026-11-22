@@ -87,7 +87,7 @@ await withServices({ label: "integration-api" }, async s => {
               assert.ok(!["failed", "uncertain", "cancelled"].includes(value.status), JSON.stringify(value));
               return value.status === "completed" ? value : undefined;
             }, `${engine} completed turn ${i + 1}`);
-            assert.equal(status.result.text, (i === 5 ? "recalled " : "stored ") + marker);
+            assert.equal(status.erased ? undefined : status.result.text, (i === 5 ? "recalled " : "stored ") + marker);
           }
           await until(async () => observer.agent.messages.filter(message => message.role === "assistant").length === 6 || undefined,
             "official observer independently projects all six results");

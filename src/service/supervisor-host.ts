@@ -1,3 +1,5 @@
+import { assertContentWritable } from "./content-erasure-store.ts";
+import { assertTextRoot, textStateLocation, registerTextLaunch } from "./text-state-location.ts";
 import { requestNativeStop } from "./native-admission.ts";
 import { fork, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -91,6 +93,7 @@ async function lockedTurn(db: PoolClient, launch: Launch, allowRevokedAttempt = 
   const lock = await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE owner_id=$1 AND conversation_id=$2 FOR UPDATE",
     [launch.ownerId, launch.conversationId]);
   if (!lock.rowCount) throw new Error("Unknown conversation");
+  await assertContentWritable(db, launch);
   const { rows: [turn] } = await db.query<Conversation & {
     phase: string; reply: string | null; checkpoint: Checkpoint | null; paused: boolean; resuming: boolean; delegated: boolean; child_resume: boolean;
   }>(`SELECT c.owner_id AS "ownerId", c.member_id AS "memberId", c.conversation_id AS "conversationId",
@@ -114,6 +117,8 @@ async function lockedTurn(db: PoolClient, launch: Launch, allowRevokedAttempt = 
 
 async function start(launch: Launch): Promise<SegmentResult> {
   const args = [launch.conversationId, launch.requestId, launch.token];
+  const conversation = await store.getConversation({ownerId:launch.ownerId,conversationId:launch.conversationId});
+  const location = isTextEngine(conversation.engine) ? await textStateLocation(process.argv[3], conversation.engine) : null;
   // Commit the one-shot reservation before forking; a lost fork acknowledgement must never start a second process.
   const inspect = async (db: PoolClient): Promise<SegmentResult | ReadySegment> => {
     if (launch.childId) return inspectChild(db,launch);
@@ -153,6 +158,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
       (conversation_id,request_id,token,approval_id,receipt_digest,workflow_run_id,activity_id,attempt,child_id)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (conversation_id,request_id,token) DO NOTHING`,
       [...args, approval?.approvalId ?? null, digest, launch.execution.workflowRunId, launch.execution.activityId, launch.execution.attempt, launch.childId ?? null]);
+    if (inserted.rowCount && location) await registerTextLaunch(db,conversation,launch,location.locationId);
     return { kind: inserted.rowCount ? "launch" : "observe", continuation, resuming:!!(continuation || status.childResults) } as const;
   });
   if (!("continuation" in admission)) return admission;
@@ -171,6 +177,8 @@ async function start(launch: Launch): Promise<SegmentResult> {
   let exited: Promise<boolean> | undefined;
   let confirmed = false;
   let reaped = false;
+  let writerInventoryComplete = false;
+  const writerGroups = new Set<number>();
   let runnerEnd = "no exit";
   try {
     const { continuation } = admission;
@@ -182,13 +190,19 @@ async function start(launch: Launch): Promise<SegmentResult> {
       const status = await inspect(db);
       if (closing || status.kind !== "ready") throw new Error("Native admission revoked");
       const { conversation, checkpoint, childProfile, childResults } = status;
+      if (isTextEngine(conversation.engine)) await assertTextRoot(process.argv[3],conversation,conversation.engine);
       const child = fork(new URL("./supervisor-runner.ts", import.meta.url), process.argv.slice(2), {
         stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], detached: true,
       });
       active.set(launch.token, child);
       if (isTextEngine(conversation.engine)) textRunners.add(child);
       child.on("message", (value) => {
-        if (value && typeof value === "object" && "delta" in value && typeof value.delta === "string") {
+        if (value && typeof value === "object" && "textWriterGroup" in value && typeof value.textWriterGroup === "number") {
+          if (writerInventoryComplete || !Number.isSafeInteger(value.textWriterGroup) || value.textWriterGroup <= 1) writerInventoryComplete = false;
+          else writerGroups.add(value.textWriterGroup);
+        } else if (value && typeof value === "object" && "textWriterInventoryComplete" in value && value.textWriterInventoryComplete === true) {
+          writerInventoryComplete = true;
+        } else if (value && typeof value === "object" && "delta" in value && typeof value.delta === "string") {
           stream.push(project(value.delta));
         } else if (value && typeof value === "object" && "toolArgs" in value && typeof value.toolArgs === "string" && !continuation) {
           const id = value.toolArgs;
@@ -254,6 +268,9 @@ async function start(launch: Launch): Promise<SegmentResult> {
     active.delete(launch.token);
     if (!runner || reaped || (runner.pid && await groupStopped(runner.pid))) {
       await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND request_id=$2 AND token=$3", args);
+      if (location && runner && writerInventoryComplete && (await Promise.all([...writerGroups].map(groupStopped))).every(Boolean)) {
+        await pool.query("UPDATE birbcrew_ts.text_runtime_cleanup_proofs SET confirmed_at=clock_timestamp() WHERE conversation_id=$1 AND request_id=$2 AND token=$3 AND location_id=$4 AND confirmed_at IS NULL", [...args,location.locationId]);
+      }
     }
   }
 }

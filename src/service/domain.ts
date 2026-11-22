@@ -106,7 +106,7 @@ export type BeginTurn =
   | { kind: "uncertain" };
 
 export class MemberStoreError extends Error {
-  readonly code: "not_found" | "conflict" | "busy" | "stale" | "input_limit" | "history_unavailable" | "request_rejected"
+  readonly code: "conversation_erased" | "content_erasure_pending" | "content_erasure_unsupported" | "conversation_open" | "content_location_unknown" | "content_runtime_unconfirmed" | "content_requests_unresolved" | "content_start_unresolved" | "not_found" | "conflict" | "busy" | "stale" | "input_limit" | "history_unavailable" | "request_rejected"
     | "routine_limit" | "routine_deleted" | "memory_limit" | "memory_deleted" | "instructions_limit"
     | "handed_off" | "handoff_pending" | "handoff_empty" | "handoff_too_large" | "trusted_conversation"
     | "usage_limit" | "usage_limit_closed" | "webhook_limit" | "webhook_deleted" | "pack_limit" | "pack_deleted" | "pack_in_use" | "decision_conflict" | "decision_unverifiable";

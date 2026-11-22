@@ -420,6 +420,7 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
     // Typed by the registry, so a new event type cannot be added without a sample here.
     const samples: { [T in AuditEventType]: Omit<AuditFact<T>, "type" | "ownerId" | "memberId"> } = {
       "member.spawned": { payload: { spawnRequestId: randomUUID(), engine: "pi", profile } },
+      "conversation.content_erased": {conversationId,payload:{erasureId:randomUUID()}},
       "conversation.opened": { conversationId, payload: {} },
       "request.accepted": { conversationId, requestId, payload: { promptDigest: digest } },
       "approval.decided": { conversationId, requestId, payload: { approvalId: randomUUID(), invocationId: requestId,
