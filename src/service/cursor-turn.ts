@@ -1,8 +1,7 @@
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
-import {
-  boundedBy, preparePrivate, removePrivate, scrubTextEngineEnvironment, sweepWhenSettled, TextTurnFailed, textTurnFailed, textTurnResult, textTurnRoot,
-} from "./private-directory.ts";
+import { preparePrivate, removePrivate, sweepWhenSettled } from "./private-directory.ts";
+import { boundedBy, scrubTextEngineEnvironment, TextTurnFailed, textTurnFailed, textTurnResult, textTurnRoot } from "./text-turn.ts";
 
 export interface CursorRuntimeOptions {
   readonly cwd: string;
@@ -31,7 +30,6 @@ export interface CursorProfile {
   runtime?: (options: CursorRuntimeOptions) => CursorRuntimeHandle | Promise<CursorRuntimeHandle>;
 }
 
-const failed = textTurnFailed;
 const closeBoundMs = 5_000;
 
 async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRuntimeHandle> {
@@ -51,13 +49,13 @@ function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signa
     return handle;
   });
   tracked.catch(() => undefined);
-  if (signal.aborted) return Promise.reject(failed());
+  if (signal.aborted) return Promise.reject(textTurnFailed());
   return new Promise((resolve, reject) => {
-    const onAbort = () => reject(failed());
+    const onAbort = () => reject(textTurnFailed());
     signal.addEventListener("abort", onAbort, { once: true });
     tracked.then((handle) => {
       signal.removeEventListener("abort", onAbort);
-      if (signal.aborted) reject(failed());
+      if (signal.aborted) reject(textTurnFailed());
       else resolve(handle);
     }, (error: unknown) => {
       signal.removeEventListener("abort", onAbort);
@@ -120,7 +118,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
         cwd: profile.cwd, sessionDirectory, apiKey: profile.apiKey, model: profile.model,
       });
     } catch {
-      throw failed();
+      throw textTurnFailed();
     }
     let latest = "";
     let outcome: string | undefined;
@@ -147,7 +145,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     try {
       const finished = await turn.finished;
       if (refusal || input.signal.aborted || finished !== "completed" || outcome !== "completed"
-        || latest.length === 0 || Buffer.byteLength(latest) > turnTextBytes) throw failed();
+        || latest.length === 0 || Buffer.byteLength(latest) > turnTextBytes) throw textTurnFailed();
       result = {
         kind: "complete", text: latest,
         checkpoint: { version: 1, engine: "cursor", state: { model: profile.model, cwd: profile.cwd, agentId: turn.agentId } },
@@ -157,7 +155,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     }
   } catch (error) {
     if (error instanceof TextTurnFailed) throw error;
-    throw failed();
+    throw textTurnFailed();
   } finally {
     await settleCursorClose(runtime, input.signal, sessionDirectory, ownsSessionEnvironment);
   }

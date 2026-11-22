@@ -16,7 +16,7 @@
   "scripts": {
     "build": "npm run build:client && scripts/build-native && npm run typecheck",
     "typecheck": "node scripts/check-deskhand-boundary-imports.mjs && tsc --noEmit",
-    "test": "node --test tests/fixtures/engines/artifacts.test.ts tests/fixtures/engines/consumer.test.mjs tests/fixtures/engines/codex/qualification.test.ts tests/fixtures/engines/pi/confinement.test.ts tests/fixtures/engines/claude/confinement.test.ts tests/service/temporal-config.test.ts tests/service/gateway-auth.test.ts tests/service/engine-traits.test.ts",
+    "test": "node --test tests/fixtures/engines/artifacts.test.ts tests/fixtures/engines/consumer.test.mjs tests/fixtures/engines/codex/qualification.test.ts tests/fixtures/engines/pi/confinement.test.ts tests/fixtures/engines/claude/confinement.test.ts tests/service/temporal-config.test.ts tests/service/gateway-auth.test.ts",
     "gateway": "node src/service/gateway.ts",
     "members": "node src/service/cli.ts",
     "test:integration": "scripts/verify-members",

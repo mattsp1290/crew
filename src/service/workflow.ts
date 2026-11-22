@@ -12,7 +12,7 @@ import type { expiryActivity, MemberActivities, Resume } from "./activities.ts";
 
 import type { MemberStore, ownerAdmissionActivity } from "./store.ts";
 import { activityQueue, memberTaskQueue } from "./queues.ts";
-import { hasFailureType } from "./failure-type.ts";
+import { textAdmissionFailure } from "./failure-type.ts";
 
 export const submitTurn = defineUpdate<string, [TurnRequest]>("submitTurn");
 export const acceptTurn = defineUpdate<string, [TurnRequest]>("acceptTurn");
@@ -329,7 +329,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         // A text-engine admission activity reports input_limit or prompt_rejected when the turn
         // did not start. Fail this update and leave the committed turn's workflow open.
         // Older histories stay on the retryable path.
-        const refused = hasFailureType(error, "input_limit") || hasFailureType(error, "prompt_rejected");
+        const refused = textAdmissionFailure(error) !== undefined;
         if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
           entry.sparesConversation = true;
           await rejectUnstartedAdmission(request);

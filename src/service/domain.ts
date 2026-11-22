@@ -2,6 +2,7 @@ import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import type { ChildKey } from "./children.ts";
 import type { Approval } from "./approvals.ts";
 import { z } from "zod";
+import type { TextAdmissionFailureType } from "./failure-type.ts";
 
 import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
   createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema,
@@ -9,10 +10,15 @@ import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBy
 export { engineSchema, childEngineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
 export type ChildEngine = z.infer<typeof childEngineSchema>;
-export function isTextEngine(engine: Engine): engine is "cursor" | "opencode" {
-  return engine === "cursor" || engine === "opencode";
+/** The one-turn text members. Adding an engine here classifies it everywhere: the text protocol
+ * (isTextEngine), every capability gate (engineTraits), and the turn limit a conversation opens with. */
+export const textEngines = ["cursor", "opencode"] as const;
+export type TextEngine = (typeof textEngines)[number];
+export function isTextEngine(engine: Engine): engine is TextEngine {
+  return (textEngines as readonly string[]).includes(engine);
 }
-/** What each engine supports beyond a plain turn. Gates read the trait they mean, so a new engine fills in one row. */
+/** What each engine supports beyond a plain turn, derived from isTextEngine. Gates read the trait they
+ * mean, so each says why it refuses; today every trait is "not a text engine". */
 export interface EngineTraits {
   /** Hands a conversation to, or receives one from, another member. */
   readonly handoff: boolean;
@@ -25,11 +31,11 @@ export interface EngineTraits {
   /** Reports token usage that is recorded against prices. */
   readonly meteredUsage: boolean;
 }
-const nativeTraits: EngineTraits = { handoff: true, trustedContext: true, memories: true, instructions: true, meteredUsage: true };
-const textTraits: EngineTraits = { handoff: false, trustedContext: false, memories: false, instructions: false, meteredUsage: false };
-export const engineTraits: Readonly<Record<Engine, EngineTraits>> = {
-  pi: nativeTraits, claude: nativeTraits, codex: nativeTraits, cursor: textTraits, opencode: textTraits,
-};
+function traitsOf(engine: Engine): EngineTraits {
+  const native = !isTextEngine(engine);
+  return { handoff: native, trustedContext: native, memories: native, instructions: native, meteredUsage: native };
+}
+export const engineTraits = Object.fromEntries(engineSchema.options.map((engine) => [engine, traitsOf(engine)])) as Readonly<Record<Engine, EngineTraits>>;
 /** True when `value` holds a C0 control (0-31), or a C1 control or DEL (127-159) unless `c1` is false,
  * other than the characters in `allow`. */
 export function hasControlCharacter(value: string, { c1 = true, allow = "" }: { c1?: boolean; allow?: string } = {}): boolean {
@@ -114,8 +120,8 @@ export class MemberStoreError extends Error {
 
 /** A text-engine admission refusal. The argument is the non-retryable Temporal type. */
 export class TextAdmissionError extends MemberStoreError {
-  readonly failureType: "prompt_rejected" | "input_limit";
-  constructor(failureType: "prompt_rejected" | "input_limit") {
+  readonly failureType: TextAdmissionFailureType;
+  constructor(failureType: TextAdmissionFailureType) {
     super(failureType === "input_limit" ? "input_limit" : "conflict");
     this.name = "TextAdmissionError";
     this.failureType = failureType;

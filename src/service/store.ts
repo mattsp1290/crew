@@ -24,9 +24,10 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  engineTraits, isTextEngine, MemberStoreError, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
+  engineTraits, isTextEngine, MemberStoreError, textEngines, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
   type BeginTurn, type Conversation, type Engine, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
+import { conversationTurnLimit, textConversationTurnLimit } from "./limits.ts";
 
 type SpawnedMember = Member & { subagents: MemberSubagents; instructions?: InstructionsSummary; instructionPacks?: string[];
   capabilities?: CapabilitySet };
@@ -83,9 +84,10 @@ async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string)
   return budget;
 }
 
-/** A text engine's admission refusals: its one-turn budget first, then OpenCode's prompt rule. */
-function textAdmissionRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
-  if (!isTextEngine(engine)) return undefined;
+/** A request's turn refusal: the turn limit first, then OpenCode's prompt rule. A text engine's refusal
+ * is a TextAdmissionError (its Temporal type leaves the workflow open); a native engine's is input_limit. */
+function turnRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
+  if (!isTextEngine(engine)) return turnLimitReached ? new MemberStoreError("input_limit") : undefined;
   if (turnLimitReached) return new TextAdmissionError("input_limit");
   if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("prompt_rejected");
   return undefined;
@@ -104,9 +106,7 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
     const budget = await turnBudget(db, key.conversationId);
-    const limitReached = budget.used >= budget.limit;
-    const refusal = textAdmissionRefusal(conversation.engine, key.text, limitReached)
-      ?? (limitReached ? new MemberStoreError("input_limit") : undefined);
+    const refusal = turnRefusal(conversation.engine, key.text, budget.used >= budget.limit);
     if (refusal) throw refusal;
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
@@ -282,10 +282,10 @@ export class MemberStore {
     const key = openSchema.parse(input);
     const inserted = await db.query(
       `INSERT INTO birbcrew_ts.conversations (owner_id, member_id, conversation_id, turn_limit)
-       SELECT owner_id, member_id, $3, CASE WHEN engine IN ('cursor', 'opencode') THEN 1 ELSE 128 END
+       SELECT owner_id, member_id, $3, CASE WHEN engine = ANY($4::text[]) THEN $5::smallint ELSE $6::smallint END
          FROM birbcrew_ts.members WHERE owner_id = $1 AND member_id = $2
        ON CONFLICT (conversation_id) DO NOTHING`,
-      [key.ownerId, key.memberId, key.conversationId],
+      [key.ownerId, key.memberId, key.conversationId, [...textEngines], textConversationTurnLimit, conversationTurnLimit],
     );
     const conversation = await conversationFor(db, key, false);
     if (conversation.memberId !== key.memberId) throw new MemberStoreError("conflict");
@@ -335,7 +335,7 @@ export class MemberStore {
     // Native engines' turn limit is enforced by recordAcceptance; only text engines pay for the count here.
     if (isTextEngine(conversation.engine)) {
       const counted = await turnBudget(this.pool, key.conversationId);
-      const refusal = textAdmissionRefusal(conversation.engine, key.text, counted.used >= counted.limit);
+      const refusal = turnRefusal(conversation.engine, key.text, counted.used >= counted.limit);
       if (refusal) throw refusal;
     }
     if (!await budgetApplies(this.pool, key)) return;
