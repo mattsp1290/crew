@@ -85,7 +85,10 @@ conversation; exact replay/conflict; maximum input plus maximum reply; snapshots
 observer bootstrap and complete history replay. Escaped JSON is included.
 See `tests/fixtures/request-text-sizing.json` for measured budgets. Set
 `BIRBCREW_TEXT_EVIDENCE_DIR` to retain histories and sizing output from
-`tests/service/text-member-gateway.test.ts`. The dedicated `text-members` CI job
+`tests/service/text-member-gateway.test.ts`. The emitted `sizing.json` uses
+the checked-in record format and can replace the fixture after a deliberate
+requalification. Tests compare stable prompt/reply digests and converter sizes
+while checking every current payload/event against the recorded budgets. The dedicated `text-members` CI job
 runs both text-member suites and shared-validation tests without paid inference.
 
 A text conversation completes its public one-turn outcome below the normal
@@ -102,7 +105,9 @@ Back up the existing database normally. Migration 043 adds a defaulted immutable
 column without resetting content or rebinding registrations. It retries the
 DDL lock with NOWAIT for at most five seconds, keeping later profile readers
 out of the lock queue. Exhaustion aborts the whole migration, including the
-version record. Drain calls and retry if it cannot acquire the lock.
+version record. The CHECK enforces new writes without scanning old rows,
+whose new column already defaults to a valid 16,384. Drain calls and retry if
+the migration cannot acquire the lock.
 
 Upgrade **all workers first**, while the old gateway still admits at most 16 KiB.
 Record worker revision and queue-poller evidence that no old worker can take

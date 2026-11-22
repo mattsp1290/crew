@@ -18,4 +18,4 @@ ALTER TABLE birbcrew_ts.profiles
     ADD CONSTRAINT profiles_request_text_bytes_check CHECK (
         request_text_bytes BETWEEN 16384 AND 65536
         AND (engine IN ('cursor', 'opencode') OR request_text_bytes = 16384)
-    );
+    ) NOT VALID;

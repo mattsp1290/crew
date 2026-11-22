@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { z } from "zod";
 import sizingFixture from "../fixtures/request-text-sizing.json" with { type: "json" };
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -395,8 +396,15 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
         assert.ok(converterBytes < sizingFixture.budgets.singlePayloadBytes);
         assert.ok(events.every(event => event.bytes < sizingFixture.budgets.singleEventBytes && event.payloadBytes.every(bytes => bytes < sizingFixture.budgets.singlePayloadBytes)));
         assert.ok(encodedHistory < sizingFixture.budgets.wholeHistoryBytes, "whole history conservatively bounds each contained transaction");
-        measurements.push({ engine, n, versioned, promptDigest: createHash("sha256").update(text).digest("hex"),
-          replyBytes: Buffer.byteLength(expectedReply), converterBytes, encodedHistory, events });
+        const measurement = { engine, n, versioned, promptDigest: createHash("sha256").update(text).digest("hex"),
+          replyDigest: createHash("sha256").update(expectedReply).digest("hex"),
+          replyBytes: Buffer.byteLength(expectedReply), converterBytes, encodedHistory, events };
+        const sample = sizingFixture.runs.find(run => run.engine === engine && run.n === n && run.versioned === versioned);
+        assert.ok(sample);
+        for (const key of ["promptDigest", "replyDigest", "replyBytes", "converterBytes"] as const) {
+          assert.equal(measurement[key], sample[key], `requalify sizing fixture when ${key} changes`);
+        }
+        measurements.push(measurement);
         if (process.env.BIRBCREW_TEXT_EVIDENCE_DIR) {
           await mkdir(process.env.BIRBCREW_TEXT_EVIDENCE_DIR, { recursive: true });
           await writeFile(join(process.env.BIRBCREW_TEXT_EVIDENCE_DIR, `${engine}-${n}-${versioned}.json`), historyToJSON(history));
@@ -416,7 +424,24 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
       { status: 409, payload: { error: "conflict" } });
   }
   if (process.env.BIRBCREW_TEXT_EVIDENCE_DIR) {
-    await writeFile(join(process.env.BIRBCREW_TEXT_EVIDENCE_DIR, "sizing.json"), JSON.stringify(measurements, null, 2));
+    const declaredLimits = process.env.BIRBCREW_TEXT_SERVER_LIMITS
+      ? z.object({ blobSizeLimitError: z.int().positive(), transactionSizeLimit: z.int().positive() })
+        .parse(JSON.parse(process.env.BIRBCREW_TEXT_SERVER_LIMITS)) : undefined;
+    const server = await temporal.connection.workflowService.getSystemInfo({});
+    const postgres = await pool.query<{ server_version: string }>("SHOW server_version");
+    const sdk = z.object({ version: z.string() }).parse(JSON.parse(await readFile(new URL("../../node_modules/@temporalio/worker/package.json", import.meta.url), "utf8")));
+    await writeFile(join(process.env.BIRBCREW_TEXT_EVIDENCE_DIR, "sizing.json"), JSON.stringify({
+      ...sizingFixture,
+      environment: { ...sizingFixture.environment, node: process.versions.node, postgres: postgres.rows[0].server_version,
+        temporalSDK: sdk.version, temporalServer: server.serverVersion ?? "unreported",
+        temporalCLI: process.env.BIRBCREW_TEXT_TEMPORAL_CLI_VERSION ?? "unverified" },
+      effectiveTestLimits: declaredLimits ? { ...declaredLimits, verification: "declared_by_fixture_launcher_not_introspected" }
+        : { verification: "unverified", source: "No fixture launcher settings supplied; remote limits are not exposed by the runtime API." },
+      runs: measurements, fixtureSource: {
+        gatewayTestSha256: createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex"),
+        capture: "Idle recorded history; admission/turn inputs and exact reply checked. Runtime versions queried; CLI and limit declarations are labeled separately.",
+      },
+    }, null, 2) + "\n");
   }
 
 });

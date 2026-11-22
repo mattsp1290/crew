@@ -8,7 +8,7 @@ import { capabilitySchema, hasCapabilities, includesShell, type CapabilitySet } 
 import { configuredDestination } from "./provider-identity.ts";
 import { childConsentSchema, childRoleSchema, childTargetSchema, holdsChildTools, sameDestination, type ProfileTargetSeal } from "./child-target.ts";
 import { fixedRoles } from "@birbcrew/pi-subagents";
-import { childEngineSchema, engineSchema, type Engine, spawnSchema } from "./domain.ts";
+import { childEngineSchema, engineSchema, textEngines, type Engine, spawnSchema } from "./domain.ts";
 import { promptBytes, requestTextBytesSchema } from "@birbcrew/client/contract";
 import { cursorProfileSchema, opencodeProfileSchema } from "./text-profile-validation.ts";
 import { usesRelayCredential } from "./proxy-profiles.ts";
@@ -47,13 +47,13 @@ function profileCeiling(name: string, entry: MemberProfile): CapabilitySet | nul
 
 /** Rejects a cursor or opencode profile that cannot be spawned, before a member row exists. */
 function assertTextProfile(name: string, entry: MemberProfile) {
+  const hasText = textEngines.some(engine => entry[engine]);
   if (entry.requestTextBytes !== undefined) {
-    if ((!entry.cursor && !entry.opencode) || entry.pi || entry.claude || entry.codex
-      || !requestTextBytesSchema.safeParse(entry.requestTextBytes).success) {
+    if (!hasText || !requestTextBytesSchema.safeParse(entry.requestTextBytes).success) {
       throw new Error(`Profile ${JSON.stringify(name)} field requestTextBytes is invalid`);
     }
   }
-  if (!entry.cursor && !entry.opencode) return;
+  if (!hasText) return;
   for (const field of ["pi", "claude", "codex", "childTargets", "capabilities", "protectedTool", "humanTool", "delegateTask"] as const) {
     if (entry[field] !== undefined) throw new Error(`Profile ${JSON.stringify(name)} refuses ${field}`);
   }

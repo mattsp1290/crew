@@ -329,17 +329,41 @@ export class MemberStore {
   }
 
   async requestAdmission(input: z.input<typeof turnRequestSchema>) {
-    return this.requestAdmissionTerms(turnRequestSchema.parse(input));
+    return (await this.requestRecord(turnRequestSchema.parse(input))).admission;
   }
 
-  private async requestAdmissionTerms(key: TurnRequest): Promise<{phase:"accepted"|"rejected";reason:string|null}|undefined> {
-    const {rows:[row]}=await this.pool.query<{phase:"accepted"|"rejected";reason:string|null;prompt_digest:Buffer;approval_deadline_seconds:number|null}>(`
-      SELECT a.phase,a.reason,a.prompt_digest,a.approval_deadline_seconds FROM birbcrew_ts.request_admissions a
-      JOIN birbcrew_ts.conversations c USING(conversation_id)
-      WHERE c.owner_id=$1 AND a.conversation_id=$2 AND a.request_id=$3`,[key.ownerId,key.conversationId,key.requestId]);
-    if(!row)return undefined;
-    if(!sameTerms(row,key))throw new MemberStoreError("conflict");
-    return {phase:row.phase,reason:row.reason};
+  private async requestRecord(key: TurnRequest, db: Pool | PoolClient = this.pool): Promise<{
+    admission: { phase: "accepted" | "rejected"; reason: string | null } | undefined;
+    turn: Pick<TurnRow, "prompt_digest" | "phase" | "reply"> | undefined;
+  }> {
+    const { rows: [row] } = await db.query<{
+      admissionPhase: "accepted" | "rejected" | null; reason: string | null; admissionDigest: Buffer | null;
+      deadline: number | null; turnPhase: TurnRow["phase"] | null; turnDigest: Buffer | null; reply: string | null;
+    }>(`SELECT a.phase AS "admissionPhase",a.reason,a.prompt_digest AS "admissionDigest",
+        a.approval_deadline_seconds AS deadline,t.phase AS "turnPhase",t.prompt_digest AS "turnDigest",t.reply
+      FROM birbcrew_ts.conversations c
+      LEFT JOIN birbcrew_ts.request_admissions a ON a.conversation_id=c.conversation_id AND a.request_id=$3
+      LEFT JOIN birbcrew_ts.turns t ON t.conversation_id=c.conversation_id AND t.request_id=$3
+      WHERE c.owner_id=$1 AND c.conversation_id=$2`, [key.ownerId, key.conversationId, key.requestId]);
+    if (!row) return { admission: undefined, turn: undefined };
+    let admission: { phase: "accepted" | "rejected"; reason: string | null } | undefined;
+    if (row.admissionPhase !== null) {
+      if (row.admissionDigest === null) throw new Error("Invalid stored request identity");
+      if (!sameTerms({ prompt_digest: row.admissionDigest, approval_deadline_seconds: row.deadline }, key)) throw new MemberStoreError("conflict");
+      admission = { phase: row.admissionPhase, reason: row.reason };
+    }
+    let turn: Pick<TurnRow, "prompt_digest" | "phase" | "reply"> | undefined;
+    if (row.turnPhase !== null) {
+      if (row.turnDigest === null) throw new Error("Invalid stored request identity");
+      if (!row.turnDigest.equals(createHash("sha256").update(key.text, "utf8").digest())) throw new MemberStoreError("conflict");
+      turn = { prompt_digest: row.turnDigest, phase: row.turnPhase, reply: row.reply };
+    }
+    return { admission, turn };
+  }
+
+  private async recordedRequest(key: TurnRequest): Promise<boolean> {
+    const record = await this.requestRecord(key);
+    return Boolean(record.admission || record.turn);
   }
 
   /** recordAcceptance's refusals of a new request, checked before MemberClient sends any workflow
@@ -353,51 +377,42 @@ export class MemberStore {
     const envelope = memberSubmitEnvelopeSchema.parse(input);
     const conversation = await conversationFor(this.pool, envelope, false);
     const key = isTextEngine(conversation.engine) ? envelope : turnRequestSchema.parse(envelope);
-    if (await this.requestAdmissionTerms(key) !== undefined) return turnRequestSchema.parse(key);
-    const turn = await this.legacyTurn(key);
-    if (turn) {
-      if (!turn.prompt_digest.equals(createHash("sha256").update(key.text, "utf8").digest())) throw new MemberStoreError("conflict");
-      return turnRequestSchema.parse(key);
-    }
-    const handoff = await handoffAdmission(this.pool, key);
-    if (handoff?.kind === "handoff") return turnRequestSchema.parse(key);
-    const lane = isTextEngine(conversation.engine) ? await firingInitiator(this.pool, key, conversation) ?? ownerInitiator : ownerInitiator;
-    await validateRequestTextPolicy(this.pool, key, conversation, lane);
-    const validated = turnRequestSchema.parse(key);
-    // Native engines' turn limit is enforced by recordAcceptance; only text engines pay for the count here.
-    if (isTextEngine(conversation.engine)) {
-      const counted = await turnBudget(this.pool, key.conversationId);
-      const refusal = turnRefusal(conversation.engine, key.text, counted.used >= counted.limit);
-      if (refusal) {
-        // An admission committed after the first identity reads may account for this slot.
-        if (await this.requestAdmissionTerms(key) !== undefined) return validated;
-        const concurrentTurn = await this.legacyTurn(key);
-        if (concurrentTurn) {
-          if (!concurrentTurn.prompt_digest.equals(createHash("sha256").update(key.text, "utf8").digest())) throw new MemberStoreError("conflict");
-          return validated;
-        }
-        throw refusal;
+    if (await this.recordedRequest(key)) return turnRequestSchema.parse(key);
+    try {
+      const handoff = await handoffAdmission(this.pool, key);
+      if (handoff?.kind === "handoff") return turnRequestSchema.parse(key);
+      const lane = isTextEngine(conversation.engine) ? await firingInitiator(this.pool, key, conversation) ?? ownerInitiator : ownerInitiator;
+      await validateRequestTextPolicy(this.pool, key, conversation, lane);
+      const validated = turnRequestSchema.parse(key);
+      // Native engines' turn limit is enforced by recordAcceptance; only text engines pay for the count here.
+      if (isTextEngine(conversation.engine)) {
+        const counted = await turnBudget(this.pool, key.conversationId);
+        const refusal = turnRefusal(conversation.engine, key.text, counted.used >= counted.limit);
+        if (refusal) throw refusal;
       }
+      if (!await budgetApplies(this.pool, key)) return validated;
+      // The lock waits for an admission, turn start or handoff that holds the conversation, and
+      // recordAcceptance's earlier checks run again under it, so a request refused under the budget
+      // and audited as such is one admission would refuse for the budget alone.
+      const refused = await this.transaction(async db => {
+        await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE owner_id=$1 AND conversation_id=$2 FOR KEY SHARE",
+          [key.ownerId, key.conversationId]);
+        // Read again under the lock: the trusted lane may have attached, or the budget been cleared.
+        if (!await budgetApplies(db, key)) return false;
+        const conversation = await conversationFor(db, key, false);
+        const existing = await this.requestRecord(key, db);
+        if (existing.admission) return false;
+        const { recorded, started } = await admissionTerms(db, key, conversation, ownerInitiator);
+        return !started && recorded.kind !== "handoff"
+          && refuseOverBudget(db, key, conversation.memberId, recorded.kind === "routine" ? recorded.id : undefined);
+      });
+      if (refused) throw new MemberStoreError("usage_limit");
+      return validated;
+    } catch (error) {
+      // Admission can commit during any fresh-request check, including size or firing validation.
+      if (isTextEngine(conversation.engine) && await this.recordedRequest(key)) return turnRequestSchema.parse(key);
+      throw error;
     }
-    if (!await budgetApplies(this.pool, key)) return validated;
-    // The lock waits for an admission, turn start or handoff that holds the conversation, and
-    // recordAcceptance's earlier checks run again under it, so a request refused under the budget
-    // and audited as such is one admission would refuse for the budget alone.
-    const refused = await this.transaction(async db => {
-      await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE owner_id=$1 AND conversation_id=$2 FOR KEY SHARE",
-        [key.ownerId, key.conversationId]);
-      // Read again under the lock: the trusted lane may have attached, or the budget been cleared.
-      if (!await budgetApplies(db, key)) return false;
-      const conversation = await conversationFor(db, key, false);
-      const admitted = await db.query("SELECT 1 FROM birbcrew_ts.request_admissions WHERE conversation_id=$1 AND request_id=$2",
-        [key.conversationId, key.requestId]);
-      if (admitted.rowCount) return false;
-      const { recorded, started } = await admissionTerms(db, key, conversation, ownerInitiator);
-      return !started && recorded.kind !== "handoff"
-        && refuseOverBudget(db, key, conversation.memberId, recorded.kind === "routine" ? recorded.id : undefined);
-    });
-    if (refused) throw new MemberStoreError("usage_limit");
-    return validated;
   }
 
   /** A replay of an admitted request keeps the initiator its first admission recorded. A routine
@@ -500,23 +515,12 @@ export class MemberStore {
     return turn?.run ?? undefined;
   }
 
-  private async legacyTurn(key: TurnRequest) {
-    const { rows: [turn] } = await this.pool.query<Pick<TurnRow, "prompt_digest" | "phase" | "reply">>(
-      `SELECT t.prompt_digest, t.phase, t.reply
-         FROM birbcrew_ts.turns t JOIN birbcrew_ts.conversations c USING (conversation_id)
-        WHERE c.owner_id = $1 AND c.conversation_id = $2 AND t.request_id = $3`,
-      [key.ownerId, key.conversationId, key.requestId],
-    );
-    return turn;
-  }
-
   async committedReply(input: z.input<typeof turnRequestSchema>): Promise<string | undefined> {
     const key = turnRequestSchema.parse(input);
-    if((await this.requestAdmission(key))?.phase === "rejected")throw new MemberStoreError("request_rejected");
-    const turn = await this.legacyTurn(key);
+    const { admission, turn } = await this.requestRecord(key);
+    if (admission?.phase === "rejected") throw new MemberStoreError("request_rejected");
     if (!turn) return undefined;
-    const digest = createHash("sha256").update(key.text, "utf8").digest();
-    if (!turn.prompt_digest.equals(digest) || turn.phase === "uncertain") throw new MemberStoreError("conflict");
+    if (turn.phase === "uncertain") throw new MemberStoreError("conflict");
     return turn.reply ?? undefined;
   }
 

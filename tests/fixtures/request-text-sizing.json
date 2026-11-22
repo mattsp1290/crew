@@ -1,7 +1,7 @@
 {
   "environment": {
     "node": "24.22.3",
-    "postgres": "17",
+    "postgres": "17.11 (Debian 17.11-1.pgdg13+2)",
     "temporalCLI": "1.10.0",
     "temporalServer": "1.32.2",
     "temporalSDK": "1.25.0",
@@ -14,12 +14,8 @@
   },
   "effectiveTestLimits": {
     "blobSizeLimitError": 2097152,
-    "source": "Temporal server 1.32.2: fixture start-dev explicitly sets limit.blobSize.error=2097152 and system.transactionSizeLimit=4194304. Full gRPC message size is uninstrumented. Production limits must be checked independently.",
     "transactionSizeLimit": 4194304,
-    "references": [
-      "https://github.com/temporalio/temporal/blob/v1.32.2/common/dynamicconfig/constants.go",
-      "https://github.com/temporalio/temporal/blob/v1.32.2/common/primitives/constants.go"
-    ]
+    "verification": "declared_by_fixture_launcher_not_introspected"
   },
   "measurementNotes": [
     "Converter bytes include the protobuf Payload envelope, encoding metadata and JSON serialization, including escapes.",
@@ -34,9 +30,10 @@
       "n": 32768,
       "versioned": false,
       "promptDigest": "4f3213f6f3cb2bba2973ec02c8222e88161cdc2208dbd3d3634f43e12e6388ff",
+      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f",
       "replyBytes": 16,
       "converterBytes": 32963,
-      "encodedHistory": 102749,
+      "encodedHistory": 102772,
       "events": [
         {
           "type": 1,
@@ -44,7 +41,7 @@
           "payloadBytes": [
             234
           ],
-          "bytes": 533
+          "bytes": 534
         },
         {
           "type": 5,
@@ -56,13 +53,13 @@
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 25,
@@ -84,19 +81,19 @@
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 188
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         },
         {
           "type": 41,
@@ -104,7 +101,7 @@
           "payloadBytes": [
             32963
           ],
-          "bytes": 33166
+          "bytes": 33167
         },
         {
           "type": 10,
@@ -118,31 +115,31 @@
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 78
+          "bytes": 79
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 183
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         },
         {
           "type": 10,
@@ -158,13 +155,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 158
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 116
+          "bytes": 117
         },
         {
           "type": 12,
@@ -172,37 +169,37 @@
           "payloadBytes": [
             71
           ],
-          "bytes": 124
+          "bytes": 125
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 183
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         }
-      ],
-      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f"
+      ]
     },
     {
       "engine": "cursor",
       "n": 32768,
       "versioned": true,
       "promptDigest": "4f3213f6f3cb2bba2973ec02c8222e88161cdc2208dbd3d3634f43e12e6388ff",
+      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f",
       "replyBytes": 16,
       "converterBytes": 32963,
-      "encodedHistory": 102748,
+      "encodedHistory": 102767,
       "events": [
         {
           "type": 1,
@@ -210,7 +207,7 @@
           "payloadBytes": [
             234
           ],
-          "bytes": 533
+          "bytes": 534
         },
         {
           "type": 5,
@@ -222,13 +219,13 @@
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 25,
@@ -250,19 +247,19 @@
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 187
+          "bytes": 183
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         },
         {
           "type": 41,
@@ -270,7 +267,7 @@
           "payloadBytes": [
             32963
           ],
-          "bytes": 33166
+          "bytes": 33167
         },
         {
           "type": 10,
@@ -284,31 +281,31 @@
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 78
+          "bytes": 79
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 10,
@@ -316,7 +313,7 @@
           "payloadBytes": [
             32963
           ],
-          "bytes": 33185
+          "bytes": 33186
         },
         {
           "type": 43,
@@ -324,13 +321,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 157
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 115
+          "bytes": 117
         },
         {
           "type": 12,
@@ -338,13 +335,51 @@
           "payloadBytes": [
             71
           ],
-          "bytes": 124
+          "bytes": 125
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
+        },
+        {
+          "type": 6,
+          "attributes": "workflowTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 184
+        },
+        {
+          "type": 7,
+          "attributes": "workflowTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 147
+        }
+      ]
+    },
+    {
+      "engine": "cursor",
+      "n": 65536,
+      "versioned": false,
+      "promptDigest": "606ad0ea525471b49bdacafd3a36bb55ce973529cc2e36a98795925a8d6695b1",
+      "replyDigest": "ab3fe811648bab10805c43200b9353d188a57956d43e0dbad14b75c7ffb5d2ed",
+      "replyBytes": 65536,
+      "converterBytes": 65731,
+      "encodedHistory": 266606,
+      "events": [
+        {
+          "type": 1,
+          "attributes": "workflowExecutionStartedEventAttributes",
+          "payloadBytes": [
+            234
+          ],
+          "bytes": 534
+        },
+        {
+          "type": 5,
+          "attributes": "workflowTaskScheduledEventAttributes",
+          "payloadBytes": [],
+          "bytes": 59
         },
         {
           "type": 6,
@@ -356,45 +391,7 @@
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
-        }
-      ],
-      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f"
-    },
-    {
-      "engine": "cursor",
-      "n": 65536,
-      "versioned": false,
-      "promptDigest": "606ad0ea525471b49bdacafd3a36bb55ce973529cc2e36a98795925a8d6695b1",
-      "replyBytes": 65536,
-      "converterBytes": 65731,
-      "encodedHistory": 266569,
-      "events": [
-        {
-          "type": 1,
-          "attributes": "workflowExecutionStartedEventAttributes",
-          "payloadBytes": [
-            234
-          ],
-          "bytes": 532
-        },
-        {
-          "type": 5,
-          "attributes": "workflowTaskScheduledEventAttributes",
-          "payloadBytes": [],
-          "bytes": 58
-        },
-        {
-          "type": 6,
-          "attributes": "workflowTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
-        },
-        {
-          "type": 7,
-          "attributes": "workflowTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
+          "bytes": 183
         },
         {
           "type": 25,
@@ -402,7 +399,7 @@
           "payloadBytes": [
             78
           ],
-          "bytes": 135
+          "bytes": 136
         },
         {
           "type": 40,
@@ -410,25 +407,25 @@
           "payloadBytes": [
             75
           ],
-          "bytes": 131
+          "bytes": 132
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 186
+          "bytes": 188
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 41,
@@ -436,7 +433,7 @@
           "payloadBytes": [
             65731
           ],
-          "bytes": 65933
+          "bytes": 65935
         },
         {
           "type": 10,
@@ -444,37 +441,37 @@
           "payloadBytes": [
             65731
           ],
-          "bytes": 65898
+          "bytes": 65899
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 77
+          "bytes": 79
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 10,
@@ -482,7 +479,7 @@
           "payloadBytes": [
             65731
           ],
-          "bytes": 65953
+          "bytes": 65954
         },
         {
           "type": 43,
@@ -490,13 +487,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 157
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 115
+          "bytes": 117
         },
         {
           "type": 12,
@@ -504,13 +501,51 @@
           "payloadBytes": [
             65593
           ],
-          "bytes": 65652
+          "bytes": 65653
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
+        },
+        {
+          "type": 6,
+          "attributes": "workflowTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 184
+        },
+        {
+          "type": 7,
+          "attributes": "workflowTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 147
+        }
+      ]
+    },
+    {
+      "engine": "cursor",
+      "n": 65536,
+      "versioned": true,
+      "promptDigest": "babfe4877a749bb2e855ddfbd50699ffdfa7324a47f05895511b6122cda405f6",
+      "replyDigest": "916b144867c340614f515c7b0e5415c74832d899c05264ded2a277a6e81d81ff",
+      "replyBytes": 65536,
+      "converterBytes": 98499,
+      "encodedHistory": 692587,
+      "events": [
+        {
+          "type": 1,
+          "attributes": "workflowExecutionStartedEventAttributes",
+          "payloadBytes": [
+            234
+          ],
+          "bytes": 534
+        },
+        {
+          "type": 5,
+          "attributes": "workflowTaskScheduledEventAttributes",
+          "payloadBytes": [],
+          "bytes": 59
         },
         {
           "type": 6,
@@ -522,45 +557,7 @@
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
-        }
-      ],
-      "replyDigest": "ab3fe811648bab10805c43200b9353d188a57956d43e0dbad14b75c7ffb5d2ed"
-    },
-    {
-      "engine": "cursor",
-      "n": 65536,
-      "versioned": true,
-      "promptDigest": "babfe4877a749bb2e855ddfbd50699ffdfa7324a47f05895511b6122cda405f6",
-      "replyBytes": 65536,
-      "converterBytes": 98499,
-      "encodedHistory": 692553,
-      "events": [
-        {
-          "type": 1,
-          "attributes": "workflowExecutionStartedEventAttributes",
-          "payloadBytes": [
-            234
-          ],
-          "bytes": 532
-        },
-        {
-          "type": 5,
-          "attributes": "workflowTaskScheduledEventAttributes",
-          "payloadBytes": [],
-          "bytes": 58
-        },
-        {
-          "type": 6,
-          "attributes": "workflowTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
-        },
-        {
-          "type": 7,
-          "attributes": "workflowTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
+          "bytes": 183
         },
         {
           "type": 25,
@@ -568,7 +565,7 @@
           "payloadBytes": [
             78
           ],
-          "bytes": 135
+          "bytes": 136
         },
         {
           "type": 40,
@@ -576,25 +573,25 @@
           "payloadBytes": [
             75
           ],
-          "bytes": 131
+          "bytes": 132
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 186
+          "bytes": 188
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 41,
@@ -602,7 +599,7 @@
           "payloadBytes": [
             98499
           ],
-          "bytes": 98701
+          "bytes": 98703
         },
         {
           "type": 10,
@@ -610,37 +607,37 @@
           "payloadBytes": [
             98499
           ],
-          "bytes": 98666
+          "bytes": 98667
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 77
+          "bytes": 79
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 10,
@@ -648,7 +645,7 @@
           "payloadBytes": [
             98499
           ],
-          "bytes": 98721
+          "bytes": 98722
         },
         {
           "type": 43,
@@ -656,13 +653,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 157
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 115
+          "bytes": 117
         },
         {
           "type": 12,
@@ -688,19 +685,19 @@
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         }
-      ],
-      "replyDigest": "916b144867c340614f515c7b0e5415c74832d899c05264ded2a277a6e81d81ff"
+      ]
     },
     {
       "engine": "opencode",
       "n": 32768,
       "versioned": false,
       "promptDigest": "4f3213f6f3cb2bba2973ec02c8222e88161cdc2208dbd3d3634f43e12e6388ff",
+      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f",
       "replyBytes": 16,
       "converterBytes": 32963,
-      "encodedHistory": 102750,
+      "encodedHistory": 102769,
       "events": [
         {
           "type": 1,
@@ -708,7 +705,7 @@
           "payloadBytes": [
             238
           ],
-          "bytes": 537
+          "bytes": 538
         },
         {
           "type": 5,
@@ -720,13 +717,13 @@
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 25,
@@ -748,19 +745,19 @@
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         },
         {
           "type": 41,
@@ -768,7 +765,7 @@
           "payloadBytes": [
             32963
           ],
-          "bytes": 33166
+          "bytes": 33167
         },
         {
           "type": 10,
@@ -782,31 +779,31 @@
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 77
+          "bytes": 79
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 10,
@@ -814,7 +811,7 @@
           "payloadBytes": [
             32963
           ],
-          "bytes": 33189
+          "bytes": 33190
         },
         {
           "type": 43,
@@ -822,13 +819,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 157
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 115
+          "bytes": 117
         },
         {
           "type": 12,
@@ -836,13 +833,13 @@
           "payloadBytes": [
             71
           ],
-          "bytes": 124
+          "bytes": 123
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 110
         },
         {
           "type": 6,
@@ -856,17 +853,17 @@
           "payloadBytes": [],
           "bytes": 146
         }
-      ],
-      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f"
+      ]
     },
     {
       "engine": "opencode",
       "n": 32768,
       "versioned": true,
       "promptDigest": "4f3213f6f3cb2bba2973ec02c8222e88161cdc2208dbd3d3634f43e12e6388ff",
+      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f",
       "replyBytes": 16,
       "converterBytes": 32963,
-      "encodedHistory": 102741,
+      "encodedHistory": 102771,
       "events": [
         {
           "type": 1,
@@ -874,141 +871,13 @@
           "payloadBytes": [
             238
           ],
-          "bytes": 537
+          "bytes": 538
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
           "bytes": 59
-        },
-        {
-          "type": 6,
-          "attributes": "workflowTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 182
-        },
-        {
-          "type": 7,
-          "attributes": "workflowTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
-        },
-        {
-          "type": 25,
-          "attributes": "markerRecordedEventAttributes",
-          "payloadBytes": [
-            78
-          ],
-          "bytes": 135
-        },
-        {
-          "type": 40,
-          "attributes": "upsertWorkflowSearchAttributesEventAttributes",
-          "payloadBytes": [
-            75
-          ],
-          "bytes": 131
-        },
-        {
-          "type": 5,
-          "attributes": "workflowTaskScheduledEventAttributes",
-          "payloadBytes": [],
-          "bytes": 110
-        },
-        {
-          "type": 6,
-          "attributes": "workflowTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
-        },
-        {
-          "type": 7,
-          "attributes": "workflowTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 145
-        },
-        {
-          "type": 41,
-          "attributes": "workflowExecutionUpdateAcceptedEventAttributes",
-          "payloadBytes": [
-            32963
-          ],
-          "bytes": 33165
-        },
-        {
-          "type": 10,
-          "attributes": "activityTaskScheduledEventAttributes",
-          "payloadBytes": [
-            32963
-          ],
-          "bytes": 33130
-        },
-        {
-          "type": 11,
-          "attributes": "activityTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 181
-        },
-        {
-          "type": 12,
-          "attributes": "activityTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 77
-        },
-        {
-          "type": 5,
-          "attributes": "workflowTaskScheduledEventAttributes",
-          "payloadBytes": [],
-          "bytes": 110
-        },
-        {
-          "type": 6,
-          "attributes": "workflowTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 182
-        },
-        {
-          "type": 7,
-          "attributes": "workflowTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 145
-        },
-        {
-          "type": 10,
-          "attributes": "activityTaskScheduledEventAttributes",
-          "payloadBytes": [
-            32963
-          ],
-          "bytes": 33189
-        },
-        {
-          "type": 43,
-          "attributes": "workflowExecutionUpdateCompletedEventAttributes",
-          "payloadBytes": [
-            64
-          ],
-          "bytes": 157
-        },
-        {
-          "type": 11,
-          "attributes": "activityTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 115
-        },
-        {
-          "type": 12,
-          "attributes": "activityTaskCompletedEventAttributes",
-          "payloadBytes": [
-            71
-          ],
-          "bytes": 124
-        },
-        {
-          "type": 5,
-          "attributes": "workflowTaskScheduledEventAttributes",
-          "payloadBytes": [],
-          "bytes": 111
         },
         {
           "type": 6,
@@ -1020,45 +889,7 @@
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
-        }
-      ],
-      "replyDigest": "f7629cb1e001d2eebecd27c0e8a6ed0f54d417fae50b6e868873406c050fba7f"
-    },
-    {
-      "engine": "opencode",
-      "n": 65536,
-      "versioned": false,
-      "promptDigest": "606ad0ea525471b49bdacafd3a36bb55ce973529cc2e36a98795925a8d6695b1",
-      "replyBytes": 65536,
-      "converterBytes": 65731,
-      "encodedHistory": 266591,
-      "events": [
-        {
-          "type": 1,
-          "attributes": "workflowExecutionStartedEventAttributes",
-          "payloadBytes": [
-            238
-          ],
-          "bytes": 537
-        },
-        {
-          "type": 5,
-          "attributes": "workflowTaskScheduledEventAttributes",
-          "payloadBytes": [],
-          "bytes": 59
-        },
-        {
-          "type": 6,
-          "attributes": "workflowTaskStartedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 182
-        },
-        {
-          "type": 7,
-          "attributes": "workflowTaskCompletedEventAttributes",
-          "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 25,
@@ -1080,47 +911,95 @@
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         },
         {
           "type": 41,
           "attributes": "workflowExecutionUpdateAcceptedEventAttributes",
           "payloadBytes": [
-            65731
+            32963
           ],
-          "bytes": 65934
+          "bytes": 33167
         },
         {
           "type": 10,
           "attributes": "activityTaskScheduledEventAttributes",
           "payloadBytes": [
-            65731
+            32963
           ],
-          "bytes": 65899
+          "bytes": 33131
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 78
+          "bytes": 79
+        },
+        {
+          "type": 5,
+          "attributes": "workflowTaskScheduledEventAttributes",
+          "payloadBytes": [],
+          "bytes": 112
+        },
+        {
+          "type": 6,
+          "attributes": "workflowTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 184
+        },
+        {
+          "type": 7,
+          "attributes": "workflowTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 147
+        },
+        {
+          "type": 10,
+          "attributes": "activityTaskScheduledEventAttributes",
+          "payloadBytes": [
+            32963
+          ],
+          "bytes": 33190
+        },
+        {
+          "type": 43,
+          "attributes": "workflowExecutionUpdateCompletedEventAttributes",
+          "payloadBytes": [
+            64
+          ],
+          "bytes": 159
+        },
+        {
+          "type": 11,
+          "attributes": "activityTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 117
+        },
+        {
+          "type": 12,
+          "attributes": "activityTaskCompletedEventAttributes",
+          "payloadBytes": [
+            71
+          ],
+          "bytes": 124
         },
         {
           "type": 5,
@@ -1139,6 +1018,124 @@
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
           "bytes": 146
+        }
+      ]
+    },
+    {
+      "engine": "opencode",
+      "n": 65536,
+      "versioned": false,
+      "promptDigest": "606ad0ea525471b49bdacafd3a36bb55ce973529cc2e36a98795925a8d6695b1",
+      "replyDigest": "ab3fe811648bab10805c43200b9353d188a57956d43e0dbad14b75c7ffb5d2ed",
+      "replyBytes": 65536,
+      "converterBytes": 65731,
+      "encodedHistory": 266614,
+      "events": [
+        {
+          "type": 1,
+          "attributes": "workflowExecutionStartedEventAttributes",
+          "payloadBytes": [
+            238
+          ],
+          "bytes": 538
+        },
+        {
+          "type": 5,
+          "attributes": "workflowTaskScheduledEventAttributes",
+          "payloadBytes": [],
+          "bytes": 59
+        },
+        {
+          "type": 6,
+          "attributes": "workflowTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 183
+        },
+        {
+          "type": 7,
+          "attributes": "workflowTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 183
+        },
+        {
+          "type": 25,
+          "attributes": "markerRecordedEventAttributes",
+          "payloadBytes": [
+            78
+          ],
+          "bytes": 136
+        },
+        {
+          "type": 40,
+          "attributes": "upsertWorkflowSearchAttributesEventAttributes",
+          "payloadBytes": [
+            75
+          ],
+          "bytes": 132
+        },
+        {
+          "type": 5,
+          "attributes": "workflowTaskScheduledEventAttributes",
+          "payloadBytes": [],
+          "bytes": 112
+        },
+        {
+          "type": 6,
+          "attributes": "workflowTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 188
+        },
+        {
+          "type": 7,
+          "attributes": "workflowTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 147
+        },
+        {
+          "type": 41,
+          "attributes": "workflowExecutionUpdateAcceptedEventAttributes",
+          "payloadBytes": [
+            65731
+          ],
+          "bytes": 65935
+        },
+        {
+          "type": 10,
+          "attributes": "activityTaskScheduledEventAttributes",
+          "payloadBytes": [
+            65731
+          ],
+          "bytes": 65899
+        },
+        {
+          "type": 11,
+          "attributes": "activityTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 183
+        },
+        {
+          "type": 12,
+          "attributes": "activityTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 79
+        },
+        {
+          "type": 5,
+          "attributes": "workflowTaskScheduledEventAttributes",
+          "payloadBytes": [],
+          "bytes": 112
+        },
+        {
+          "type": 6,
+          "attributes": "workflowTaskStartedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 184
+        },
+        {
+          "type": 7,
+          "attributes": "workflowTaskCompletedEventAttributes",
+          "payloadBytes": [],
+          "bytes": 147
         },
         {
           "type": 10,
@@ -1154,13 +1151,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 158
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 116
+          "bytes": 117
         },
         {
           "type": 12,
@@ -1168,37 +1165,37 @@
           "payloadBytes": [
             65593
           ],
-          "bytes": 65652
+          "bytes": 65653
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 111
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 183
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 146
+          "bytes": 147
         }
-      ],
-      "replyDigest": "ab3fe811648bab10805c43200b9353d188a57956d43e0dbad14b75c7ffb5d2ed"
+      ]
     },
     {
       "engine": "opencode",
       "n": 65536,
       "versioned": true,
       "promptDigest": "babfe4877a749bb2e855ddfbd50699ffdfa7324a47f05895511b6122cda405f6",
+      "replyDigest": "916b144867c340614f515c7b0e5415c74832d899c05264ded2a277a6e81d81ff",
       "replyBytes": 65536,
       "converterBytes": 98499,
-      "encodedHistory": 692556,
+      "encodedHistory": 692591,
       "events": [
         {
           "type": 1,
@@ -1206,7 +1203,7 @@
           "payloadBytes": [
             238
           ],
-          "bytes": 536
+          "bytes": 537
         },
         {
           "type": 5,
@@ -1218,13 +1215,13 @@
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 182
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 183
         },
         {
           "type": 25,
@@ -1232,7 +1229,7 @@
           "payloadBytes": [
             78
           ],
-          "bytes": 135
+          "bytes": 136
         },
         {
           "type": 40,
@@ -1240,25 +1237,25 @@
           "payloadBytes": [
             75
           ],
-          "bytes": 131
+          "bytes": 132
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 188
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 41,
@@ -1266,7 +1263,7 @@
           "payloadBytes": [
             98499
           ],
-          "bytes": 98701
+          "bytes": 98703
         },
         {
           "type": 10,
@@ -1274,37 +1271,37 @@
           "payloadBytes": [
             98499
           ],
-          "bytes": 98666
+          "bytes": 98667
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 181
+          "bytes": 183
         },
         {
           "type": 12,
           "attributes": "activityTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 77
+          "bytes": 79
         },
         {
           "type": 5,
           "attributes": "workflowTaskScheduledEventAttributes",
           "payloadBytes": [],
-          "bytes": 110
+          "bytes": 112
         },
         {
           "type": 6,
           "attributes": "workflowTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 182
+          "bytes": 184
         },
         {
           "type": 7,
           "attributes": "workflowTaskCompletedEventAttributes",
           "payloadBytes": [],
-          "bytes": 145
+          "bytes": 147
         },
         {
           "type": 10,
@@ -1312,7 +1309,7 @@
           "payloadBytes": [
             98499
           ],
-          "bytes": 98725
+          "bytes": 98726
         },
         {
           "type": 43,
@@ -1320,13 +1317,13 @@
           "payloadBytes": [
             64
           ],
-          "bytes": 157
+          "bytes": 159
         },
         {
           "type": 11,
           "attributes": "activityTaskStartedEventAttributes",
           "payloadBytes": [],
-          "bytes": 115
+          "bytes": 117
         },
         {
           "type": 12,
@@ -1354,12 +1351,11 @@
           "payloadBytes": [],
           "bytes": 146
         }
-      ],
-      "replyDigest": "916b144867c340614f515c7b0e5415c74832d899c05264ded2a277a6e81d81ff"
+      ]
     }
   ],
   "fixtureSource": {
-    "gatewayTestSha256": "99d31f51a3d8be578216641d0c63b9017c0ff9fc51a480562ae655dff3c0719a",
-    "capture": "Post-review fixture, with admission and executeTurn completions decoded and checked; no pending activities/workflow task before fetch."
+    "gatewayTestSha256": "b4fd6f6a6dbe5536dbe615337fcc2331cc3d7fd3e19e34bdd709bea55c7d7981",
+    "capture": "Idle recorded history; admission/turn inputs and exact reply checked. Runtime versions queried; CLI and limit declarations are labeled separately."
   }
 }

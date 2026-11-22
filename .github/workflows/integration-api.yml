@@ -9,6 +9,7 @@ on:
       - 'packages/pi-subagents/**'
       - 'scripts/build-native'
       - 'scripts/setup'
+      - 'scripts/install-temporal-cli'
       - '.node-version'
       - 'tsconfig.json'
       - 'packages/client/**'
@@ -90,11 +91,7 @@ jobs:
       - name: Install pinned Temporal CLI
         run: |
           mkdir -p .proof/bin
-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+          scripts/install-temporal-cli .proof/bin
       - run: npm run test:child-targets
         env:
           TEMPORAL_CLI: ${{ github.workspace }}/.proof/bin/temporal
@@ -128,11 +125,7 @@ jobs:
       - name: Install pinned Temporal CLI
         run: |
           mkdir -p .proof/bin
-          archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-          curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-          curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-          (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-          tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+          scripts/install-temporal-cli .proof/bin
       - name: Install pinned Beans
         run: |
           asset=bn-linux-x86_64
@@ -144,12 +137,16 @@ jobs:
           BIRBCREW_TEMPORAL_ADDRESS: 127.0.0.1:7233
           BIRBCREW_TEMPORAL_NAMESPACE: default
           BIRBCREW_TEXT_EVIDENCE_DIR: ${{ runner.temp }}/text-member-evidence
+          CREW_TEXT_BLOB_LIMIT: '2097152'
+          CREW_TEXT_TRANSACTION_LIMIT: '4194304'
         run: |
           set -euo pipefail
           export PATH="$GITHUB_WORKSPACE/.proof/bin:$PATH"
           git --version
           bn --version | grep -qx 'bn v0.3.0'
-          temporal server start-dev --headless --port 7233 --dynamic-config-value limit.blobSize.error=2097152 --dynamic-config-value system.transactionSizeLimit=4194304 --db-filename "$RUNNER_TEMP/text-temporal.db" > "$RUNNER_TEMP/text-temporal.log" 2>&1 &
+          export BIRBCREW_TEXT_TEMPORAL_CLI_VERSION="$(cat .proof/bin/temporal-cli-version)"
+          export BIRBCREW_TEXT_SERVER_LIMITS="{\"blobSizeLimitError\":$CREW_TEXT_BLOB_LIMIT,\"transactionSizeLimit\":$CREW_TEXT_TRANSACTION_LIMIT}"
+          temporal server start-dev --headless --port 7233 --dynamic-config-value "limit.blobSize.error=$CREW_TEXT_BLOB_LIMIT" --dynamic-config-value "system.transactionSizeLimit=$CREW_TEXT_TRANSACTION_LIMIT" --db-filename "$RUNNER_TEMP/text-temporal.db" > "$RUNNER_TEMP/text-temporal.log" 2>&1 &
           temporal_pid=$!
           trap 'kill "$temporal_pid"; wait "$temporal_pid" || true' EXIT
           ready=false
@@ -213,11 +210,7 @@ jobs:
             npm ci
             npm ci --prefix clients --ignore-scripts --no-audit --no-fund
             npm run build
-            archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-            curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-            curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-            (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-            tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+            scripts/install-temporal-cli .proof/bin
           '
       - name: Run actual native suite
         timeout-minutes: 21
@@ -295,11 +288,7 @@ jobs:
           exec node tests/proof/member-service-diagnostics.mts --command "$BIRBCREW_CONTROL_PROOF_DIR/setup.log" bash -euo pipefail -c '
             npm ci
             npm run build
-            archive=temporal_cli_1.10.0_linux_amd64.tar.gz
-            curl -fsSL "https://github.com/temporalio/cli/releases/download/v1.10.0/$archive" -o ".proof/bin/$archive"
-            curl -fsSL https://github.com/temporalio/cli/releases/download/v1.10.0/checksums.txt -o .proof/bin/checksums.txt
-            (cd .proof/bin && grep " $archive$" checksums.txt | sha256sum -c -)
-            tar -xzf ".proof/bin/$archive" -C .proof/bin temporal
+            scripts/install-temporal-cli .proof/bin
           '
       - name: Run isolated control suite
         timeout-minutes: 16

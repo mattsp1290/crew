@@ -626,9 +626,4 @@ commit and each command result. Live application/proxy-provider acceptance is se
 and requires existing authorized access and any required spend approval. Do not print
 real credentials, publish test tokens, or claim production identity-provider coverage.
 
-Text profiles can opt into an immutable `requestTextBytes` limit from 16,384 to
-65,536 UTF-8 bytes; omission keeps 16,384. Read the effective value in
-`GET /v1/members`. Existing profile names cannot change policy. See
-[request text limits](request-text-limits.md) for configuration, exact refusal
-and replay behavior, transport overhead, persistence, qualification and upgrade
-requirements. Native, routine, handoff and reply bounds remain unchanged.
+Text profiles can configure `requestTextBytes`. See [request text limits](request-text-limits.md) for configuration, discovery, and qualification.
