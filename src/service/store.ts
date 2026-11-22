@@ -181,6 +181,9 @@ export class MemberStore {
     }
   }
 
+  /** Applies every pending migration. Migrations up to 041 never wait for a running native turn;
+   * 042 widens CHECKs on members and conversations, which needs ACCESS EXCLUSIVE, so it waits for
+   * running native turns (bounded, then 55P03 with nothing applied; see 042-text-members.sql). */
   async migrate(): Promise<void> {
     await this.transaction(async (db) => {
       await db.query("SELECT pg_advisory_xact_lock(hashtextextended('birbcrew_ts.migration', 0))");

@@ -9,7 +9,8 @@ import type { PublicSegment } from "./activities.ts";
 import { inspectChild, requestChildStop, revokeChild, type ReadySegment } from "./supervisor-child.ts";
 import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import { ChildStore, childrenFor } from "./children.ts";
-import { engineTraits, type Conversation, type Checkpoint } from "./domain.ts";
+import { engineTraits, isTextEngine, type Conversation, type Checkpoint } from "./domain.ts";
+import { nativeStopGraceMs, stopLeaseWaitMs, textStopGraceMs } from "./limits.ts";
 import { textProjection, textWriter } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
 import { commandSchema, runnerResultSchema, type Launch } from "./supervisor.ts";
@@ -55,18 +56,18 @@ async function groupStopped(pid: number) {
   return false;
 }
 
-const stopGraceMs = 12_000;
-// The acknowledgement has to outlast the grace kill, groupStopped's one second poll, and the
+// Text runners get the longer grace (limits.ts); a runner with no entry is native.
+const textRunners = new WeakSet<ChildProcess>();
+// The acknowledgement has to outlast the longest grace kill, groupStopped's one second poll, and the
 // stopped update. A prompt abort still returns as soon as native_launches.stopped is set.
-const stopConfirmMs = 20_000;
+const stopConfirmMs = stopLeaseWaitMs(true) + 3_000;
 
 function stopRunner(child: ChildProcess | undefined) {
   if (!child || stopping.has(child) || child.exitCode !== null || child.signalCode !== null) return;
   stopping.add(child);
   if (child.connected) child.send("stop", () => { });
-  // Longer than Cursor's 5s close and OpenCode's 2s close so private files are removed first.
   // killNativeGroup still signals the group when the leader has already exited.
-  const timeout = setTimeout(() => killNativeGroup(child), stopGraceMs);
+  const timeout = setTimeout(() => killNativeGroup(child), textRunners.has(child) ? textStopGraceMs : nativeStopGraceMs);
   timeout.unref();
   child.once("close", () => clearTimeout(timeout));
 }
@@ -185,6 +186,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
         stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], detached: true,
       });
       active.set(launch.token, child);
+      if (isTextEngine(conversation.engine)) textRunners.add(child);
       child.on("message", (value) => {
         if (value && typeof value === "object" && "delta" in value && typeof value.delta === "string") {
           stream.push(project(value.delta));

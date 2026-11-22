@@ -2,7 +2,8 @@ import {acquireRecoveryNativeLease,requireRecoveryActive} from "./recovery-admis
 import { admitChild } from "./supervisor-child.ts";
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import type { TurnRequest } from "./domain.ts";
+import { isTextEngine, type Engine, type TurnRequest } from "./domain.ts";
+import { stopLeaseWaitMs } from "./limits.ts";
 import type { Launch } from "./supervisor.ts";
 
 type Stop =
@@ -15,7 +16,7 @@ export async function requestNativeStop(pool: Pool, request: StopRequest, stop: 
   const db = await pool.connect();
   try {
     await db.query("BEGIN");
-    const {rows: [claim]} = await db.query<{token:string; engine:string}>(`SELECT t.token,m.engine
+    const {rows: [claim]} = await db.query<{token:string; engine:Engine}>(`SELECT t.token,m.engine
       FROM birbcrew_ts.turns t JOIN birbcrew_ts.conversations c USING(conversation_id)
       JOIN birbcrew_ts.members m USING(owner_id,member_id)
       WHERE c.owner_id=$1 AND t.conversation_id=$2 AND t.request_id=$3 AND t.phase='started'
@@ -36,7 +37,8 @@ export async function requestNativeStop(pool: Pool, request: StopRequest, stop: 
     if (!claim) return;
     // Wait for the admitted SDK after releasing the short conversation lock.
     await db.query("BEGIN");
-    await db.query("SET LOCAL lock_timeout='8s'");
+    // The runner holds its lease until the host's grace kill ends it, so wait out that engine's grace.
+    await db.query(`SET LOCAL lock_timeout='${stopLeaseWaitMs(isTextEngine(claim.engine))}ms'`);
     const leases = claim.engine === "codex" ? "native_launches" : "turns";
     await db.query(`SELECT 1 FROM birbcrew_ts.${leases} WHERE conversation_id=$1 AND request_id=$2 AND token=$3
       FOR NO KEY UPDATE`, [request.conversationId,request.requestId,claim.token]);

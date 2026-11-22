@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, test } from "node:test";
+import { after, before, test, type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { Pool } from "pg";
 import { childTargetSchema } from "../../src/service/child-target.ts";
@@ -15,6 +16,8 @@ import { HandoffApi } from "../../src/service/handoffs.ts";
 import { MemoryApi } from "../../src/service/memories.ts";
 import type { MemberProfile } from "../../src/service/profiles.ts";
 import { MemberStore } from "../../src/service/store.ts";
+import { withNativeAdmission } from "../../src/service/native-admission.ts";
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import { TrustedContextStore } from "../../src/service/trusted-context.ts";
 
 const run = promisify(execFile);
@@ -205,4 +208,79 @@ test("handoffs, child targets, and delegation control reject text engines", asyn
   await assert.rejects(api.create(opencode.ownerId, randomUUID(), { requestId: randomUUID(), memberId: opencode.memberId }), { code: "not_found" });
   assert.equal(childTargetSchema.safeParse({ engine: "cursor", profile: "text-cursor.v1" }).success, false);
   assert.equal(controlScopeSchema.safeParse({ kind: "target", engine: "cursor", profile: "text-cursor.v1" }).success, false);
+});
+
+/** A separate database migrated through `version`, with one native turn running; dropped after the test. */
+async function runningTurnAt(t: TestContext, version: number) {
+  const source = new URL(url!);
+  const admin = new Pool({ connectionString: source.href });
+  const database = testDatabaseName("text_members_");
+  await admin.query("CREATE DATABASE " + database);
+  source.pathname = "/" + database;
+  const upgraded = new Pool({ connectionString: source.href });
+  t.after(async () => {
+    try { await upgraded.end(); await admin.query("DROP DATABASE " + database); }
+    finally { await admin.end(); }
+  });
+  await upgraded.query("CREATE SCHEMA birbcrew_ts");
+  await upgraded.query("CREATE TABLE birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
+  const current = new MemberStore(upgraded);
+  await migrateThrough(current, version);
+  const ownerId = "owner-" + randomUUID(), conversationId = randomUUID(), requestId = randomUUID(), text = "running at upgrade";
+  const { rows: [{ member_id: memberId }] } = await upgraded.query<{ member_id: string }>(`INSERT INTO birbcrew_ts.members
+    (owner_id,spawn_request_id,engine,profile) VALUES ($1,$2,'pi','fixture') RETURNING member_id`, [ownerId, randomUUID()]);
+  await upgraded.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)", [ownerId, memberId, conversationId]);
+  const execution = { workflowRunId: randomUUID(), activityId: "turn", attempt: 1 };
+  const start = await current.beginTurn({ ownerId, conversationId, requestId, text }, execution);
+  assert.equal(start.kind, "start"); if (start.kind !== "start") throw new Error("no turn");
+  await upgraded.query(`INSERT INTO birbcrew_ts.native_launches (conversation_id,request_id,token,workflow_run_id,activity_id,attempt)
+    VALUES ($1,$2,$3,$4,$5,1)`, [conversationId, requestId, start.token, execution.workflowRunId, execution.activityId]);
+  const launch = { ownerId, conversationId, requestId, text, token: start.token, execution };
+  return { upgraded, current, launch };
+}
+const engineCheck = "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname='members_engine_check'";
+const applied42 = "SELECT count(*)::integer AS n FROM birbcrew_ts.schema_versions WHERE version=42";
+
+// 042 widens CHECKs on members and conversations, which needs ACCESS EXCLUSIVE, and a running native
+// turn's admission holds ACCESS SHARE on members. Unlike 025-041, it therefore waits for running native
+// turns: it retries without queueing, applies once they end, and fails closed at its deadline.
+test("migration 042 waits for a running native turn without queueing and applies once the turn ends", async (t) => {
+  const { upgraded, current, launch } = await runningTurnAt(t, 41);
+  const before = (await upgraded.query(engineCheck)).rows[0].def;
+  let migrating: Promise<void> | undefined;
+  let migrated = false;
+  await withNativeAdmission(upgraded, launch, AbortSignal.timeout(30_000), async () => {
+    migrating = current.migrate().then(() => { migrated = true; });
+    await delay(1_500);
+    assert.equal(migrated, false, "042 waits while a native turn holds its admission");
+    assert.equal((await upgraded.query(applied42)).rows[0].n, 0);
+    assert.equal((await upgraded.query(engineCheck)).rows[0].def, before, "nothing is visible while it waits");
+    // It retries with NOWAIT, so the running turn and other sessions are never queued behind it.
+    await current.appendText({ ownerId: launch.ownerId, conversationId: launch.conversationId, requestId: launch.requestId, token: launch.token },
+      launch.requestId + "/assistant", 0, "still running");
+  });
+  assert.equal(await Promise.race([migrating!.then(() => true), delay(10_000, false)]), true, "042 applies once the turn ends");
+  assert.equal((await upgraded.query(applied42)).rows[0].n, 1);
+  assert.match((await upgraded.query(engineCheck)).rows[0].def, /cursor.*opencode/);
+});
+
+test("migration 042 fails closed with 55P03 and applies nothing when a native turn outlasts its deadline", async (t) => {
+  const { upgraded, launch } = await runningTurnAt(t, 41);
+  const before = (await upgraded.query(engineCheck)).rows[0].def;
+  const source = await readFile(new URL("../../src/service/sql/042-text-members.sql", import.meta.url), "utf8");
+  assert.equal(source.split("interval '200 seconds'").length, 2, "042 has one deadline");
+  // The same SQL with a one-second deadline, so the test need not wait 200 seconds.
+  const shortened = source.replace("interval '200 seconds'", "interval '1 second'");
+  await withNativeAdmission(upgraded, launch, AbortSignal.timeout(30_000), async () => {
+    const db = await upgraded.connect();
+    try {
+      await db.query("BEGIN");
+      await assert.rejects(db.query(shortened), { code: "55P03" });
+    } finally {
+      await db.query("ROLLBACK");
+      db.release();
+    }
+  });
+  assert.equal((await upgraded.query(applied42)).rows[0].n, 0);
+  assert.equal((await upgraded.query(engineCheck)).rows[0].def, before);
 });
