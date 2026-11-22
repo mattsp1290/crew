@@ -46,7 +46,7 @@ try {
     join(source, 'scripts/support/datadog-exporter.mjs'), join(source, 'package.json'), join(source, 'package-lock.json'),
     join(source, 'tsconfig.json'), join(source, 'LICENSE')].sort();
   writeFileSync(join(temporary, 'provenance.json'), JSON.stringify({
-    upstream: 'https://github.com/mattsp1290/switchboard', revision, node: process.version,
+    upstream: 'https://github.com/operatorworks/switchboard', revision, node: process.version,
     sourceSha256: Object.fromEntries(sourcePaths.map((path) => [relative(source, path), hash(path)])),
     extractedSha256: Object.fromEntries(built.map((path) => [relative(temporary, path), hash(path)])),
   }, null, 2) + '\n');

@@ -225,16 +225,29 @@ for (const first of ["stop","effect"] as const) {
       const waiting = first === "stop"
         ? "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE"
         : "FOR UPDATE OF c";
-      let blocked=false;
-      for (let i=0;i<100 && !blocked;i++) {
-        const current=await pool.query(`SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock'
-          AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE $2`, [blocker.pid, `%${waiting}%`]);
-        blocked=Boolean(current.rowCount);
-        if (!blocked) await delay(10);
-      }
-      assert.ok(blocked,"The first operation is waiting on the conversation lock");
+      // The operation's own statement, waiting on a lock behind the gate: directly (`direct`), or behind
+      // a backend the gate blocks, as the second operation queues behind the first.
+      const waitingOn=async (statement: string, direct: boolean) => {
+        for (let i=0;i<100;i++) {
+          const current=await pool.query(`SELECT 1 FROM pg_stat_activity a WHERE a.wait_event_type='Lock' AND a.query LIKE $2
+            AND ($1=ANY(pg_blocking_pids(a.pid)) OR (NOT $3 AND EXISTS (SELECT 1 FROM unnest(pg_blocking_pids(a.pid)) b(pid)
+              WHERE $1=ANY(pg_blocking_pids(b.pid)))))`,
+            [blocker.pid, `%${statement}%`, direct]);
+          if (current.rowCount) return true;
+          await delay(10);
+        }
+        return false;
+      };
+      const second = first === "stop"
+        ? "FOR UPDATE OF c"
+        : "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE";
+      assert.ok(await waitingOn(waiting, true),"The first operation is waiting on the conversation lock");
       if (first==="stop") settle=settling();
       else stop=stopping();
+      // Release the gate only once the second operation is queued too. A locker that arrives after the
+      // gate's rollback, before the first waiter re-locks the row, sees no live locker and takes the row
+      // ahead of the queue, which would invert the order this test fixes.
+      assert.ok(await waitingOn(second, false),"The second operation is waiting on the conversation lock");
     } finally {
       await gate.query("ROLLBACK");
       gate.release();
