@@ -9,7 +9,7 @@ import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type De
 import { actorKinds, appendAudit, auditEventTypes, auditFilterNames, auditLimits } from "./audit.ts";
 import { capabilityReport, storedCapabilities } from "./capabilities.ts";
 import type { MemberClient } from "./client.ts";
-import { approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
+import { isTextEngine, approvalDeadline, initiatorColumns, initiatorFromColumns, initiatorKinds, MemberStoreError, ownerInitiator, submitSchema,
   turnKey, type Engine } from "./domain.ts";
 import { standingChoice } from "./deferral.ts";
 import { grantListLimit } from "./grants.ts";
@@ -124,12 +124,22 @@ export class IntegrationApi {
   closeTextConversation(input: unknown) {
     return this.members.closeTextConversation(keySchema.omit({requestId:true}).parse(input));
   }
+  private async commandStatus(key: z.infer<typeof keySchema>): Promise<ServerRequestReceipt> {
+    try {
+      const receipt=await this.status(key);
+      if(receipt.erased) throw new MemberStoreError("conversation_erased");
+      return receipt;
+    } catch(error) {
+      if(error instanceof MemberStoreError && error.code==="content_erasure_pending") throw new MemberStoreError("conversation_erased");
+      throw error;
+    }
+  }
   async submit(input: unknown): Promise<ServerRequestReceipt> {
     const request = submitSchema.parse(input);
     // Unlike the legacy ACCEPTED stage, acceptTurn waits for SQL admission.
     // On lost acknowledgement the caller must reconcile, never choose a new UUID.
     await this.members.accept(request);
-    return this.status({ ownerId: request.ownerId, conversationId: request.conversationId, requestId: request.requestId });
+    return this.commandStatus({ ownerId: request.ownerId, conversationId: request.conversationId, requestId: request.requestId });
   }
 
   async status(input: unknown): Promise<ServerRequestReceipt> {
@@ -183,18 +193,16 @@ export class IntegrationApi {
   /** `policy` marks an intent a routine's fail_closed policy requested rather than the owner. */
   async cancel(input: unknown, policy?: "fail_closed"): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
-    await assertContentWritable(this.store.pool,key,false);
-    // Backfill active legacy turns created after migration17, without inventing an
-    // admission for an unknown UUID or accepting a new payload. Such turns come from
-    // workflow histories older than durable admission, which only the owner could start.
-    await this.store.pool.query(`INSERT INTO birbcrew_ts.request_admissions(conversation_id,request_id,prompt_digest,initiator_kind,initiator_id)
-      SELECT t.conversation_id,t.request_id,t.prompt_digest,$4,$5 FROM birbcrew_ts.turns t
-      JOIN birbcrew_ts.conversations c USING(conversation_id)
-      WHERE c.owner_id=$1 AND t.conversation_id=$2 AND t.request_id=$3
-      ON CONFLICT(conversation_id,request_id) DO NOTHING`, [key.ownerId,key.conversationId,key.requestId,...initiatorColumns(ownerInitiator)]);
-    // Atomic ownership check and FK admission requirement. Repeated intent has one receipt.
+    // Backfill only missing legacy identity within the cancellation transaction.
+    const member=await this.store.getConversation({ownerId:key.ownerId,conversationId:key.conversationId});
     await this.store.transaction(async db => {
-      await assertContentWritable(db,key);
+      if(isTextEngine(member.engine))await assertContentWritable(db,key);
+      await db.query(`INSERT INTO birbcrew_ts.request_admissions(conversation_id,request_id,prompt_digest,initiator_kind,initiator_id)
+        SELECT t.conversation_id,t.request_id,t.prompt_digest,$4,$5 FROM birbcrew_ts.turns t
+        JOIN birbcrew_ts.conversations c USING(conversation_id)
+        WHERE c.owner_id=$1 AND t.conversation_id=$2 AND t.request_id=$3
+          AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.request_admissions a WHERE a.conversation_id=t.conversation_id AND a.request_id=t.request_id)
+        ON CONFLICT(conversation_id,request_id) DO NOTHING`, [key.ownerId,key.conversationId,key.requestId,...initiatorColumns(ownerInitiator)]);
       // Lock the conversation first, like every workflow-side canceller; inserting the
       // shared audit key before this lock can deadlock against them.
       const { rows: [conversation] } = await db.query<{ member_id: string }>(
@@ -209,7 +217,7 @@ export class IntegrationApi {
       if (intent) await appendAudit(db, { type: "request.cancellation_requested", ownerId: key.ownerId, memberId: conversation.member_id,
         conversationId: key.conversationId, requestId: key.requestId, payload: { receiptId: intent.receipt_id, ...(policy && { policy }) } });
     });
-    return this.status(key);
+    return this.commandStatus(key);
   }
 
   /** Owner-scoped keyset page in identifier order; backed by members UNIQUE (owner_id, member_id). */

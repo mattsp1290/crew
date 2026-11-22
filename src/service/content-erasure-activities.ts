@@ -12,7 +12,7 @@ import {
   rootAbsent,
   textStateLocation,
 } from "./text-state-location.ts";
-import { removePrivate } from "./private-directory.ts";
+import { removePrivateDurably } from "./private-directory.ts";
 import type { MemberStore } from "./store.ts";
 
 export const erasureKeySchema = conversationKey.extend({ erasureId: z.uuid() });
@@ -104,7 +104,7 @@ export function textLocationCleanupActivity(
       await textStopProofs(store.pool, key);
       const root = await assertTextRoot(stateDir, row, engine);
       try {
-        await removePrivate(root);
+        await removePrivateDurably(root);
         if (!(await rootAbsent(root))) throw new Error();
       } catch {
         throw new Error("content_cleanup_failed");

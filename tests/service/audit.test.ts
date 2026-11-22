@@ -407,7 +407,7 @@ test("the SQL CHECK and the TypeScript registry name the same event types", asyn
   assert.deepEqual([...named].sort(), [...auditEventTypes].sort());
 });
 
-test("every event type's natural key is a working ON CONFLICT arbiter", async () => {
+test("every ordinary event type's natural key is a working ON CONFLICT arbiter", async () => {
   const db = await pool.connect();
   try {
     await db.query("BEGIN");
@@ -418,9 +418,10 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
     await db.query("INSERT INTO birbcrew_ts.conversations (owner_id,member_id,conversation_id) VALUES ($1,$2,$3)",
       [ownerId, memberId, conversationId]);
     // Typed by the registry, so a new event type cannot be added without a sample here.
-    const samples: { [T in AuditEventType]: Omit<AuditFact<T>, "type" | "ownerId" | "memberId"> } = {
+    type OrdinaryEvent = Exclude<AuditEventType, "conversation.content_erased">;
+    const ordinaryTypes = auditEventTypes.filter((type): type is OrdinaryEvent => type !== "conversation.content_erased");
+    const samples: { [T in OrdinaryEvent]: Omit<AuditFact<T>, "type" | "ownerId" | "memberId"> } = {
       "member.spawned": { payload: { spawnRequestId: randomUUID(), engine: "pi", profile } },
-      "conversation.content_erased": {conversationId,payload:{erasureId:randomUUID()}},
       "conversation.opened": { conversationId, payload: {} },
       "request.accepted": { conversationId, requestId, payload: { promptDigest: digest } },
       "approval.decided": { conversationId, requestId, payload: { approvalId: randomUUID(), invocationId: requestId,
@@ -462,7 +463,7 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
       "instruction_pack.deleted": { payload: { packId } },
       "member.instruction_packs_attached": { payload: { packIds: [packId, randomUUID()] } },
     };
-    for (const type of auditEventTypes) {
+    for (const type of ordinaryTypes) {
       // A type that belongs to no member names none.
       const fact = { type, ownerId, memberId: "member" in auditEvents[type] ? null : memberId, ...samples[type] } as AuditFact<typeof type>;
       await appendAudit(db, fact);
@@ -470,7 +471,7 @@ test("every event type's natural key is a working ON CONFLICT arbiter", async ()
     }
     const { rows } = await db.query<{ type: string; n: number }>(`SELECT event_type AS type, count(*)::integer AS n
       FROM birbcrew_ts.audit_events WHERE owner_id=$1 GROUP BY 1`, [ownerId]);
-    assert.deepEqual(Object.fromEntries(rows.map(row => [row.type, row.n])), Object.fromEntries(auditEventTypes.map(type => [type, 1])));
+    assert.deepEqual(Object.fromEntries(rows.map(row => [row.type, row.n])), Object.fromEntries(ordinaryTypes.map(type => [type, 1])));
   } finally {
     await db.query("ROLLBACK");
     db.release();

@@ -150,8 +150,8 @@ export function ownerAdmissionActivity(store: MemberStore) {
     try {
       await store.recordAcceptance(request, ownerInitiator);
     } catch (error) {
-      if (error instanceof MemberStoreError && (error.code === "handed_off" || error.code === "handoff_pending" || error.code === "conversation_erased")) {
-        throw ApplicationFailure.nonRetryable(error.code,error.code === "conversation_erased" ? error.code : undefined);
+      if (error instanceof MemberStoreError && (error.code === "handed_off" || error.code === "handoff_pending" || error.code === "conversation_erased" || error.code === "conversation_closed")) {
+        throw ApplicationFailure.nonRetryable(error.code,error.code === "conversation_erased" || error.code === "conversation_closed" ? error.code : undefined);
       }
       // Retrying cannot change a budget refusal within the activity's deadline. MemberClient
       // reads this failure type back as usage_limit_closed.
@@ -180,7 +180,7 @@ export class MemberStore {
         await db.query("ROLLBACK");
         if (error instanceof Error && "code" in error && ["40001","40P01"].includes(String(error.code)) && attempt<2) continue;
         if(error instanceof Error && "code" in error && error.code==="23514" &&
-          (error.message==="conversation_erased" || error.message==="conversation_open" || error.message==="content_output_busy")) throw new MemberStoreError(error.message);
+          (error.message==="conversation_erased" || error.message==="conversation_open" || error.message==="conversation_closed" || error.message==="content_output_busy")) throw new MemberStoreError(error.message);
         throw error;
       } finally { db.release(); }
     }
@@ -319,13 +319,14 @@ export class MemberStore {
 
   async requestAdmission(input: z.input<typeof turnRequestSchema>): Promise<{phase:"accepted"|"rejected";reason:string|null}|undefined> {
     const key=turnRequestSchema.parse(input);
-    const conversation=await conversationFor(this.pool,key,false);
-    if(isTextEngine(conversation.engine))await assertContentWritable(this.pool,key,false);
-    const {rows:[row]}=await this.pool.query<{phase:"accepted"|"rejected";reason:string|null;prompt_digest:Buffer;approval_deadline_seconds:number|null}>(`
-      SELECT a.phase,a.reason,a.prompt_digest,a.approval_deadline_seconds FROM birbcrew_ts.request_admissions a
-      JOIN birbcrew_ts.conversations c USING(conversation_id)
-      WHERE c.owner_id=$1 AND a.conversation_id=$2 AND a.request_id=$3`,[key.ownerId,key.conversationId,key.requestId]);
+    const {rows:[row]}=await this.pool.query<{phase:"accepted"|"rejected"|null;reason:string|null;prompt_digest:Buffer;approval_deadline_seconds:number|null;content_erasure_id:string|null;engine:Engine}>(`
+      SELECT a.phase,a.reason,a.prompt_digest,a.approval_deadline_seconds,to_jsonb(c)->>'content_erasure_id' AS content_erasure_id,m.engine
+      FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING(owner_id,member_id)
+      LEFT JOIN birbcrew_ts.request_admissions a ON a.conversation_id=c.conversation_id AND a.request_id=$3
+      WHERE c.owner_id=$1 AND c.conversation_id=$2`,[key.ownerId,key.conversationId,key.requestId]);
     if(!row)return undefined;
+    if(isTextEngine(row.engine) && row.content_erasure_id)throw new MemberStoreError("conversation_erased");
+    if(!row.phase)return undefined;
     if(!sameTerms(row,key))throw new MemberStoreError("conflict");
     return {phase:row.phase,reason:row.reason};
   }
@@ -482,13 +483,15 @@ export class MemberStore {
   async committedReply(input: z.input<typeof turnRequestSchema>): Promise<string | undefined> {
     const key = turnRequestSchema.parse(input);
     if((await this.requestAdmission(key))?.phase === "rejected")throw new MemberStoreError("request_rejected");
-    const { rows: [turn] } = await this.pool.query<Pick<TurnRow, "prompt_digest" | "phase" | "reply">>(
-      `SELECT t.prompt_digest, t.phase, t.reply
+    const { rows: [turn] } = await this.pool.query<Pick<TurnRow, "prompt_digest" | "phase" | "reply"> & {engine:Engine;content_erasure_id:string|null}>(
+      `SELECT t.prompt_digest, t.phase, t.reply,m.engine,to_jsonb(c)->>'content_erasure_id' AS content_erasure_id
          FROM birbcrew_ts.turns t JOIN birbcrew_ts.conversations c USING (conversation_id)
+         JOIN birbcrew_ts.members m USING(owner_id,member_id)
         WHERE c.owner_id = $1 AND c.conversation_id = $2 AND t.request_id = $3`,
       [key.ownerId, key.conversationId, key.requestId],
     );
     if (!turn) return undefined;
+    if(isTextEngine(turn.engine) && turn.content_erasure_id)throw new MemberStoreError("conversation_erased");
     const digest = createHash("sha256").update(key.text, "utf8").digest();
     if (!turn.prompt_digest.equals(digest) || turn.phase === "uncertain") throw new MemberStoreError("conflict");
     return turn.reply ?? undefined;

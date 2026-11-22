@@ -14,6 +14,7 @@ export function startContentErasureReconciliation(
   let stopped = false,
     running: Promise<void> | undefined,
     healthy = true;
+  let pendingAfter: string | null = null;
   async function scan() {
     const { rows } = await store.transaction(async (db) => {
       const {
@@ -50,11 +51,16 @@ export function startContentErasureReconciliation(
       erasureId: string;
       age: number;
       locations: string[];
-    }>(`SELECT c.owner_id AS "ownerId",e.conversation_id AS "conversationId",e.erasure_id AS "erasureId",
+    }>(
+      `SELECT c.owner_id AS "ownerId",e.conversation_id AS "conversationId",e.erasure_id AS "erasureId",
       extract(epoch FROM clock_timestamp()-e.requested_at)::integer AS age,
       ARRAY(SELECT location_id::text FROM birbcrew_ts.conversation_content_cleanup x WHERE x.conversation_id=e.conversation_id AND x.cleaned_at IS NULL) AS locations
       FROM birbcrew_ts.conversation_content_erasures e JOIN birbcrew_ts.conversations c USING(conversation_id)
-      WHERE e.erased_at IS NULL ORDER BY e.requested_at LIMIT 64`);
+      WHERE e.erased_at IS NULL AND ($1::uuid IS NULL OR e.conversation_id>$1) ORDER BY e.conversation_id LIMIT 64`,
+      [pendingAfter],
+    );
+    pendingAfter =
+      pending.rows.length === 64 ? pending.rows.at(-1)!.conversationId : null;
     await Promise.all(
       pending.rows.map(async ({ age, locations, ...key }) => {
         try {
@@ -75,8 +81,8 @@ export function startContentErasureReconciliation(
     const lag = await pool.query(
       "SELECT 1 FROM birbcrew_ts.conversations WHERE text_lifecycle='startable' AND text_closing_at<clock_timestamp()-interval '5 minutes' LIMIT 1",
     );
-    healthy = !lag.rowCount;
-    if (!healthy)
+    healthy = true;
+    if (lag.rowCount)
       warn("text_closure_observation_delayed", { code: "closure_lag" });
   }
   function tick() {

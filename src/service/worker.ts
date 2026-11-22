@@ -4,7 +4,7 @@ import { startContentErasureReconciliation } from "./content-erasure-reconciliat
 import type { Pool } from "pg";
 import { progressActivity } from "./progress-activity.ts";
 import { cancelLive, decideLiveActivity } from "./codex-calls.ts";
-import { open } from "node:fs/promises";
+import { open, mkdir, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Client, Connection } from "@temporalio/client";
 import { DelegationReconciler } from "./delegation-control.ts";
@@ -38,6 +38,8 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
   store: MemberStore; temporal: TemporalSettings; profiles: ReadonlyMap<string, MemberProfile>;
   configPath: string; stateDir: string; heartbeat?: string; controlPool: Pool;
 }) {
+  await mkdir(stateDir,{recursive:true,mode:0o700});
+  stateDir=await realpath(stateDir);
   const { namespace } = temporal;
   const workers: Worker[] = [];
   const running: Promise<void>[] = [];

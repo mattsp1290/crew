@@ -8,8 +8,10 @@ import { WorkflowNotFoundError } from "@temporalio/client";
 import {
   assertContentWritable,
   contentErasureState,
+  bindTextWorkflowNamespace,
   recordNoLaunchProof,
   terminalWorkflowStatuses,
+  terminalTextRequests,
 } from "./content-erasure-store.ts";
 import { isTextEngine, MemberStoreError } from "./domain.ts";
 import type { PoolClient } from "pg";
@@ -106,7 +108,7 @@ export async function enrollErasureInventory(
       a.conversationId.localeCompare(b.conversationId),
     )) {
       await assertContentWritable(db, key);
-      const row = await contentErasureState(db, key);
+      const row = await bindTextWorkflowNamespace(db,key,temporal.options.namespace);
       await clearQuiescedContentOutputs(db, key, drainId);
       if (key.inventory.kind === "no_launch") {
         if (
@@ -217,8 +219,11 @@ export async function enrollErasureInventory(
           temporal.options.namespace,
         ],
       );
+      let settled=false;
+      try { await terminalTextRequests(db,key); settled=true; }
+      catch(error) {if(!(error instanceof MemberStoreError && error.code==="content_requests_unresolved"))throw error;}
       if (
-        observed &&
+        settled && observed &&
         terminalWorkflowStatuses.includes(observed.status) &&
         row.text_lifecycle !== "sealed_closed"
       ) {

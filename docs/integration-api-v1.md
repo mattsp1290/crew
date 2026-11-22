@@ -50,6 +50,8 @@ Proposed, not advertised: [frontend tools](frontend-tools.md) specifies a future
 | `POST /v1/conversations/{conversationId}/requests` | Submit `{ "requestId": "UUID", "text": "exact input" }`, optionally with `approvalDeadlineSeconds` |
 | `GET /v1/conversations/{conversationId}/requests/{requestId}` | Reconcile status and original committed result; never invokes inference |
 | `POST /v1/conversations/{conversationId}/requests/{requestId}/cancel` | Persist cancellation intent, body `{}` |
+| `DELETE /v1/conversations/{conversationId}/content` | Erase eligible closed text-conversation content; repeat for the stable tombstone |
+| `POST /v1/conversations/{conversationId}/close` | Request safe text-workflow closure, body `{}` |
 | `GET /v1/conversations/{conversationId}` | Current public snapshot |
 | `POST /v1/conversations/{conversationId}/events` | Independent, read-only AG-UI observation |
 | `POST /v1/conversations/{conversationId}/human` | Existing explicit human-decision contract |
@@ -277,7 +279,7 @@ turn failed/cancelled is discoverable through GET even though resubmission retur
 | `accepted` | Durable admission, waiting for execution |
 | `running` | A turn has started; not a claim that a native process is currently live |
 | `waiting` | A published human decision is unresolved |
-| `completed` | Original reply committed; available as `result.text` |
+| `completed` | Original reply committed; available as `result.text` unless `erased: true`, when `result` is absent |
 | `cancellation_requested` | Intent recorded, no terminal execution conclusion yet |
 | `cancelled` | Accepted queued request rejected due to predecessor cancellation; no turn executed |
 | `failed` | Accepted queued request rejected due to predecessor failure or unconfirmed admission in a closed workflow; see `reason` |
@@ -315,7 +317,7 @@ persist this terminal reconciliation, but never invoke inference. Temporal obser
 has a ten-second RPC deadline; failure returns retryable error instead of falsely
 asserting the request is still accepted.
 
-Receipts and results are retained with the database, across gateway/client restarts
+Receipts are retained and results remain available until an eligible text conversation is explicitly erased with the database, across gateway/client restarts
 and supported Continue-As-New rollover. There is no automatic receipt TTL in v1;
 operator deletion/restoration of storage has its own recovery contract. Native
 checkpoints, credentials, and storage paths are never returned.
@@ -630,12 +632,14 @@ real credentials, publish test tokens, or claim production identity-provider cov
 
 After durably storing a reply, an owner can call `DELETE /v1/conversations/{conversationId}/content` with no body or query parameters. `CrewClient.eraseConversationContent({conversationId})` exposes the same command. Only `cursor` and `opencode` conversations qualify. Native and trusted conversations return `409 content_erasure_unsupported`.
 
-The latest logical workflow must be closed, every receipt terminal, every writer confirmed stopped, and the storage-location inventory complete. New text workflows close after one settled turn. To close an existing idle text workflow, call `POST /v1/conversations/{conversationId}/close` with `{}` (`CrewClient.closeConversation`). It returns 202 with `closure: requested`, or 200 with `closure: closed` once a terminal execution is durably observed. DELETE never closes an open workflow. Unknown or wrong-owner identities return 404.
+The latest logical workflow must be closed, every receipt terminal, every writer confirmed stopped, and the storage-location inventory complete. New text workflows close after one settled turn. To close an existing text workflow idle after a terminal request, call `POST /v1/conversations/{conversationId}/close` with `{}` (`CrewClient.closeConversation`). It returns 202 with `closure: requested`, or 200 with `closure: closed` once a terminal execution is durably observed. DELETE never closes an open workflow. This version requires at least one terminal request; an empty conversation returns `content_requests_unresolved`. Unknown or wrong-owner identities return 404.
 
 A successful DELETE returns 200 and one immutable tombstone: `apiVersion`, `conversationId`, `memberId`, `engine`, `erasureId`, `erased: true`, `erasedAt`. Repeats return the same object. A committed pending fence returns `503 content_erasure_pending`; retry the same conversation. Pending content reads also return 503. Ineligible requests return 409 without changing content. Missing legacy location evidence gives `content_location_unknown`; missing process proof gives `content_runtime_unconfirmed`; unresolved start RPCs give `content_start_unresolved`.
 
 Successful request reads retain their original completed/failed/cancelled status and metadata, add `erased: true`, and omit `result` entirely. Conversation snapshots contain empty messages, no partial text/tools, and a minimal erased state. Legacy receipts omit `reply`. Any replay, changed-text replay, new request, cancellation or repeated open against the fenced identity returns `410 conversation_erased` before comparing digests. Request/admission identities, digest fences, event cursors and publication keys remain permanently; digests can confirm guesses.
 
-Crew clears `turns.reply`, `turns.checkpoint`, snapshot `messages`, `state`, `open_text`, `open_tools`, `child_open_text`, and event payloads, and removes the conversation root on every enrolled worker volume before returning 200. Events retain their cursor with a content-free CUSTOM sentinel. After the fence commits, gateways do not newly enqueue conversation content to HTTP. A durable output reservation is released only after synchronous enqueue, before waiting for socket drain. A database disconnect cannot discard the reservation. `503 content_output_busy` means an output is still reserved before fencing; retained reads remain available and the owner should retry. A crashed gateway requires a trusted drain to clear its abandoned reservation; reservations never expire by age. Bytes already accepted by the transport before the fence boundary can arrive later; previously retained client copies cannot be recalled.
+Crew clears `turns.reply`, `turns.checkpoint`, snapshot `messages`, `state`, `open_text`, `open_tools`, `child_open_text`, event payloads, and publication payload digests, and removes the conversation root on every enrolled worker volume before returning 200. Events retain their cursor with a content-free CUSTOM sentinel. After the fence commits, gateways do not newly enqueue conversation content to HTTP. A durable output reservation is released only after synchronous enqueue, before waiting for socket drain. A database disconnect cannot discard the reservation. `503 content_output_busy` means an output is still reserved before fencing; retained reads remain available and the owner should retry. A live gateway retries its own failed output acknowledgement. A crashed gateway requires a trusted drain to clear its abandoned reservation; reservations never expire by age. Bytes already accepted by the transport before the fence boundary can arrive later; previously retained client copies cannot be recalled.
 
 Temporal history remains until namespace retention expires; configure short retention for sensitive workloads (at least one day allows the closure reconciler time to capture evidence). See [trusted-context residuals](trusted-application-context.md#retention-and-deletion-contract). WAL, backups, provider copies and logs follow deployment policy. This command does not promise physical-media erasure or provider deletion. Launched failures/cancellations whose receipts remain uncertain cannot erase. Unknown legacy histories that expired before closure was observed also remain ineligible.
+
+Erased completed receipts are a coordinated contract change: clients built before this feature require `result.text` and reject them. Deploy the matching client build from the qualified Crew commit with the server. The unchanged package version `0.1.0` is not a compatibility guarantee between source pins; this change does not publish a package release.

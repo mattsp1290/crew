@@ -1,4 +1,5 @@
 -- Coordinated upgrade: no pre-043 writers/readers may serve once a fence exists.
+SET LOCAL lock_timeout='2000ms';
 DO $$
 DECLARE deadline timestamptz := clock_timestamp() + interval '200 seconds';
 BEGIN
@@ -17,6 +18,7 @@ ALTER TABLE birbcrew_ts.conversations
   ADD COLUMN content_erasure_id uuid,
   ADD COLUMN content_output_epoch bigint NOT NULL DEFAULT 0 CHECK(content_output_epoch>=0),
   ADD COLUMN text_location_inventory_complete boolean NOT NULL DEFAULT false,
+  ADD COLUMN text_workflow_namespace text CHECK(text_workflow_namespace IS NULL OR length(text_workflow_namespace)>0),
   ADD COLUMN text_start_generation bigint NOT NULL DEFAULT 0,
   ADD COLUMN text_lifecycle text NOT NULL DEFAULT 'startable' CHECK (text_lifecycle IN ('startable','sealed_closed')),
   ADD COLUMN text_closure jsonb,
@@ -26,23 +28,15 @@ ALTER TABLE birbcrew_ts.conversations
     text_closure->>'status' IN ('COMPLETED','FAILED','CANCELLED','CANCELED','TERMINATED','TIMED_OUT') AND
     text_closure->>'generation'=text_start_generation::text AND
     text_closure->>'workflowId'='birbcrew-ts/member/'||member_id::text||'/conversation/'||conversation_id::text AND
-    text_closure->>'runId' ~ '^[0-9a-fA-F-]{36}$' AND length(text_closure->>'namespace')>0
+    text_closure->>'runId' ~ '^[0-9a-fA-F-]{36}$' AND length(text_closure->>'namespace')>0 AND text_closure->>'namespace'=text_workflow_namespace
   ) IS TRUE));
 ALTER TABLE birbcrew_ts.turns ADD COLUMN erased boolean NOT NULL DEFAULT false;
-DO $$
-DECLARE name text; definition text;
-BEGIN
-  FOR name,definition IN SELECT conname,pg_get_constraintdef(oid) FROM pg_constraint
-    WHERE conrelid='birbcrew_ts.turns'::regclass AND contype='c'
-  LOOP
-    IF definition LIKE '%committed%' AND definition LIKE '%reply%' AND definition LIKE '%checkpoint%' THEN
-      EXECUTE format('ALTER TABLE birbcrew_ts.turns DROP CONSTRAINT %I', name);
-    END IF;
-  END LOOP;
-END $$;
+-- 001's second unnamed table CHECK is the committed-content shape. Do not
+-- infer identity from substrings that could also match a future independent rule.
+ALTER TABLE birbcrew_ts.turns DROP CONSTRAINT turns_check1;
 ALTER TABLE birbcrew_ts.turns ADD CONSTRAINT turns_content_shape CHECK (
   (phase='committed' AND ((NOT erased AND reply IS NOT NULL AND checkpoint IS NOT NULL) OR (erased AND reply IS NULL AND checkpoint IS NULL)))
-  OR (phase IN ('started','uncertain') AND NOT erased AND reply IS NULL AND checkpoint IS NULL));
+  OR (phase IN ('started','uncertain') AND NOT erased AND reply IS NULL AND checkpoint IS NULL)) NOT VALID;
 
 CREATE TABLE birbcrew_ts.text_state_locations (
   location_id uuid PRIMARY KEY, engine text NOT NULL CHECK (engine IN ('cursor','opencode')),
@@ -131,6 +125,55 @@ END $$;
 CREATE UNIQUE INDEX audit_events_content_erasure_fact ON birbcrew_ts.audit_events(conversation_id)
   WHERE event_type='conversation.content_erased';
 
+-- The cleanup set is a frozen copy of every enrolled volume. An empty set
+-- needs positive rejected-before-launch evidence for every request.
+CREATE FUNCTION birbcrew_ts.content_cleanup_inventory_matches(cid uuid, eid uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT NOT EXISTS(
+   SELECT 1 FROM birbcrew_ts.text_conversation_locations l LEFT JOIN birbcrew_ts.conversation_content_cleanup p
+     ON p.conversation_id=l.conversation_id AND p.location_id=l.location_id AND p.erasure_id=eid
+   WHERE l.conversation_id=cid AND p.location_id IS NULL)
+ AND NOT EXISTS(
+   SELECT 1 FROM birbcrew_ts.conversation_content_cleanup p LEFT JOIN birbcrew_ts.text_conversation_locations l
+     ON l.conversation_id=p.conversation_id AND l.location_id=p.location_id
+   WHERE p.conversation_id=cid AND (p.erasure_id<>eid OR l.location_id IS NULL))
+ AND (EXISTS(SELECT 1 FROM birbcrew_ts.text_conversation_locations WHERE conversation_id=cid)
+   OR (EXISTS(SELECT 1 FROM birbcrew_ts.request_admissions WHERE conversation_id=cid)
+     AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.request_admissions a LEFT JOIN birbcrew_ts.text_request_no_launch_proofs p USING(conversation_id,request_id)
+       WHERE a.conversation_id=cid AND (a.phase<>'rejected' OR p.request_id IS NULL OR p.reason<>a.reason))
+     AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=cid)
+     AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=cid)
+     AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.text_runtime_cleanup_proofs WHERE conversation_id=cid)))
+$$;
+CREATE FUNCTION birbcrew_ts.start_content_erasure() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE fence uuid;
+BEGIN
+  SELECT content_erasure_id INTO fence FROM birbcrew_ts.conversations WHERE conversation_id=NEW.conversation_id FOR UPDATE;
+  IF fence IS NOT NULL THEN RAISE EXCEPTION 'Erasure inventory is pinned' USING ERRCODE='23514'; END IF;
+  IF TG_TABLE_NAME='conversation_content_erasures' THEN
+    IF NEW.erased_at IS NOT NULL THEN RAISE EXCEPTION 'Erasure must start pending' USING ERRCODE='23514'; END IF;
+  ELSE
+    IF NEW.cleaned_at IS NOT NULL OR NOT EXISTS(SELECT 1 FROM birbcrew_ts.text_conversation_locations
+      WHERE conversation_id=NEW.conversation_id AND location_id=NEW.location_id) THEN
+      RAISE EXCEPTION 'Cleanup must start unacknowledged at an enrolled location' USING ERRCODE='23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER start_content_erasure BEFORE INSERT ON birbcrew_ts.conversation_content_erasures FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.start_content_erasure();
+CREATE TRIGGER start_content_cleanup BEFORE INSERT ON birbcrew_ts.conversation_content_cleanup FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.start_content_erasure();
+CREATE FUNCTION birbcrew_ts.check_content_erasure_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.event_type='conversation.content_erased' AND NOT EXISTS(
+    SELECT 1 FROM birbcrew_ts.conversations c JOIN birbcrew_ts.conversation_content_erasures e
+      ON e.conversation_id=c.conversation_id AND e.erasure_id=c.content_erasure_id
+    WHERE c.conversation_id=NEW.conversation_id AND c.owner_id=NEW.owner_id AND c.member_id=NEW.member_id
+      AND e.erased_at IS NOT NULL AND NEW.actor_kind='owner' AND NEW.actor_id=NEW.owner_id AND NEW.payload=jsonb_build_object('erasureId',e.erasure_id)) THEN
+    RAISE EXCEPTION 'Audit requires the completed persisted erasure' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER content_erasure_audit BEFORE INSERT ON birbcrew_ts.audit_events FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.check_content_erasure_audit();
+
 CREATE FUNCTION birbcrew_ts.erased_projection(cid uuid) RETURNS jsonb LANGUAGE sql STABLE AS $$
  SELECT jsonb_build_object('conversationId',c.conversation_id,'memberId',c.member_id,'engine',m.engine,'profile',m.profile,
    'phase',e.terminal_phase,'erased',true,'openStep',NULL,'pendingApprovals','[]'::jsonb)
@@ -140,11 +183,22 @@ $$;
 CREATE FUNCTION birbcrew_ts.content_fence_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE cid uuid; fence uuid; lifecycle text; clearing boolean := false;
 BEGIN
+  IF TG_OP='UPDATE' AND OLD.conversation_id IS DISTINCT FROM NEW.conversation_id THEN
+    RAISE EXCEPTION 'Conversation child bindings are immutable' USING ERRCODE='23514';
+  END IF;
   IF TG_OP='DELETE' THEN cid:=OLD.conversation_id; ELSE cid:=NEW.conversation_id; END IF;
   SELECT content_erasure_id,text_lifecycle INTO fence,lifecycle FROM birbcrew_ts.conversations WHERE conversation_id=cid FOR UPDATE;
   IF fence IS NULL THEN
-    IF lifecycle='sealed_closed' AND ((TG_OP='INSERT' AND TG_TABLE_NAME NOT IN ('text_request_no_launch_proofs','text_runtime_cleanup_proofs')) OR TG_TABLE_NAME IN ('turns','public_snapshots','public_events','public_publications')) THEN
-      RAISE EXCEPTION 'conversation_open' USING ERRCODE='23514';
+    IF TG_TABLE_NAME='turns' AND TG_OP<>'DELETE' THEN
+      IF NEW.erased THEN RAISE EXCEPTION 'Erased turns require a pending fence' USING ERRCODE='23514'; END IF;
+    END IF;
+    IF lifecycle='sealed_closed' AND ((TG_OP='INSERT' AND TG_TABLE_NAME NOT IN ('text_request_no_launch_proofs','text_runtime_cleanup_proofs','text_conversation_locations')) OR TG_TABLE_NAME IN ('turns','public_snapshots','public_events','public_publications')) THEN
+      IF TG_TABLE_NAME='request_admissions' AND TG_OP='INSERT' THEN
+        IF NEW.phase='accepted' AND NEW.initiator_kind='owner' AND NEW.initiator_id IS NULL AND EXISTS(
+          SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=NEW.conversation_id AND request_id=NEW.request_id
+            AND phase='committed' AND prompt_digest=NEW.prompt_digest) THEN RETURN NEW; END IF;
+      END IF;
+      RAISE EXCEPTION 'conversation_closed' USING ERRCODE='23514';
     END IF;
     IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
   END IF;
@@ -160,12 +214,14 @@ BEGIN
     ELSIF TG_TABLE_NAME='public_events' THEN
       clearing := NEW.event='{"type":"CUSTOM","name":"crew.content_erased","value":null}'::jsonb
         AND (to_jsonb(NEW)-'event')=(to_jsonb(OLD)-'event');
+    ELSIF TG_TABLE_NAME='public_publications' THEN
+      clearing := NEW.payload_digest IS NULL AND (to_jsonb(NEW)-'payload_digest')=(to_jsonb(OLD)-'payload_digest');
     ELSIF TG_TABLE_NAME='native_launches' THEN
       -- Stop acknowledgements never authorize a new launch.
       IF NEW.stopped AND (to_jsonb(NEW)-'stopped')=(to_jsonb(OLD)-'stopped') THEN RETURN NEW; END IF;
     END IF;
   END IF;
-  IF clearing AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=cid AND cleaned_at IS NULL)
+  IF clearing AND birbcrew_ts.content_cleanup_inventory_matches(cid,fence) AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=cid AND cleaned_at IS NULL)
      AND EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_erasures WHERE conversation_id=cid AND erased_at IS NULL) THEN RETURN NEW; END IF;
   RAISE EXCEPTION 'conversation_erased' USING ERRCODE='23514';
 END $$;
@@ -175,7 +231,10 @@ BEGIN
   IF TG_TABLE_NAME='conversation_content_erasures' THEN
     IF OLD.erased_at IS NULL AND NEW.erased_at IS NOT NULL AND
        (to_jsonb(NEW)-'erased_at')=(to_jsonb(OLD)-'erased_at') AND
+       EXISTS(SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=OLD.conversation_id AND content_erasure_id=OLD.erasure_id) AND
+       birbcrew_ts.content_cleanup_inventory_matches(OLD.conversation_id,OLD.erasure_id) AND
        NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=OLD.conversation_id AND cleaned_at IS NULL) AND
+       NOT EXISTS(SELECT 1 FROM birbcrew_ts.public_publications WHERE conversation_id=OLD.conversation_id AND payload_digest IS NOT NULL) AND
        NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=OLD.conversation_id AND (NOT erased OR reply IS NOT NULL OR checkpoint IS NOT NULL)) AND
        NOT EXISTS(SELECT 1 FROM birbcrew_ts.public_snapshots WHERE conversation_id=OLD.conversation_id AND
          (messages<>'[]'::jsonb OR open_text IS NOT NULL OR open_tools<>'{}'::jsonb OR child_open_text<>'{}'::jsonb OR state<>birbcrew_ts.erased_projection(OLD.conversation_id))) AND
@@ -198,6 +257,9 @@ BEGIN
   IF OLD.content_erasure_id IS NOT NULL AND OLD IS DISTINCT FROM NEW THEN
     RAISE EXCEPTION 'conversation_erased' USING ERRCODE='23514';
   END IF;
+  IF OLD.text_workflow_namespace IS NOT NULL AND OLD.text_workflow_namespace IS DISTINCT FROM NEW.text_workflow_namespace THEN
+    RAISE EXCEPTION 'Text namespace is permanent' USING ERRCODE='23514';
+  END IF;
   IF OLD.text_lifecycle='sealed_closed' AND
     (OLD.text_lifecycle,OLD.text_closure,OLD.text_start_generation) IS DISTINCT FROM
     (NEW.text_lifecycle,NEW.text_closure,NEW.text_start_generation) THEN
@@ -211,12 +273,13 @@ BEGIN
   END IF;
   IF NEW.content_output_epoch<OLD.content_output_epoch THEN RAISE EXCEPTION 'Output epoch is monotonic' USING ERRCODE='23514'; END IF;
   IF NEW.content_erasure_id IS NOT NULL AND (NEW.text_lifecycle<>'sealed_closed' OR NOT NEW.text_location_inventory_complete OR
-    NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_erasures WHERE conversation_id=NEW.conversation_id AND erasure_id=NEW.content_erasure_id)) THEN
+    NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_erasures WHERE conversation_id=NEW.conversation_id AND erasure_id=NEW.content_erasure_id) OR
+    NOT birbcrew_ts.content_cleanup_inventory_matches(NEW.conversation_id,NEW.content_erasure_id)) THEN
     RAISE EXCEPTION 'Incomplete erasure evidence' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END $$;
-CREATE TRIGGER keep_output_reservations BEFORE TRUNCATE ON birbcrew_ts.content_output_reservations FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_content_identity();
+CREATE TRIGGER z_keep_output_reservations BEFORE TRUNCATE ON birbcrew_ts.content_output_reservations FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_content_identity();
 CREATE TRIGGER content_output_identity BEFORE UPDATE ON birbcrew_ts.content_output_reservations FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_content_identity();
 CREATE TRIGGER conversations_content_fence BEFORE UPDATE ON birbcrew_ts.conversations FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_content_fence();
 CREATE FUNCTION birbcrew_ts.keep_fenced_parents() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -234,15 +297,15 @@ DECLARE name text;
 BEGIN
   FOREACH name IN ARRAY ARRAY['request_admissions','turns','public_snapshots','public_events','public_publications','text_conversation_locations','native_launches','conversation_workflow_starts','text_runtime_cleanup_proofs','text_request_no_launch_proofs'] LOOP
     EXECUTE format('CREATE TRIGGER content_fence BEFORE INSERT OR UPDATE OR DELETE ON birbcrew_ts.%I FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.content_fence_guard()',name);
-    EXECUTE format('CREATE TRIGGER keep_fenced_rows BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
+    EXECUTE format('CREATE TRIGGER z_keep_fenced_rows BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
   END LOOP;
   FOREACH name IN ARRAY ARRAY['members','conversations'] LOOP
     EXECUTE format('CREATE TRIGGER keep_fenced_parent BEFORE DELETE ON birbcrew_ts.%I FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
-    EXECUTE format('CREATE TRIGGER keep_fenced_rows BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
+    EXECUTE format('CREATE TRIGGER z_keep_fenced_rows BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_fenced_parents()',name);
   END LOOP;
   FOREACH name IN ARRAY ARRAY['text_state_locations','text_conversation_locations','text_request_no_launch_proofs','text_runtime_cleanup_proofs','conversation_workflow_starts','conversation_content_erasures','conversation_content_cleanup','content_output_drains'] LOOP
     EXECUTE format('CREATE TRIGGER keep_identity BEFORE UPDATE OR DELETE ON birbcrew_ts.%I FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.keep_content_identity()',name);
-    EXECUTE format('CREATE TRIGGER keep_identity_truncate BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_content_identity()',name);
+    EXECUTE format('CREATE TRIGGER z_keep_identity_truncate BEFORE TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.keep_content_identity()',name);
   END LOOP;
   FOREACH name IN ARRAY ARRAY['text_state_locations','text_conversation_locations','text_request_no_launch_proofs','text_runtime_cleanup_proofs','conversation_workflow_starts','conversation_content_erasures','conversation_content_cleanup','text_closure_scan','content_output_reservations','content_output_drains'] LOOP
     EXECUTE format('CREATE TRIGGER recovery_write_barrier BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON birbcrew_ts.%I FOR EACH STATEMENT EXECUTE FUNCTION birbcrew_ts.require_active_installation()',name);

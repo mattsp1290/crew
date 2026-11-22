@@ -100,6 +100,8 @@ async function until(label: string, check: () => Promise<boolean>) {
 
 test("cursor and opencode each commit one text turn and refuse a second launch", { timeout: 300_000 }, async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "text-gateway-")));
+  const alias=join(root,"state-alias"), replacement=join(root,"other-state");
+  await mkdir(join(root,"state"));await symlink(join(root,"state"),alias,"dir");
   const cwd = root;
   const log = join(root, "launches.log");
   const heartbeat = join(root, "heartbeat");
@@ -122,7 +124,7 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
   const stderr: Buffer[] = [];
   let worker = spawn(process.execPath, ["src/service/cli.ts", "worker", config], {
     cwd: fileURLToPath(new URL("../..", import.meta.url)),
-    env: { ...process.env, BIRBCREW_DATABASE_URL: database, BIRBCREW_STATE_DIR: join(root, "state"), BIRBCREW_TEXT_ENGINE_LOG: log,
+    env: { ...process.env, BIRBCREW_DATABASE_URL: database, BIRBCREW_STATE_DIR: alias+"/", BIRBCREW_TEXT_ENGINE_LOG: log,
       BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -146,6 +148,8 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
     catch { return false; }
   }).catch((error: Error) => { throw new Error(`${error.message}\n${Buffer.concat(stderr).toString("utf8")}`); });
 
+  // A live worker keeps the resolved volume even if its configured alias moves.
+  await mkdir(replacement);await rm(alias);await symlink(replacement,alias,"dir");
   async function call(method: string, path: string, body?: unknown) {
     const response = await fetch(base + path, {
       method, headers: { Authorization: "Bearer " + token, ...(body ? { "Content-Type": "application/json" } : {}) },
@@ -334,6 +338,8 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
   assert.deepEqual(denied,{status:409,payload:{error:"content_runtime_unconfirmed"}});
   assert.equal(JSON.stringify((await pool.query("SELECT messages,state FROM birbcrew_ts.public_snapshots WHERE conversation_id=$1",[key.conversationId])).rows),before);
   const {rows:[location]}=await pool.query<{location_id:string}>("SELECT location_id FROM birbcrew_ts.text_conversation_locations WHERE conversation_id=$1",[key.conversationId]);
+  await members.describeClosure(key);
+  assert.equal((await pool.query("SELECT text_lifecycle FROM birbcrew_ts.conversations WHERE conversation_id=$1",[key.conversationId])).rows[0].text_lifecycle,"sealed_closed");
   await enrollErasureInventory(store,temporal,{version:1,conversations:[{...key,inventory:{kind:"locations",locations:[{locationId:location.location_id,engine:"cursor",profile:"text-cursor.v1"}]}}]}, {
     async quiesce(){
       server.close();await server.stopped();

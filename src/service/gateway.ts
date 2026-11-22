@@ -143,7 +143,7 @@ async function observe(
       stop.abort(); hubs?.invalidate(owner,threadId);
       throw new MemberStoreError("conversation_erased");
     }
-    if (enqueued.backpressure) await once(response,"drain",{signal:stop.signal});
+    if (enqueued.backpressure && response.writableNeedDrain) await once(response,"drain",{signal:stop.signal});
   }
   async function finish(phase: Phase) {
     if (phase === "failed") await send({ type: E.RUN_ERROR, code: "MEMBER_FAILED", message: "Member conversation failed" });
@@ -197,6 +197,7 @@ async function observe(
     }
   } catch (error) {
     if (error instanceof MemberStoreError && ["conversation_erased","content_erasure_pending"].includes(error.code)) {
+      if (!response.destroyed) response.write(encoder.encode({type:E.RUN_ERROR,code:"CONVERSATION_ERASED",message:"Reconnect for the current conversation snapshot"}));
       stop.abort(); hubs?.invalidate(owner,threadId);
     }
     if (!stop.signal.aborted && !response.destroyed) {
@@ -250,8 +251,8 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       const result=await output.enqueue(key,()=>{json(response,status,data);return {backpressure:false};},abort.signal);
       if (result.kind === "retained") return;
       hubs?.invalidate(key.ownerId,key.conversationId);
-      if (result.kind === "erasing") throw new MemberStoreError("content_erasure_pending");
       if (!read) throw new MemberStoreError("conversation_erased");
+      if (result.kind === "erasing") throw new MemberStoreError("content_erasure_pending");
       return json(response,status,await read());
     } finally {response.off("close",onClose);}
   }
@@ -409,7 +410,9 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
         return json(response,ack.closure==="closed"?200:202,ack);
       }
       if (request.method!=="DELETE") throw new HttpError(405,"method_not_allowed");
-      for await (const chunk of request) { if (Buffer.byteLength(chunk)) throw new HttpError(400,"invalid_input"); }
+      for await (const chunk of request.iterator({destroyOnReturn:false})) {
+        if (Buffer.byteLength(chunk)) { request.resume(); throw new HttpError(400,"invalid_input"); }
+      }
       const tombstone=await integration.eraseConversationContent(key);
       hubs?.invalidate(ownerId,key.conversationId);
       return json(response,200,tombstone);
@@ -520,7 +523,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
   server.once("close", () => {
     for (const timer of timers) clearInterval(timer);
     hubs?.close();
-    stopping = Promise.all([dispatcher.stop(), deliveries.stop()]).then(() => {});
+    stopping = Promise.all([dispatcher.stop(), deliveries.stop(), output.stop()]).then(() => {});
   });
   // Settles once the close has ended both dispatchers' passes; await it before closing the pool.
   // `observerStats` reports the observer hubs, or undefined when every observer polls on its own.

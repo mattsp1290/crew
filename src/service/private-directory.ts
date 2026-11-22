@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, mkdir, rm, open } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 // A worker can leave a directory its host cannot list (mode 0300) or a tree deeper than PATH_MAX, which
@@ -28,4 +28,21 @@ export async function preparePrivate(root: string, subdirectories: readonly stri
 export function sweepWhenSettled(work: PromiseLike<unknown>, directory: string) {
   const sweep = () => removePrivate(directory).catch(() => undefined);
   void Promise.resolve(work).then(sweep, sweep);
+}
+
+
+/** Persist the unlink before recording a durable cross-store cleanup acknowledgement. */
+export async function removePrivateDurably(directory: string) {
+  await removePrivate(directory);
+  let parent=dirname(directory);
+  for(;;){
+    try {
+      const handle=await open(parent,"r");
+      try {await handle.sync();} finally {await handle.close();}
+      return;
+    } catch(error) {
+      if(!(error instanceof Error && "code" in error && error.code==="ENOENT") || dirname(parent)===parent)throw error;
+      parent=dirname(parent);
+    }
+  }
 }

@@ -31,6 +31,7 @@ import {
   eraseConversationContent,
   type TextErasureLifecycle,
 } from "../../src/service/content-erasure.ts";
+import { appendAudit } from "../../src/service/audit.ts";
 import { MemberClient } from "../../src/service/client.ts";
 import { Client } from "@temporalio/client";
 
@@ -220,12 +221,22 @@ test("open workflow, active requests and raw uncertainty cannot create a fence o
     "rejected",
   );
   assert.equal((await contentErasureState(pool, key)).content_erasure_id, null);
+  await assert.rejects(seal(key), { code: "content_requests_unresolved" });
+  assert.equal(
+    (await contentErasureState(pool, key)).text_lifecycle,
+    "startable",
+  );
 });
 test("closure generation invalidates an older terminal describe, and ambiguous sends never expire into closure", async () => {
   const { key } = await fixture(),
     workflowId = "test/" + key.conversationId;
   const row = await contentErasureState(pool, key);
-  const attempt = await reserveTextWorkflowStart(store, key, workflowId);
+  const attempt = await reserveTextWorkflowStart(
+    store,
+    key,
+    workflowId,
+    "default",
+  );
   assert.ok(attempt);
   await settleTextWorkflowStart(store, key, attempt, randomUUID());
   await assert.rejects(
@@ -238,7 +249,12 @@ test("closure generation invalidates an older terminal describe, and ambiguous s
     }),
     { code: "content_start_unresolved" },
   );
-  const next = await reserveTextWorkflowStart(store, key, workflowId);
+  const next = await reserveTextWorkflowStart(
+    store,
+    key,
+    workflowId,
+    "default",
+  );
   assert.ok(next);
   await settleTextWorkflowStart(store, key, next);
   await assert.rejects(preflightContentErasure(store, key), {
@@ -293,7 +309,7 @@ test("pending fence, finalization rollback, immutable tombstone and SQL resurrec
     ],
   );
   await pool.query(
-    "INSERT INTO birbcrew_ts.public_publications(conversation_id,logical_key) VALUES($1,'input/original')",
+    "INSERT INTO birbcrew_ts.public_publications(conversation_id,logical_key,payload_digest) VALUES($1,'input/original',decode(repeat('ab',32),'hex'))",
     [key.conversationId],
   );
   await seal(key);
@@ -340,6 +356,15 @@ test("pending fence, finalization rollback, immutable tombstone and SQL resurrec
   assert.equal(await contentTombstone(pool, key), null);
   await finishContentErasure(store, key);
   const snapshot = await readSnapshot(pool, key.ownerId, key.conversationId);
+  assert.deepEqual(
+    (
+      await pool.query(
+        "SELECT logical_key,payload_digest FROM birbcrew_ts.public_publications WHERE conversation_id=$1",
+        [key.conversationId],
+      )
+    ).rows,
+    [{ logical_key: "input/original", payload_digest: null }],
+  );
   assert.deepEqual(snapshot.messages, []);
   assert.equal(snapshot.openText, null);
   assert.deepEqual(snapshot.openTools, {});
@@ -434,6 +459,13 @@ test("completed turns erase atomically only after independent stop proofs, retai
     reply: marker,
     checkpoint: { version: 1, engine: "cursor", state: { secret: marker } },
   });
+  await assert.rejects(
+    pool.query(
+      "UPDATE birbcrew_ts.turns SET erased=true,reply=NULL,checkpoint=NULL WHERE conversation_id=$1",
+      [key.conversationId],
+    ),
+    { code: "23514" },
+  );
   const before = await pool.query(
     "SELECT request_id,phase,token,prompt_digest FROM birbcrew_ts.turns WHERE conversation_id=$1",
     [key.conversationId],
@@ -455,7 +487,34 @@ test("completed turns erase atomically only after independent stop proofs, retai
     [key.conversationId, requestId, turn.token, locationId],
   );
   await seal(key);
+  const cancelApi = new IntegrationApi(
+    store,
+    new MemberClient(store, new Client()),
+  );
+  const cancellation = await cancelApi.cancel({ ...key, requestId });
+  assert.equal(cancellation.status, "completed");
+  assert.deepEqual(await cancelApi.cancel({ ...key, requestId }), cancellation);
+  let releaseReplay!: () => void, reachedReplay!: () => void;
+  const pausedReplay = new Promise<void>((r) => {
+      releaseReplay = r;
+    }),
+    preparedReplay = new Promise<void>((r) => {
+      reachedReplay = r;
+    });
+  const replayStore = new MemberStore(pool);
+  replayStore.requestAdmission = async (input) => {
+    const value = await store.requestAdmission(input);
+    reachedReplay();
+    await pausedReplay;
+    return value;
+  };
+  const replay = assert.rejects(replayStore.committedReply(request), {
+    code: "conversation_erased",
+  });
+  await preparedReplay;
   const erasureId = await beginContentErasure(store, key);
+  releaseReplay();
+  await replay;
   assert.equal(await finishContentErasure(store, key), null);
   assert.equal(
     (
@@ -640,13 +699,49 @@ test("043 upgrades retained native/text data from 042, is idempotent, and protec
       ],
     );
   }
+  await upgraded.query(
+    "ALTER TABLE birbcrew_ts.turns ADD CONSTRAINT retained_fixture_rule CHECK(phase<>'committed' OR reply IS NOT NULL OR checkpoint IS NOT NULL OR attempt>0)",
+  );
+  const constraints =
+    "SELECT conname,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='birbcrew_ts.turns'::regclass AND contype='c' AND conname NOT IN ('turns_check1','turns_content_shape') ORDER BY conname";
+  const constraintsBefore = (await upgraded.query(constraints)).rows;
   const query =
     "SELECT conversation_id,request_id,prompt_digest,reply,checkpoint,phase,token FROM birbcrew_ts.turns ORDER BY conversation_id";
   const before = (await upgraded.query(query)).rows;
   const service = new MemberStore(upgraded);
+  const blocker = await upgraded.connect();
+  try {
+    await blocker.query(
+      "BEGIN; LOCK TABLE birbcrew_ts.public_snapshots IN ROW EXCLUSIVE MODE",
+    );
+    await assert.rejects(service.migrate(), { code: "55P03" });
+    assert.equal(
+      (
+        await upgraded.query(
+          "SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=43",
+        )
+      ).rowCount,
+      0,
+    );
+    assert.equal(
+      (
+        await upgraded.query(
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='birbcrew_ts' AND table_name='conversations' AND column_name='content_erasure_id'",
+        )
+      ).rowCount,
+      0,
+    );
+  } finally {
+    await blocker.query("ROLLBACK");
+    blocker.release();
+  }
   await service.migrate();
   await service.migrate();
   assert.deepEqual((await upgraded.query(query)).rows, before);
+  const constraintsAfter = (await upgraded.query(constraints)).rows.filter(
+    (row) => constraintsBefore.some((old) => old.conname === row.conname),
+  );
+  assert.deepEqual(constraintsAfter, constraintsBefore);
   assert.equal(
     (
       await upgraded.query(
@@ -805,3 +900,710 @@ for (const mode of ["before_commit", "after_commit"] as const) {
     },
   );
 }
+
+test("SQL refuses incomplete cleanup inventories, pre-finalized erasures and pre-acknowledged locations", async () => {
+  const { key, member } = await fixture();
+  const locationId = randomUUID(),
+    erasureId = randomUUID();
+  await pool.query(
+    "INSERT INTO birbcrew_ts.text_state_locations(location_id,engine) VALUES($1,'cursor')",
+    [locationId],
+  );
+  await pool.query(
+    "INSERT INTO birbcrew_ts.text_conversation_locations(conversation_id,location_id,profile) VALUES($1,$2,$3)",
+    [key.conversationId, locationId, member.profile],
+  );
+  await seal(key);
+  await assert.rejects(
+    pool.query(
+      "INSERT INTO birbcrew_ts.conversation_content_erasures(conversation_id,erasure_id,terminal_phase,erased_at) VALUES($1,$2,'failed',clock_timestamp())",
+      [key.conversationId, erasureId],
+    ),
+    { code: "23514" },
+  );
+  await pool.query(
+    "INSERT INTO birbcrew_ts.conversation_content_erasures(conversation_id,erasure_id,terminal_phase) VALUES($1,$2,'failed')",
+    [key.conversationId, erasureId],
+  );
+  await assert.rejects(
+    pool.query(
+      "UPDATE birbcrew_ts.conversations SET content_erasure_id=$2 WHERE conversation_id=$1",
+      [key.conversationId, erasureId],
+    ),
+    { code: "23514" },
+  );
+  await assert.rejects(
+    pool.query(
+      "INSERT INTO birbcrew_ts.conversation_content_cleanup(conversation_id,erasure_id,location_id,cleaned_at) VALUES($1,$2,$3,clock_timestamp())",
+      [key.conversationId, erasureId, locationId],
+    ),
+    { code: "23514" },
+  );
+  await pool.query(
+    "INSERT INTO birbcrew_ts.conversation_content_cleanup(conversation_id,erasure_id,location_id) VALUES($1,$2,$3)",
+    [key.conversationId, erasureId, locationId],
+  );
+  await pool.query(
+    "UPDATE birbcrew_ts.conversations SET content_erasure_id=$2 WHERE conversation_id=$1",
+    [key.conversationId, erasureId],
+  );
+  await assert.rejects(
+    pool.query(
+      "UPDATE birbcrew_ts.conversation_content_erasures SET erased_at=clock_timestamp() WHERE conversation_id=$1",
+      [key.conversationId],
+    ),
+    { code: "23514" },
+  );
+});
+
+test("fenced content cannot be moved to a retained conversation", async () => {
+  const source = await fixture(),
+    destination = await fixture();
+  for (const key of [source.key, destination.key])
+    await pool.query(
+      "INSERT INTO birbcrew_ts.public_snapshots(conversation_id,state) VALUES($1,'{}')",
+      [key.conversationId],
+    );
+  await pool.query(
+    "INSERT INTO birbcrew_ts.public_events(conversation_id,cursor,event) VALUES($1,1,$2)",
+    [
+      source.key.conversationId,
+      {
+        type: "TEXT_MESSAGE_CONTENT",
+        messageId: "x",
+        delta: source.request.text,
+      },
+    ],
+  );
+  await seal(source.key);
+  await beginContentErasure(store, source.key);
+  await assert.rejects(
+    pool.query(
+      "UPDATE birbcrew_ts.public_events SET conversation_id=$2 WHERE conversation_id=$1",
+      [source.key.conversationId, destination.key.conversationId],
+    ),
+    { code: "23514" },
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT 1 FROM birbcrew_ts.public_events WHERE conversation_id=$1",
+        [destination.key.conversationId],
+      )
+    ).rowCount,
+    0,
+  );
+  await finishContentErasure(store, source.key);
+});
+
+test("only the completed persisted erasure can append its single owner audit fact", async () => {
+  const { key, member } = await fixture();
+  const fact = {
+    type: "conversation.content_erased" as const,
+    ...key,
+    memberId: member.memberId,
+    payload: { erasureId: randomUUID() },
+  };
+  await assert.rejects(
+    store.transaction((db) => appendAudit(db, fact)),
+    { code: "23514" },
+  );
+  await seal(key);
+  const erasureId = await beginContentErasure(store, key);
+  await assert.rejects(
+    store.transaction((db) =>
+      appendAudit(db, { ...fact, payload: { erasureId } }),
+    ),
+    { code: "23514" },
+  );
+  await finishContentErasure(store, key);
+  for (const payload of [
+    { erasureId: "arbitrary text" },
+    { erasureId, secret: "raw SQL marker" },
+    { erasureId: null },
+    [],
+  ]) {
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO birbcrew_ts.audit_events(event_type,owner_id,member_id,conversation_id,actor_kind,actor_id,payload) VALUES('conversation.content_erased',$1,$2,$3,'owner',$1,$4)",
+        [
+          key.ownerId,
+          member.memberId,
+          key.conversationId,
+          JSON.stringify(payload),
+        ],
+      ),
+      { code: "23514" },
+    );
+  }
+  await assert.rejects(
+    store.transaction((db) => appendAudit(db, fact)),
+    { code: "23514" },
+  );
+  await store.transaction(async (db) => {
+    await appendAudit(db, { ...fact, payload: { erasureId } });
+    await appendAudit(db, { ...fact, payload: { erasureId } });
+  });
+  assert.deepEqual(
+    (
+      await pool.query(
+        "SELECT payload FROM birbcrew_ts.audit_events WHERE conversation_id=$1 AND event_type='conversation.content_erased'",
+        [key.conversationId],
+      )
+    ).rows,
+    [{ payload: { erasureId } }],
+  );
+});
+
+test("concurrent finalizers both return the same completed tombstone", async () => {
+  const { key } = await fixture();
+  await pool.query(
+    "INSERT INTO birbcrew_ts.public_snapshots(conversation_id,state) VALUES($1,'{}')",
+    [key.conversationId],
+  );
+  await seal(key);
+  await beginContentErasure(store, key);
+  let reached!: () => void, release!: () => void;
+  const beforeCommit = new Promise<void>((r) => {
+      reached = r;
+    }),
+    commit = new Promise<void>((r) => {
+      release = r;
+    });
+  const paused = new MemberStore(pool),
+    original = paused.transaction.bind(paused);
+  paused.transaction = (action) =>
+    original(async (db) => {
+      const value = await action(db);
+      reached();
+      await commit;
+      return value;
+    });
+  const first = finishContentErasure(paused, key);
+  await beforeCommit;
+  const second = finishContentErasure(store, key);
+  // Observe a real database lock wait before allowing the first finalizer to commit.
+  try {
+    const deadline = Date.now() + 1500;
+    while (
+      !(
+        await pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%conversations%' AND pid<>pg_backend_pid()",
+        )
+      ).rowCount
+    ) {
+      assert.ok(
+        Date.now() < deadline,
+        "second finalizer did not wait on the held conversation",
+      );
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  } finally {
+    release();
+  }
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a, b);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT 1 FROM birbcrew_ts.audit_events WHERE conversation_id=$1 AND event_type='conversation.content_erased'",
+        [key.conversationId],
+      )
+    ).rowCount,
+    1,
+  );
+});
+
+test("closure repeat returns the persisted evidence and native missing replay stays absent", async () => {
+  const { key } = await fixture();
+  const first = await seal(key);
+  assert.deepEqual(await sealTextClosure(store, key, first), first);
+  assert.equal(
+    await store.committedReply({
+      ownerId: randomUUID(),
+      conversationId: randomUUID(),
+      requestId: randomUUID(),
+      text: "absent",
+    }),
+    undefined,
+  );
+});
+
+test("one blocked conversation does not block another conversation's output", async () => {
+  const blocked = await fixture(),
+    other = await fixture(),
+    db = await pool.connect();
+  const output = new ConversationContentOutput(pool);
+  let pending: Promise<unknown> | undefined;
+  try {
+    await db.query("BEGIN");
+    await db.query(
+      "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE",
+      [blocked.key.conversationId],
+    );
+    pending = output
+      .enqueue(blocked.key, () => ({ backpressure: false }))
+      .catch((error) => error);
+    assert.deepEqual(
+      await output.enqueue(other.key, () => ({ backpressure: false })),
+      { kind: "retained", backpressure: false },
+    );
+    await db.query("COMMIT");
+    assert.deepEqual(await pending, { kind: "retained", backpressure: false });
+  } finally {
+    await db.query("ROLLBACK");
+    db.release();
+    await pending;
+    await output.stop();
+  }
+});
+
+test("a live gateway retries its own failed output acknowledgement without failing the delivered frame", async () => {
+  const { key } = await fixture(),
+    transient = new Pool({ connectionString: database });
+  let fail = true;
+  transient.on("connect", (db) => {
+    const original = db.query.bind(db);
+    db.query = ((...args: unknown[]) => {
+      const statement = args[0];
+      const text =
+        typeof statement === "string"
+          ? statement
+          : statement && typeof statement === "object" && "text" in statement
+            ? statement.text
+            : undefined;
+      if (
+        fail &&
+        typeof text === "string" &&
+        text.startsWith("DELETE FROM birbcrew_ts.content_output_reservations")
+      ) {
+        fail = false;
+        return Promise.reject(Error("injected acknowledgement failure"));
+      }
+      return Reflect.apply(original, db, args);
+    }) as typeof db.query;
+  });
+  const output = new ConversationContentOutput(transient);
+  try {
+    assert.deepEqual(
+      await output.enqueue(key, () => ({ backpressure: false })),
+      { kind: "retained", backpressure: false },
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1",
+          [key.conversationId],
+        )
+      ).rowCount,
+      1,
+    );
+    const deadline = Date.now() + 5000;
+    while (
+      (
+        await pool.query(
+          "SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1",
+          [key.conversationId],
+        )
+      ).rowCount
+    ) {
+      assert.ok(
+        Date.now() < deadline,
+        "live owner did not release its delivered ticket",
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await seal(key);
+    await beginContentErasure(store, key);
+    assert.ok(await finishContentErasure(store, key));
+  } finally {
+    await output.stop();
+    await transient.end();
+  }
+});
+
+test("an open chunked DELETE body receives 400 without destroying the response", async (t) => {
+  const { request: httpRequest } = await import("node:http");
+  const { key } = await fixture(),
+    token = randomUUID();
+  const server = createGateway(store, new MemberClient(store, new Client()), {
+    [createHash("sha256").update(token).digest("hex")]: key.ownerId,
+  });
+  t.after(async () => {
+    server.closeAllConnections();
+    server.close();
+    await server.stopped();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const addr = server.address();
+  assert.ok(addr && typeof addr !== "string");
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: "127.0.0.1",
+        port: addr.port,
+        path: `/v1/conversations/${key.conversationId}/content`,
+        method: "DELETE",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Transfer-Encoding": "chunked",
+        },
+      },
+      (res) => {
+        resolve(res.statusCode);
+        res.resume();
+        req.end();
+      },
+    );
+    req.on("error", reject);
+    req.write("nonempty");
+    req.setTimeout(2000, () =>
+      req.destroy(Error("missing invalid-input response")),
+    );
+  });
+  assert.equal(status, 400);
+  assert.equal((await contentErasureState(pool, key)).content_erasure_id, null);
+});
+
+for (const fanout of [true, false])
+  for (const stage of ["bootstrap", "tail"] as const) {
+    test(`${fanout ? "hub" : "polling"} SSE discards a paused ${stage} frame after another gateway fences`, async (t) => {
+      const { key, member, request } = await fixture();
+      await pool.query(
+        "INSERT INTO birbcrew_ts.public_snapshots(conversation_id,state,messages) VALUES($1,$2,$3)",
+        [
+          key.conversationId,
+          {
+            conversationId: key.conversationId,
+            memberId: member.memberId,
+            engine: member.engine,
+            profile: member.profile,
+            phase: "running",
+            openStep: null,
+            pendingApprovals: [],
+          },
+          JSON.stringify(
+            stage === "bootstrap"
+              ? [{ id: "prompt", role: "user", content: request.text }]
+              : [],
+          ),
+        ],
+      );
+      let release!: () => void, reached!: () => void, bootstrapped!: () => void;
+      const pause = new Promise<void>((r) => {
+          release = r;
+        }),
+        prepared = new Promise<void>((r) => {
+          reached = r;
+        }),
+        bootstrap = new Promise<void>((r) => {
+          bootstrapped = r;
+        });
+      class PausedOutput extends ConversationContentOutput {
+        calls = 0;
+        override async enqueue(
+          ...args: Parameters<ConversationContentOutput["enqueue"]>
+        ) {
+          const call = ++this.calls;
+          if (call === (stage === "bootstrap" ? 1 : 5)) {
+            reached();
+            await pause;
+          }
+          const result = await super.enqueue(...args);
+          if (call === 3) bootstrapped();
+          return result;
+        }
+      }
+      const token = randomUUID(),
+        owners = {
+          [createHash("sha256").update(token).digest("hex")]: key.ownerId,
+        };
+      const client = new MemberClient(store, new Client()),
+        first = createGateway(store, client, owners, {
+          fanout,
+          contentOutput: new PausedOutput(pool),
+        }),
+        second = createGateway(store, client, owners);
+      t.after(async () => {
+        release();
+        for (const server of [first, second]) {
+          server.closeAllConnections();
+          server.close();
+          await server.stopped();
+        }
+      });
+      for (const server of [first, second]) {
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+      }
+      const url = (server: typeof first) => {
+        const addr = server.address();
+        assert.ok(addr && typeof addr !== "string");
+        return `http://127.0.0.1:${addr.port}`;
+      };
+      const headers = {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+      };
+      const old = fetch(
+        url(first) + `/v1/conversations/${key.conversationId}/events`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            threadId: key.conversationId,
+            runId: randomUUID(),
+            messages: [],
+            tools: [],
+            context: [],
+            state: {},
+            forwardedProps: {},
+          }),
+        },
+      );
+      if (stage === "tail") {
+        await bootstrap;
+        await store.transaction(async (db) => {
+          await db.query(
+            "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE",
+            [key.conversationId],
+          );
+          await db.query(
+            "INSERT INTO birbcrew_ts.public_events(conversation_id,cursor,event) VALUES($1,1,$2),($1,2,$3)",
+            [
+              key.conversationId,
+              { type: "TEXT_MESSAGE_START", messageId: "x", role: "assistant" },
+              {
+                type: "TEXT_MESSAGE_CONTENT",
+                messageId: "x",
+                delta: request.text,
+              },
+            ],
+          );
+          await db.query(
+            "UPDATE birbcrew_ts.public_snapshots SET cursor=2 WHERE conversation_id=$1",
+            [key.conversationId],
+          );
+        });
+      }
+      await prepared;
+      await seal(key);
+      const erased = await fetch(
+        url(second) + `/v1/conversations/${key.conversationId}/content`,
+        { method: "DELETE", headers },
+      );
+      assert.equal(erased.status, 200);
+      release();
+      const response = await old,
+        raw = await response.text();
+      assert.equal(response.status, 200);
+      assert.equal(raw.includes(request.text), false);
+      assert.ok(raw.includes("CONVERSATION_ERASED"));
+      if (fanout) assert.equal(first.observerStats()?.hubs, 0);
+    });
+  }
+
+test("opening legacy text identities cannot replace expired closure history with a fresh run", async () => {
+  for (const hasTurn of [false, true]) {
+    const ownerId = randomUUID(),
+      member = await store.spawn({
+        ownerId,
+        engine: "cursor",
+        profile: "legacy-expired",
+        requestId: randomUUID(),
+      }),
+      key = { ownerId, conversationId: randomUUID() };
+    await pool.query(
+      "INSERT INTO birbcrew_ts.conversations(owner_id,member_id,conversation_id,turn_limit,text_location_inventory_complete) VALUES($1,$2,$3,1,$4)",
+      [ownerId, member.memberId, key.conversationId, hasTurn],
+    );
+    if (hasTurn)
+      await pool.query(
+        "INSERT INTO birbcrew_ts.turns(conversation_id,request_id,position,prompt_digest,attempt,phase,reply,checkpoint,workflow_run_id,activity_id) VALUES($1,$2,1,$3,1,'committed','retained',$4,$5,'old')",
+        [
+          key.conversationId,
+          randomUUID(),
+          Buffer.alloc(32),
+          { version: 1, engine: "cursor", state: {} },
+          randomUUID(),
+        ],
+      );
+    let starts = 0;
+    const temporal = {
+      workflow: {
+        start: async () => {
+          starts++;
+          throw Error("must not replace legacy execution");
+        },
+        getHandle: () => ({
+          describe: async () => {
+            throw Error("expired history");
+          },
+        }),
+      },
+      connection: {
+        withDeadline: async (
+          _deadline: number,
+          action: () => Promise<unknown>,
+        ) => action(),
+      },
+      options: { namespace: "default" },
+    } as unknown as Client;
+    const client = new MemberClient(store, temporal);
+    await client.open({ ...key, memberId: member.memberId });
+    assert.equal(starts, 0);
+    await assert.rejects(client.describeClosure(key), /expired history/);
+    assert.equal(
+      (await contentErasureState(pool, key)).text_lifecycle,
+      "startable",
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT 1 FROM birbcrew_ts.conversation_workflow_starts WHERE conversation_id=$1",
+          [key.conversationId],
+        )
+      ).rowCount,
+      0,
+    );
+  }
+});
+
+test("start reservations and closure observations bind one namespace before sending RPCs", async () => {
+  const { key } = await fixture();
+  const workflowId = `birbcrew-ts/member/${(await contentErasureState(pool, key)).memberId}/conversation/${key.conversationId}`;
+  const attempt = await reserveTextWorkflowStart(
+    store,
+    key,
+    workflowId,
+    "namespace-a",
+  );
+  assert.ok(attempt);
+  await assert.rejects(
+    reserveTextWorkflowStart(store, key, workflowId, "namespace-b"),
+    { code: "content_namespace_mismatch" },
+  );
+  await settleTextWorkflowStart(store, key, attempt, randomUUID());
+  const row = await contentErasureState(pool, key);
+  await assert.rejects(
+    sealTextClosure(store, key, {
+      workflowId,
+      runId: randomUUID(),
+      status: "COMPLETED",
+      namespace: "namespace-b",
+      generation: row.text_start_generation,
+    }),
+    { code: "content_namespace_mismatch" },
+  );
+  const evidence = await sealTextClosure(store, key, {
+    workflowId,
+    runId: randomUUID(),
+    status: "COMPLETED",
+    namespace: "namespace-a",
+    generation: row.text_start_generation,
+  });
+  assert.equal(evidence.namespace, "namespace-a");
+  assert.equal(
+    (await contentErasureState(pool, key)).text_workflow_namespace,
+    "namespace-a",
+  );
+});
+
+test("ineligible closure evidence warns without failing worker liveness", async () => {
+  const { startContentErasureReconciliation } = await import(
+    "../../src/service/content-erasure-reconciliation.ts"
+  );
+  const { key } = await fixture();
+  await reserveTextWorkflowStart(store, key, "test/ambiguous", "default");
+  await pool.query(
+    "UPDATE birbcrew_ts.conversations SET text_closing_at=clock_timestamp()-interval '6 minutes' WHERE conversation_id=$1",
+    [key.conversationId],
+  );
+  const temporal = {
+    connection: {
+      withDeadline: async (_deadline: number, action: () => Promise<unknown>) =>
+        action(),
+    },
+    workflow: {
+      getHandle: () => ({
+        describe: async () => {
+          throw Error("missing history");
+        },
+      }),
+      start: async () => {
+        throw Error("offline cleanup");
+      },
+    },
+    options: { namespace: "default" },
+  } as unknown as Client;
+  const loop = startContentErasureReconciliation(pool, temporal);
+  await loop.stop();
+  assert.equal(loop.healthy(), true);
+  assert.equal(
+    (await contentErasureState(pool, key)).text_lifecycle,
+    "startable",
+  );
+});
+
+test(
+  "a text SSE bootstrap progresses after a large frame has already drained",
+  { timeout: 10000 },
+  async (t) => {
+    const { key, member, request } = await fixture(),
+      content = request.text + "x".repeat(200000);
+    await pool.query(
+      "INSERT INTO birbcrew_ts.public_snapshots(conversation_id,state,messages) VALUES($1,$2,$3)",
+      [
+        key.conversationId,
+        {
+          conversationId: key.conversationId,
+          memberId: member.memberId,
+          engine: member.engine,
+          profile: member.profile,
+          phase: "failed",
+          openStep: null,
+          pendingApprovals: [],
+        },
+        JSON.stringify([{ id: "large", role: "user", content }]),
+      ],
+    );
+    const token = randomUUID(),
+      server = createGateway(store, new MemberClient(store, new Client()), {
+        [createHash("sha256").update(token).digest("hex")]: key.ownerId,
+      });
+    t.after(async () => {
+      server.closeAllConnections();
+      server.close();
+      await server.stopped();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const addr = server.address();
+    assert.ok(addr && typeof addr !== "string");
+    const response = await fetch(
+      `http://127.0.0.1:${addr.port}/v1/conversations/${key.conversationId}/events`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          threadId: key.conversationId,
+          runId: randomUUID(),
+          messages: [],
+          tools: [],
+          context: [],
+          state: {},
+          forwardedProps: {},
+        }),
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    const raw = await response.text();
+    assert.equal(response.status, 200);
+    assert.ok(raw.includes(content));
+    assert.ok(raw.includes("MEMBER_FAILED"));
+  },
+);

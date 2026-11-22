@@ -63,6 +63,13 @@ export async function contentErasureState(
     ownerId: input.ownerId,
     conversationId: input.conversationId,
   });
+  // Acquire the serialization lock before taking the joined erasure snapshot.
+  // A waiter must observe a finalizer's erasure row after that finalizer commits.
+  if (lock)
+    await db.query(
+      "SELECT 1 FROM birbcrew_ts.conversations WHERE owner_id=$1 AND conversation_id=$2 FOR UPDATE",
+      [key.ownerId, key.conversationId],
+    );
   const {
     rows: [row],
   } = await db.query<
@@ -73,14 +80,15 @@ export async function contentErasureState(
       text_location_inventory_complete: boolean;
       text_lifecycle: "startable" | "sealed_closed";
       text_start_generation: string;
+      text_workflow_namespace: string | null;
       text_closure: ClosureEvidence | null;
     }
   >(
     `SELECT c.owner_id AS "ownerId",c.conversation_id AS "conversationId",c.member_id AS "memberId",m.engine,m.profile,
-    c.content_erasure_id,e.erased_at,e.terminal_phase,c.text_location_inventory_complete,c.text_lifecycle,c.text_start_generation,c.text_closure
+    c.content_erasure_id,e.erased_at,e.terminal_phase,c.text_location_inventory_complete,c.text_lifecycle,c.text_start_generation,c.text_closure,c.text_workflow_namespace
     FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING(owner_id,member_id)
     LEFT JOIN birbcrew_ts.conversation_content_erasures e USING(conversation_id)
-    WHERE c.owner_id=$1 AND c.conversation_id=$2 ${lock ? "FOR UPDATE OF c" : ""}`,
+    WHERE c.owner_id=$1 AND c.conversation_id=$2`,
     [key.ownerId, key.conversationId],
   );
   if (!row) throw new MemberStoreError("not_found");
@@ -194,14 +202,30 @@ export async function preflightContentErasure(
     return row;
   });
 }
+export async function bindTextWorkflowNamespace(
+  db: PoolClient,
+  key: Key,
+  namespace: string,
+) {
+  const row = await contentErasureState(db, key, true);
+  if (row.text_workflow_namespace && row.text_workflow_namespace !== namespace)
+    throw new MemberStoreError("content_namespace_mismatch");
+  if (!row.text_workflow_namespace)
+    await db.query(
+      "UPDATE birbcrew_ts.conversations SET text_workflow_namespace=$2 WHERE conversation_id=$1",
+      [key.conversationId, namespace],
+    );
+  return row;
+}
 export async function reserveTextWorkflowStart(
   store: MemberStore,
   key: Key,
   workflowId: string,
+  namespace: string,
 ) {
   return erasureTransaction(store, async (db) => {
     await assertContentWritable(db, key);
-    const row = await contentErasureState(db, key);
+    const row = await bindTextWorkflowNamespace(db, key, namespace);
     if (row.text_lifecycle === "sealed_closed") return null;
     const attemptId = randomUUID();
     const {
@@ -211,8 +235,8 @@ export async function reserveTextWorkflowStart(
       [key.conversationId],
     );
     await db.query(
-      "INSERT INTO birbcrew_ts.conversation_workflow_starts(attempt_id,conversation_id,generation,workflow_id,state) VALUES($1,$2,$3,$4,'reserved')",
-      [attemptId, key.conversationId, generation.value, workflowId],
+      "INSERT INTO birbcrew_ts.conversation_workflow_starts(attempt_id,conversation_id,generation,workflow_id,state,namespace) VALUES($1,$2,$3,$4,'reserved',$5)",
+      [attemptId, key.conversationId, generation.value, workflowId, namespace],
     );
     return attemptId;
   });
@@ -244,20 +268,24 @@ export async function sealTextClosure(
   if (!terminalWorkflowStatuses.includes(evidence.status))
     throw new MemberStoreError("conversation_open");
   return erasureTransaction(store, async (db) => {
-    const row = await contentErasureState(db, key, true);
+    const row = await bindTextWorkflowNamespace(db, key, evidence.namespace);
     if (row.text_lifecycle === "sealed_closed") return row.text_closure!;
     if (row.text_start_generation !== evidence.generation)
       throw new MemberStoreError("content_start_unresolved");
     await resolvedStarts(db, key);
-    await db.query(
-      "UPDATE birbcrew_ts.conversations SET text_lifecycle='sealed_closed',text_closure=$2 WHERE conversation_id=$1 AND text_start_generation=$3 AND text_lifecycle='startable'",
+    await terminalTextRequests(db, key);
+    const {
+      rows: [sealed],
+    } = await db.query<{ text_closure: ClosureEvidence }>(
+      "UPDATE birbcrew_ts.conversations SET text_lifecycle='sealed_closed',text_closure=$2 WHERE conversation_id=$1 AND text_start_generation=$3 AND text_lifecycle='startable' RETURNING text_closure",
       [
         key.conversationId,
         JSON.stringify({ ...evidence, observedAt: new Date().toISOString() }),
         evidence.generation,
       ],
     );
-    return evidence;
+    if (!sealed) throw new MemberStoreError("content_start_unresolved");
+    return sealed.text_closure;
   });
 }
 export async function beginContentErasure(store: MemberStore, key: Key) {
@@ -326,8 +354,8 @@ export async function finishContentErasure(store: MemberStore, key: Key) {
     if (
       (
         await db.query(
-          "SELECT 1 FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=$1 AND cleaned_at IS NULL",
-          [key.conversationId],
+          "SELECT 1 WHERE NOT birbcrew_ts.content_cleanup_inventory_matches($1,$2) OR EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=$1 AND cleaned_at IS NULL)",
+          [key.conversationId, row.content_erasure_id],
         )
       ).rowCount
     )
@@ -342,6 +370,10 @@ export async function finishContentErasure(store: MemberStore, key: Key) {
     );
     await db.query(
       `UPDATE birbcrew_ts.public_events SET event='{"type":"CUSTOM","name":"crew.content_erased","value":null}' WHERE conversation_id=$1`,
+      [key.conversationId],
+    );
+    await db.query(
+      "UPDATE birbcrew_ts.public_publications SET payload_digest=NULL WHERE conversation_id=$1",
       [key.conversationId],
     );
     await db.query(

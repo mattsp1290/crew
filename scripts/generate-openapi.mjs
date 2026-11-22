@@ -48,6 +48,7 @@ for (const [id, value] of Object.entries({
   HandoffsCapabilityV1: handoffsCapabilityV1Schema,
   ConversationSnapshot: routes.conversation.response,
   RequestReceipt: routes.requestStatus.response,
+  RetainedRequestReceipt: routes.submit.response,
   OwnerApprovalDetail: routes.approvalDetail.response,
   DecisionReceipt: routes.decide.response,
   DecisionRecord: routes.decisionRecord.response,

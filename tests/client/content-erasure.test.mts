@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { CrewClient, CrewHttpError } from "@birbcrew/client";
-import { requestReceiptResponseSchema } from "@birbcrew/client/contract";
+import {
+  CrewClient,
+  CrewHttpError,
+  CrewUnknownOutcomeError,
+} from "@birbcrew/client";
+import {
+  requestReceiptResponseSchema,
+  capabilitiesSchema,
+  contentErasureCapabilityV1Schema,
+  conversationContentTombstoneSchema,
+  conversationClosureSchema,
+  snapshotWireSchema,
+  routes,
+} from "@birbcrew/client/contract";
 
 test("erased receipts forbid results; portable erasure and close calls preserve identity", async () => {
   const conversationId = randomUUID(),
@@ -71,4 +83,150 @@ test("erased receipts forbid results; portable erasure and close calls preserve 
     (error) => error instanceof CrewHttpError && error.status === 410,
   );
   assert.equal(seen.length, 3);
+});
+
+test("erasure metadata and command responses preserve forward compatibility", () => {
+  const capability = {
+    version: 1,
+    route: "/v1/conversations/{conversationId}/content",
+    closeRoute: "/v1/conversations/{conversationId}/close",
+    engines: ["cursor", "opencode"],
+    preconditions:
+      "closed-workflow; terminal-requests; stopped-writers; complete-location-inventory",
+    retry: "same-conversation-until-200",
+    residuals: [
+      "Temporal-history-until-retention",
+      "WAL-backups-provider-copies-and-logs",
+    ],
+    extra: true,
+  };
+  const base = {
+    apiVersion: "1",
+    requestContract: "sql-admission-temporal-queue-v1",
+    observation: { protocol: "AG-UI", mode: "snapshot-and-bounded-tail" },
+    initiatorKinds: [],
+  };
+  assert.equal(
+    capabilitiesSchema.safeParse({ ...base, contentErasure: capability })
+      .success,
+    true,
+  );
+  assert.equal(
+    capabilitiesSchema.safeParse({
+      ...base,
+      contentErasure: { version: 2, new: true },
+    }).success,
+    true,
+  );
+  assert.equal(
+    capabilitiesSchema.safeParse({
+      ...base,
+      contentErasure: {
+        ...capability,
+        engines: [...capability.engines, "future"],
+        residuals: [...capability.residuals, "future"],
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    contentErasureCapabilityV1Schema.safeParse({ ...capability, residuals: [] })
+      .success,
+    false,
+  );
+  assert.equal(
+    conversationContentTombstoneSchema.safeParse({
+      apiVersion: "1",
+      conversationId: randomUUID(),
+      memberId: randomUUID(),
+      engine: "future",
+      erasureId: randomUUID(),
+      erased: true,
+      erasedAt: new Date().toISOString(),
+      extra: true,
+    }).success,
+    true,
+  );
+  assert.equal(
+    conversationClosureSchema.safeParse({
+      apiVersion: "1",
+      conversationId: randomUUID(),
+      closure: "closed",
+      extra: true,
+    }).success,
+    true,
+  );
+  const snapshot = {
+    erased: true,
+    cursor: 0,
+    state: {
+      conversationId: randomUUID(),
+      memberId: randomUUID(),
+      engine: "cursor",
+      profile: "fixture",
+      phase: "complete",
+      erased: true,
+    },
+    messages: [],
+    openText: null,
+    openTools: {},
+    childText: {},
+  };
+  assert.equal(snapshotWireSchema.safeParse(snapshot).success, true);
+  for (const patch of [
+    { messages: ["leak"] },
+    { openText: "leak" },
+    { openTools: { x: "leak" } },
+    { childText: { x: "leak" } },
+    { state: { ...snapshot.state, erased: undefined } },
+  ])
+    assert.equal(
+      snapshotWireSchema.safeParse({ ...snapshot, ...patch }).success,
+      false,
+    );
+});
+
+test("ambiguous open, close and erasure outcomes retain distinct retry commands", async () => {
+  const conversationId = randomUUID(),
+    client = new CrewClient({
+      baseUrl: "http://127.0.0.1:34567",
+      token: "fixture",
+      fetch: async () => {
+        throw Error("lost response");
+      },
+    });
+  for (const [kind, action] of [
+    [
+      "content_erasure",
+      () => client.eraseConversationContent({ conversationId }),
+    ],
+    ["conversation_close", () => client.closeConversation({ conversationId })],
+    [
+      "conversation",
+      () => client.openConversation({ conversationId, memberId: randomUUID() }),
+    ],
+  ] as const) {
+    await assert.rejects(
+      action(),
+      (error) =>
+        error instanceof CrewUnknownOutcomeError &&
+        error.command.kind === kind &&
+        "conversationId" in error.command &&
+        error.command.conversationId === conversationId,
+    );
+  }
+});
+
+test("erased receipts are read results and cannot acknowledge submit or cancel", () => {
+  const receipt = {
+    apiVersion: "1",
+    conversationId: randomUUID(),
+    requestId: randomUUID(),
+    status: "completed",
+    erased: true,
+    acceptance: { boundary: "sql_admission_and_temporal_queue" },
+  };
+  assert.equal(routes.requestStatus.response.safeParse(receipt).success, true);
+  assert.equal(routes.submit.response.safeParse(receipt).success, false);
+  assert.equal(routes.cancel.response.safeParse(receipt).success, false);
 });

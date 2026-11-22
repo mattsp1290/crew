@@ -9,7 +9,7 @@ import {
   writeFile,
   access,
 } from "node:fs/promises";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import {
@@ -33,7 +33,6 @@ export function textTurnRootPath(
   z.uuid().parse(member.memberId);
   if (
     !isAbsolute(stateDir) ||
-    resolve(stateDir) !== stateDir ||
     member.engine !== engine
   )
     throw new MemberStoreError("conflict");
