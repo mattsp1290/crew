@@ -156,6 +156,11 @@ rows:
 { "apiVersion": "1", "members": [{ "memberId": "UUID", "engine": "pi", "profile": "name" }], "next": "opaque" }
 ```
 
+Engine values are additive within v1. `cursor` and `opencode` (one-turn text members) joined `pi`,
+`claude` and `codex` without a version change, so `@birbcrew/client@0.1.0`, which parses `engine` as
+one of the original three, rejects a response that names a text member. Treat an unknown engine as
+opaque rather than failing the whole response.
+
 A member spawned with instructions also carries `"instructions": { "bytes": 73, "digest": "sha256 hex" }`,
 never the text, and one spawned with instruction packs carries `"instructionPacks": ["UUID", ...]`, their
 IDs in order.

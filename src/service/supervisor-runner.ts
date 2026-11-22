@@ -12,10 +12,15 @@ import { Pool } from "pg";
 import { registerProfiles } from "./deployment.ts";
 import { memberProfiles } from "./profiles.ts";
 import type { DriverInput } from "./activities.ts";
-import type { Conversation, Checkpoint } from "./domain.ts";
+import { isTextEngine, type Conversation, type Checkpoint, type Engine } from "./domain.ts";
+import { scrubTextEngineEnvironment } from "./text-turn.ts";
 import { temporalSettings } from "./temporal-config.ts";
 import { usageAttributes } from "./usage-capture.ts";
 import { errorSummary, forwardWarnings, warn } from "./diagnostics.ts";
+
+const telemetryProvider: Partial<Record<Engine, string>> = {
+  codex: "openai", claude: "anthropic", cursor: "cursor", opencode: "opencode",
+};
 
 interface AdmittedTurn {
   launch: Launch;
@@ -68,8 +73,12 @@ process.once("message", async (command: AdmittedTurn) => {
           checkpoint: command.checkpoint, continuation: command.continuation, signal,
         };
         const scope = {...command.launch, engine:member.engine, workflowRunId:command.launch.execution.workflowRunId};
-        const provider = member.engine === "codex" ? "openai" : member.engine === "claude" ? "anthropic" : profile?.pi?.model.provider ?? "";
-        const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => driver(value, member));
+        const provider = telemetryProvider[member.engine] ?? profile?.pi?.model.provider ?? "";
+        const invokeDriver = (value: DriverInput) => observedAgent({ ...scope, provider }, () => {
+          // The owning scrub for every text driver. Cursor scrubs again before its SDK import as defense in depth.
+          if (isTextEngine(member.engine)) scrubTextEngineEnvironment();
+          return driver(value, member);
+        });
         const invoke = () => traced("model.invoke",scope, async () => {
           const result = items && tool
             ? await runLiveTool(pool, temporal, command.launch, member, tool, input, invokeDriver, items.disclose)

@@ -1,10 +1,10 @@
 import { fixedRoles, type Delegation } from "@birbcrew/pi-subagents";
 import { z } from "zod";
-import { engineSchema, spawnSchema, type Engine } from "./domain.ts";
+import { childEngineSchema, spawnSchema, type Engine } from "./domain.ts";
 
 export const childRoleSchema = z.enum(["analyst", "recorder"]);
 export type ChildRole = z.infer<typeof childRoleSchema>;
-export const childTargetSchema = z.strictObject({ engine: engineSchema, profile: spawnSchema.shape.profile });
+export const childTargetSchema = z.strictObject({ engine: childEngineSchema, profile: spawnSchema.shape.profile });
 export type ChildTarget = z.infer<typeof childTargetSchema>;
 export const destinationSchema = childTargetSchema.extend({
   model: z.string().min(1).max(256), providerHost: z.string().min(1).max(512), accountDigest: z.string().regex(/^[a-f0-9]{64}$/),

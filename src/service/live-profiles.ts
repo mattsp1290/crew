@@ -120,5 +120,22 @@ export async function loadLiveProfiles(env: NodeJS.ProcessEnv, transport: typeof
     configured.set(name.replace(/\.v1$/, ".next-step.v1"), { ...profile, humanTool: "choose_next_step" });
     configured.set(name.replace(/\.v1$/, ".approval.v1"), { ...profile, protectedTool: "record_work_item" });
   }
+  if (accounts.cursor) {
+    configured.set("cursor.v1", {
+      accountId: accounts.cursor.account,
+      cursor: { model: accounts.cursor.model, cwd: accounts.cursor.cwd, apiKey: credential(env.BIRBCREW_CURSOR_API_KEY, "BIRBCREW_CURSOR_API_KEY") },
+    });
+  }
+  if (accounts.opencode) {
+    const variables: Record<string, string> = {};
+    for (const name of accounts.opencode.env) variables[name] = credential(env[name], name);
+    configured.set("opencode.v1", {
+      accountId: accounts.opencode.account,
+      opencode: {
+        model: accounts.opencode.model, cwd: accounts.opencode.cwd, executable: accounts.opencode.executable,
+        account: accounts.opencode.account, env: variables,
+      },
+    });
+  }
   return configured;
 }

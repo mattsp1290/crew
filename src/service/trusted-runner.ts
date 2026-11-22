@@ -1,4 +1,5 @@
 /** Call only from a trusted backend worker, never with observer-supplied authority. */
+import { engineTraits } from "./domain.ts";
 import { TrustedContextStore, type TrustedKey } from "./trusted-context.ts";
 import { runTrustedNativeTurn, type TrustedNativeProfile } from "./trusted-native.ts";
 import { recordTrustedUsage } from "./usage.ts";
@@ -18,13 +19,15 @@ export async function runTrustedRequest(store: TrustedContextStore, key: Trusted
   const table = checkedPrices(prices);
   const start = await store.begin(key);
   if (!start) return null;
-  if (profile.engine !== start.engine || (profile.engine !== "pi" &&
+  const engine = start.engine;
+  if (!engineTraits[engine].trustedContext) throw new Error("Text engines have no trusted native execution");
+  if (profile.engine !== engine || (profile.engine !== "pi" &&
       (profile.profile.ownerId !== key.ownerId || profile.profile.memberId !== start.memberId))) {
     throw new Error("Trusted native profile ownership does not match the conversation");
   }
   await store.admitted(start.claim, signal, async admitted => {
     const result = await runTrustedNativeTurn({
-      engine:start.engine,threadId:start.threadId,runId:start.claim.requestId,text:start.text,
+      engine,threadId:start.threadId,runId:start.claim.requestId,text:start.text,
       context:start.context,binding:start.binding,checkpoint:start.checkpoint,signal:admitted,
       tools:store.manifest.map(({kind:_,...tool}) => tool),
       dispatch:call => store.dispatch(start.claim,call.nativeCallId,call.toolName,call.args,call.signal),

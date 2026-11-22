@@ -24,10 +24,14 @@ export const codexSubscriptionAccount = z.strictObject({
 });
 export const codexAccount = z.discriminatedUnion("provider", [codexApiAccount, codexSubscriptionAccount]);
 
+const textEngineAccount = z.strictObject({ account, model: z.string().min(1).max(256), cwd: z.string().min(1) });
+const opencodeAccount = textEngineAccount.extend({ executable: z.string().min(1), env: z.array(z.string().min(1)) });
+
 /** The live member accounts of one worker. Unknown keys are refused, so a provider attestation is not a configuration. */
 export const liveProfiles = z.strictObject({
   pi: goAccount.optional(), claude: claudeAccount.optional(), codex: codexAccount.optional(),
-}).refine((value) => value.pi || value.claude || value.codex, "Configure at least one engine");
+  cursor: textEngineAccount.optional(), opencode: opencodeAccount.optional(),
+}).refine((value) => value.pi || value.claude || value.codex || value.cursor || value.opencode, "Configure at least one engine");
 export type LiveProfiles = z.infer<typeof liveProfiles>;
 export const liveProfilesVariable = "BIRBCREW_LIVE_PROFILES";
 

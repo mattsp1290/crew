@@ -9,7 +9,8 @@ import type { PublicSegment } from "./activities.ts";
 import { inspectChild, requestChildStop, revokeChild, type ReadySegment } from "./supervisor-child.ts";
 import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import { ChildStore, childrenFor } from "./children.ts";
-import type { Conversation, Checkpoint } from "./domain.ts";
+import { engineTraits, isTextEngine, type Conversation, type Checkpoint } from "./domain.ts";
+import { nativeStopGraceMs, stopLeaseWaitMs, textStopGraceMs } from "./limits.ts";
 import { textProjection, textWriter } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
 import { commandSchema, runnerResultSchema, type Launch } from "./supervisor.ts";
@@ -29,8 +30,16 @@ const starts = new Map<string, { launch: Launch; result: Promise<SegmentResult> 
 let closing = false;
 const stopping = new WeakSet<ChildProcess>();
 
+function groupAlive(pid: number) {
+  try { process.kill(-pid, 0); return true; }
+  catch { return false; }
+}
+
 function killNativeGroup(child: ChildProcess) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid) return;
+  // A reaped leader can leave an empty group whose id the system may reuse. Signal such a group only
+  // while a member is still alive; a live member also keeps the id from being reused.
+  if ((child.exitCode !== null || child.signalCode !== null) && !groupAlive(child.pid)) return;
   try { process.kill(-child.pid, "SIGKILL"); }
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
 }
@@ -47,11 +56,18 @@ async function groupStopped(pid: number) {
   return false;
 }
 
+// Text runners get the longer grace (limits.ts); a runner with no entry is native.
+const textRunners = new WeakSet<ChildProcess>();
+// The acknowledgement has to outlast the longest grace kill, groupStopped's one second poll, and the
+// stopped update. A prompt abort still returns as soon as native_launches.stopped is set.
+const stopConfirmMs = stopLeaseWaitMs(true) + 3_000;
+
 function stopRunner(child: ChildProcess | undefined) {
   if (!child || stopping.has(child) || child.exitCode !== null || child.signalCode !== null) return;
   stopping.add(child);
   if (child.connected) child.send("stop", () => { });
-  const timeout = setTimeout(() => killNativeGroup(child), 3000);
+  // killNativeGroup still signals the group when the leader has already exited.
+  const timeout = setTimeout(() => killNativeGroup(child), textRunners.has(child) ? textStopGraceMs : nativeStopGraceMs);
   timeout.unref();
   child.once("close", () => clearTimeout(timeout));
 }
@@ -170,6 +186,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
         stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], detached: true,
       });
       active.set(launch.token, child);
+      if (isTextEngine(conversation.engine)) textRunners.add(child);
       child.on("message", (value) => {
         if (value && typeof value === "object" && "delta" in value && typeof value.delta === "string") {
           stream.push(project(value.delta));
@@ -212,7 +229,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
     }
     const result = runnerResultSchema.parse(reply);
     // Before the outcome commits: the model work happened even if that commit then fails.
-    await recordSegmentUsage(pool, launch, result.usage, prices);
+    if (engineTraits[member.conversation.engine].meteredUsage) await recordSegmentUsage(pool, launch, result.usage, prices);
     if (result.kind === "delegated") {
       if (childKey || continuation || member.childResults || member.conversation.engine !== "pi") throw new Error("Unexpected delegation");
       return {kind:"delegated",children:await children.delegate(member.conversation,requestId,token,result.proposals,result.checkpoint)};
@@ -233,7 +250,7 @@ async function start(launch: Launch): Promise<SegmentResult> {
     return { kind: "complete", text };
   } finally {
     const runner = active.get(launch.token);
-    if (runner && !confirmed) killNativeGroup(runner);
+    if (runner && !reaped) killNativeGroup(runner);
     active.delete(launch.token);
     if (!runner || reaped || (runner.pid && await groupStopped(runner.pid))) {
       await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND request_id=$2 AND token=$3", args);
@@ -265,7 +282,7 @@ async function handle(launch: Launch, action: "start" | "stop") {
       }
     });
     stopRunner(active.get(launch.token));
-    const until = Date.now() + 6000;
+    const until = Date.now() + stopConfirmMs;
     while (Date.now() < until) {
       const { rows: [admitted] } = await pool.query<{ stopped: boolean }>(
         "SELECT stopped FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND token=$3",

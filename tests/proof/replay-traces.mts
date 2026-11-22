@@ -105,7 +105,7 @@ try {
     const { workflow_run_id: runId } = z.object({ workflow_run_id: z.uuid() }).parse((await pool.query(
       "SELECT workflow_run_id FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",
       [key.conversationId, requestId])).rows[0]);
-    return { key, member, requestId, approval, pending, runId };
+    return { key, member, engine, requestId, approval, pending, runId };
   }));
   // Codex's original MCP request must receive its answer before replacing the worker.
   const codex = cases.find(c => c.member.engine === "codex")!;
@@ -118,10 +118,10 @@ try {
   stop = startWorker();
   const workflowIds: string[] = [];
   const histories = new Map<string, string>();
-  for (const { key, member, requestId, approval, pending, runId } of cases) {
+  for (const { key, member, engine, requestId, approval, pending, runId } of cases) {
     const { ownerId, memberId, conversationId, nativeCallId, invocationId, approvalId, version, argumentDigest }: Approval = approval;
     const decision = { ownerId, memberId, conversationId, requestId, nativeCallId, invocationId, approvalId, version, argumentDigest,
-      choice: "approve" as const, decisionId: decisionIds[member.engine] };
+      choice: "approve" as const, decisionId: decisionIds[engine] };
     assert.equal(await members.decide(decision), "approve");
     assert.equal(await members.decide(decision), "approve");
     const result = await pending;
@@ -184,7 +184,7 @@ try {
       invocation.attributes.engine === "codex" ? "openai" : "anthropic");
     assert.ok(invocation.attributes["usage.state"], "Operational aggregate usage is retained");
   }
-  for (const { member, requestId, approval } of cases) {
+  for (const { member, engine, requestId, approval } of cases) {
     const correlated = rows.filter((r) => r.attributes.requestId === requestId && r.attributes.engine === member.engine);
     assert.deepEqual(new Set(correlated.map((r) => r.name)), new Set(span.shape.name.options));
     assert.equal(new Set(correlated.map((r) => r.traceId)).size, 1);
@@ -192,9 +192,9 @@ try {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].attributes.childId, member.engine === "pi" ? approval.invocationId : undefined);
     for (const row of correlated) {
-      assert.equal(row.attributes.conversationId, ids[member.engine]);
+      assert.equal(row.attributes.conversationId, ids[engine]);
       const child = row.attributes.childId;
-      const workflowId = child ? "birbcrew-ts/child/" + child : "birbcrew-ts/member/" + member.memberId + "/conversation/" + ids[member.engine];
+      const workflowId = child ? "birbcrew-ts/child/" + child : "birbcrew-ts/member/" + member.memberId + "/conversation/" + ids[engine];
       assert.equal(row.attributes.workflowRunId, histories.get(workflowId));
       if (child) assert.equal(child, approval.invocationId);
       if (row.name === "model.invoke" || row.name === "native.restore") assert.ok(correlated.some((r) => r.spanId === row.parent));

@@ -1,19 +1,12 @@
 import { ApprovalStore, decisionSchema } from "./approvals.ts";
 import { ApplicationFailure, Client, WorkflowExecutionAlreadyStartedError, WorkflowNotFoundError, WorkflowUpdateFailedError } from "@temporalio/client";
-import { MemberStoreError, openSchema, turnRequestSchema, conversationKey, turnKey, type Conversation, type TurnRequest } from "./domain.ts";
+import { MemberStoreError, openSchema, TextAdmissionError, turnRequestSchema, conversationKey, turnKey, type Conversation, type TurnRequest } from "./domain.ts";
 import type { MemberStore } from "./store.ts";
 import type { memberConversation } from "./workflow.ts";
 
 import { memberTaskQueue } from "./queues.ts";
+import { hasFailureType, textAdmissionFailure } from "./failure-type.ts";
 
-/** The admission activity refused the request under its member's budget (ownerAdmissionActivity).
- * A refused admission closes the conversation's workflow, so the caller is told so. */
-function usageRefusal(error: unknown) {
-  for (let cause = error; cause instanceof Error; cause = cause.cause) {
-    if (cause instanceof ApplicationFailure && cause.type === "usage_limit") return true;
-  }
-  return false;
-}
 
 export class MemberClient {
   private readonly store: MemberStore;
@@ -59,6 +52,9 @@ export class MemberClient {
         return await action(await this.workflow(conversation));
       }
       catch (error) {
+        // A text-engine admission refusal; the workflow keeps that run open.
+        const refused = textAdmissionFailure(error);
+        if (refused) throw new TextAdmissionError(refused);
         if (!(error instanceof WorkflowUpdateFailedError) || !(error.cause instanceof ApplicationFailure) ||
             error.cause.type !== "RolloverInProgress") throw error;
         if (Date.now() >= deadline) throw new MemberStoreError("busy");
@@ -145,7 +141,8 @@ export class MemberClient {
       try {
         await this.throughRollover(conversation, request, handle => handle.executeUpdate<string, [typeof request]>("acceptTurn", { args: [request] }));
       } catch (error) {
-        if (usageRefusal(error)) throw new MemberStoreError("usage_limit_closed");
+        // usage_limit still closes the member workflow.
+        if (hasFailureType(error, "usage_limit")) throw new MemberStoreError("usage_limit_closed");
         if (!(error instanceof WorkflowNotFoundError)) throw error;
         if (await this.store.committedReply(request) === undefined) throw new MemberStoreError("conflict");
       }
@@ -162,7 +159,8 @@ export class MemberClient {
     try {
       return await this.throughRollover(conversation, request, handle => handle.executeUpdate<string, [typeof request]>("submitTurn", { args: [request] }));
     } catch (error) {
-      if (usageRefusal(error)) throw new MemberStoreError("usage_limit_closed");
+      // usage_limit still closes the member workflow.
+      if (hasFailureType(error, "usage_limit")) throw new MemberStoreError("usage_limit_closed");
       if (!(error instanceof WorkflowNotFoundError)) throw error;
       const settled = await this.store.committedReply(request);
       if (settled !== undefined) return settled;

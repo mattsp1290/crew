@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { claudeAccount, codexApiAccount, codexSubscriptionAccount, codexSubscriptionEndpoint, codexSubscriptionHome, credential, goAccount, goEndpoint, goModel, type LiveProfiles } from "../../src/service/accounts.ts";
 import { readCodexSubscription } from "../../src/service/codex-subscription.ts";
-import { engineSchema, type Engine } from "../../src/service/domain.ts";
+import { childEngineSchema, type ChildEngine } from "../../src/service/domain.ts";
 
 // One owner decision to spend up to max_requests on one proof run. It names the account as the worker configuration
 // does, and it is single-use: the first provider submission claims approval_id for good. It carries no date and never
@@ -46,9 +46,9 @@ async function readProofApproval<T>(path: string, schema: z.ZodType<T>) {
 export async function authorizeLive(args: string[], env: NodeJS.ProcessEnv,
   claims = join(userInfo().homedir, ".local", "state", "birbcrew", "live-proof-claims"), subscriptionCredential = readCodexSubscription) {
   const { values } = parseArgs({ args, options: { engine: { type: "string", multiple: true }, approval: { type: "string", multiple: true } } });
-  const engine = engineSchema.parse(z.array(z.string()).length(1).parse(values.engine)[0]);
+  const engine = childEngineSchema.parse(z.array(z.string()).length(1).parse(values.engine)[0]);
   const path = z.array(z.string()).length(1).parse(values.approval)[0];
-  const schema: z.ZodType<z.infer<(typeof accounts)[Engine]>> = accounts[engine];
+  const schema: z.ZodType<z.infer<(typeof accounts)[ChildEngine]>> = accounts[engine];
   const approval = await readProofApproval(path, schema);
   // The proof worker gets the account the same way a deployed worker does.
   const identity = approval.provider === "chatgpt-subscription" ? { account_id: approval.account_id } : { account: approval.account };

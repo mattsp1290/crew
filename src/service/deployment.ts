@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { Pool } from "pg";
 import { z } from "zod";
 import type { MemberProfile } from "./profiles.ts";
@@ -8,7 +8,7 @@ import { capabilitySchema, hasCapabilities, includesShell, type CapabilitySet } 
 import { configuredDestination } from "./provider-identity.ts";
 import { childConsentSchema, childRoleSchema, childTargetSchema, holdsChildTools, sameDestination, type ProfileTargetSeal } from "./child-target.ts";
 import { fixedRoles } from "@birbcrew/pi-subagents";
-import { engineSchema, spawnSchema } from "./domain.ts";
+import { childEngineSchema, engineSchema, hasControlCharacter, type Engine, spawnSchema } from "./domain.ts";
 import { usesRelayCredential } from "./proxy-profiles.ts";
 
 async function nativeVolume(directory: string) {
@@ -43,14 +43,59 @@ function profileCeiling(name: string, entry: MemberProfile): CapabilitySet | nul
   return ceiling;
 }
 
+const identifierLimit = 1024;
+
+function callerModelId(value: string) {
+  return value.trim() === value && value.length > 0 && value.length <= 256 && !/\p{Cs}/u.test(value) && !hasControlCharacter(value);
+}
+function apiKeyText(value: string) {
+  return value.trim() === value && value.length > 0 && value.length <= 512 && !hasControlCharacter(value, { c1: false });
+}
+function identifier(value: string) {
+  return value.trim().length > 0 && value.length <= identifierLimit && !hasControlCharacter(value);
+}
+function resolvedPath(value: string) {
+  return isAbsolute(value) && resolve(value) === value;
+}
+function invalid(name: string, field: string): never {
+  throw new Error(`Profile ${JSON.stringify(name)} field ${field} is invalid`);
+}
+
+/** Rejects a cursor or opencode profile that cannot be spawned, before a member row exists. */
+function assertTextProfile(name: string, entry: MemberProfile) {
+  if (!entry.cursor && !entry.opencode) return;
+  for (const field of ["pi", "claude", "codex", "childTargets", "capabilities", "protectedTool", "humanTool", "delegateTask"] as const) {
+    if (entry[field] !== undefined) throw new Error(`Profile ${JSON.stringify(name)} refuses ${field}`);
+  }
+  const cursor = entry.cursor;
+  if (cursor) {
+    if (!callerModelId(cursor.model)) invalid(name, "cursor.model");
+    if (!apiKeyText(cursor.apiKey)) invalid(name, "cursor.apiKey");
+    if (!resolvedPath(cursor.cwd) || !identifier(cursor.cwd)) invalid(name, "cursor.cwd");
+  }
+  const opencode = entry.opencode;
+  if (opencode) {
+    if (!callerModelId(opencode.model)) invalid(name, "opencode.model");
+    if (!resolvedPath(opencode.executable) || !identifier(opencode.executable)) invalid(name, "opencode.executable");
+    if (!resolvedPath(opencode.cwd) || !identifier(opencode.cwd)) invalid(name, "opencode.cwd");
+    if (!identifier(opencode.account)) invalid(name, "opencode.account");
+    if (opencode.env === null || typeof opencode.env !== "object" || Array.isArray(opencode.env)) invalid(name, "opencode.env");
+    const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+    for (const [key, value] of Object.entries(opencode.env)) {
+      if (!envName.test(key) || typeof value !== "string" || hasControlCharacter(value, { c1: false })) invalid(name, "opencode.env");
+    }
+  }
+}
+
 export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string) {
+  for (const [name, entry] of config) assertTextProfile(name, entry);
   const ceilings = new Map([...config].map(([name, entry]) => [name, profileCeiling(name, entry)]));
   const declarations = new Map<string, ProfileTargetSeal>();
   const roleMap = z.strictObject({ analyst: childTargetSchema.optional(), recorder: childTargetSchema.optional() });
   const configSchema = z.strictObject({ pi: roleMap.optional(), claude: roleMap.optional(), codex: roleMap.optional() });
   for (const [name, profile] of config) {
     const targets = configSchema.parse(profile.childTargets ?? {});
-    for (const engine of engineSchema.options) {
+    for (const engine of childEngineSchema.options) {
       const roles = targets[engine];
       if (roles === undefined) continue;
       if (!profile[engine] || (engine === "pi" && !profile.delegateTask)) throw new Error("Child parent engine is unavailable or cannot delegate");
@@ -70,10 +115,12 @@ export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, M
     }
   }
   const profiles = [...config.values()];
-  const volumes = {
+  const volumes: Record<Engine, string | null> = {
     pi: null,
     claude: profiles.some((entry) => entry.claude) ? await nativeVolume(directory) : null,
     codex: profiles.some((entry) => entry.codex) ? await nativeVolume(join(directory, "codex")) : null,
+    cursor: null,
+    opencode: null,
   };
   if (volumes.codex && volumes.codex === volumes.claude) throw new Error("Codex needs its own native state volume");
   const db = await pool.connect();

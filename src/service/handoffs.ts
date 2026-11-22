@@ -3,7 +3,7 @@ import { createHandoffBodySchema, uuid } from "@birbcrew/client/contract";
 import type { PoolClient } from "pg";
 import { appendAudit } from "./audit.ts";
 import type { MemberClient } from "./client.ts";
-import { MemberStoreError, promptBytes, turnTextBytes, type Engine, type RequestInitiator } from "./domain.ts";
+import { engineTraits, MemberStoreError, promptBytes, turnTextBytes, type Engine, type RequestInitiator } from "./domain.ts";
 import type { MemberStore } from "./store.ts";
 import { textProjection } from "./text-stream.ts";
 import { overBudget } from "./usage.ts";
@@ -176,8 +176,11 @@ export class HandoffApi {
         }
         return prior;
       }
-      const target = await db.query("SELECT 1 FROM birbcrew_ts.members WHERE owner_id=$1 AND member_id=$2", [ownerId, body.memberId]);
-      if (!target.rowCount) throw new MemberStoreError("not_found");
+      if (!engineTraits[source.engine].handoff) throw new MemberStoreError("conflict");
+      const { rows: [target] } = await db.query<{ engine: Engine }>(
+        "SELECT engine FROM birbcrew_ts.members WHERE owner_id=$1 AND member_id=$2", [ownerId, body.memberId]);
+      if (!target) throw new MemberStoreError("not_found");
+      if (!engineTraits[target.engine].handoff) throw new MemberStoreError("conflict");
       if ((await db.query("SELECT 1 FROM birbcrew_ts.trusted_sessions WHERE conversation_id=$1", [sourceConversationId])).rowCount) {
         throw new MemberStoreError("trusted_conversation");
       }

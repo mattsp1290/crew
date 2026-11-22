@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { appendAudit } from "./audit.ts";
 import { claudeCommand } from "./claude.ts";
-import { MemberStoreError, ownerText, type Conversation, type Engine } from "./domain.ts";
+import { engineTraits, MemberStoreError, ownerText, type Conversation, type Engine } from "./domain.ts";
 import { memberFixedContext } from "./instructions.ts";
 import { trustedProjectContext } from "./project-notes.ts";
 import type { MemberStore } from "./store.ts";
@@ -77,6 +77,8 @@ export function contextFits(engine: Engine, context: string | undefined): boolea
     case "claude": return claudeCommand.shape.projectContext.safeParse(context).success;
     case "codex": return Buffer.byteLength(codexArgument(context)) < argumentBytes;
     case "pi": return true;
+    case "cursor":
+    case "opencode": return false;
   }
 }
 
@@ -93,6 +95,11 @@ export async function snapshotMemories(db: Queryable, conversation: Conversation
      WHERE owner_id = $2 AND member_id = $3 AND state = 'active'`,
     [conversation.conversationId, conversation.ownerId, conversation.memberId]);
   const fixed = await memberFixedContext(db, conversation);
+  if (!engineTraits[conversation.engine].memories) {
+    const { notes } = await contextBlocks(db, conversation);
+    if ((rowCount ?? 0) > 0 || fixed !== undefined || notes !== undefined) throw new MemberStoreError("instructions_limit");
+    return;
+  }
   if (!rowCount && fixed === undefined) return;
   const { notes, memory } = await contextBlocks(db, conversation);
   const fits = (context: string | undefined) => contextFits(conversation.engine, context);

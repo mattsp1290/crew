@@ -1,15 +1,15 @@
-import { execFile, spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { PI_ATTRIBUTION, type Api, type AssistantMessage, type AssistantMessageEvent, type Context, type Model, type ProviderResponse, type ToolCall } from "@earendil-works/pi-ai";
 import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Duplex } from "node:stream";
 import type { z } from "zod";
 import { readFrames, workerFrame, writeFrame, type forwardedOptions, type HostFrame, type PiCommand, type PiStart, type toolCallRef } from "./pi-channel.ts";
 import type { PiProfile } from "./pi.ts";
+import { removePrivate } from "./private-directory.ts";
 import { replyBytes } from "./pi-state.ts";
 import { toolPreviewReporter } from "./tool-preview.ts";
 
@@ -126,15 +126,6 @@ export async function runPiWorker(command: PiCommand, host: PiHost) {
   } finally {
     await removePrivate(directory);
   }
-}
-
-// A worker can leave a directory its host cannot list (mode 0300) or a tree deeper than PATH_MAX, which
-// defeat Node's rm. GNU chmod and rm walk with descriptors; the worker has exited and could make no symlinks.
-async function removePrivate(directory: string) {
-  try { return await rm(directory, { recursive: true, force: true }); } catch { /* retried below */ }
-  const run = promisify(execFile);
-  await run("/bin/chmod", ["-R", "u+rwx", "--", directory]).catch(() => undefined);
-  await run("/bin/rm", ["-rf", "--one-file-system", "--", directory]);
 }
 
 function supervise(directory: string, command: PiCommand, host: PiHost) {

@@ -12,6 +12,7 @@ import type { MemberClient } from "../../src/service/client.ts";
 import { ownerInitiator, type TurnRequest } from "../../src/service/domain.ts";
 import { HandoffApi } from "../../src/service/handoffs.ts";
 import { withNativeAdmission } from "../../src/service/native-admission.ts";
+import { migrateThrough } from "./database-fixtures.ts";
 import { InstallationRecovery, readRecoveryManifest, type RecoveryHooks, type RecoveryPins } from "../../src/service/recovery.ts";
 import { FileRecoveryFence } from "../../src/service/recovery-fence.ts";
 import { MemberStore } from "../../src/service/store.ts";
@@ -556,7 +557,8 @@ test("migration 41 adds the ledger to a v40 database without touching a table or
     db.release();
   }
   await withNativeAdmission(upgraded, { ...request, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    // Through 41: 042 waits for running native turns by design (text-member-contract.test.ts).
+    const migrated = await Promise.race([migrateThrough(current, 41).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 41 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: request.requestId, token: start.token }, request.requestId + "/assistant", 0, "still running");
   });

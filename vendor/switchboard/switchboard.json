@@ -1,13 +1,18 @@
 {
   "name": "@mattsp1290/switchboard",
   "version": "0.0.0",
-  "sourceRepository": "https://github.com/mattsp1290/switchboard",
-  "sourceRevision": "fa521d1e4a0cac365bcec25d53685bc46acba1e9",
-  "sourceTree": "cbe8fd4bd89d33d936c3a94654e54ae8458fc25c",
-  "artifact": "switchboard-fa521d1e4a0cac365bcec25d53685bc46acba1e9.tgz",
-  "sha256": "df6bfbe5dd113a7b8f1236e8ac2c4f30b74374ba7f68b62526524b95575e9495",
-  "integrity": "sha512-dHIR6hAHFK1B6086eFfndQ8HyBfyAGeYw6rErUpoGxx0shvtEcJ5CsymezdJscnOadwFPb7P911QJGy/t6x5eQ==",
+  "sourceRepository": "https://github.com/operatorworks/switchboard",
+  "sourceRevision": "1c0b20fdcd07e08b851011add04649aba6ac3c3d",
+  "sourceTree": "a1f8ba3ba524eca3197d0cbbc3eb5222d2d00de6",
+  "artifact": "switchboard-1c0b20fdcd07e08b851011add04649aba6ac3c3d.tgz",
+  "sha256": "a9a39226abea2a1d8911b0e7bd805f8c264017647fe44aaa6374e7c682d242e6",
+  "integrity": "sha512-aXnABhJ6WzClAsLlSNXK7o1khAUZXXZtqcpunHksYpT2tTAfCbmLkYkyrvtaQPkZ75qT5EC8LNUYxKcRHl6ivQ==",
   "license": "MIT",
-  "notices": ["LICENSE"],
+  "notices": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/codex-APACHE-2.0.txt",
+    "licenses/codex-NOTICE.txt"
+  ],
   "builtFrom": "Switchboard main"
 }

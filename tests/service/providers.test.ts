@@ -202,3 +202,24 @@ test("the Pi coding SDK sends the approved model and stable BirbCrew session hea
   await assert.rejects(run(randomUUID()), /Go preflight did not confirm the approved model/);
   assert.deepEqual(local.calls.slice(count).map((x) => x.url.slice(base.length)), ["/models"]);
 });
+
+test("cursor and opencode live profiles are not cloned into tool profiles", async () => {
+  const cwd = "/tmp/workspace";
+  const document = {
+    cursor: { account: "ACCOUNT LABEL", model: "composer-2", cwd },
+    opencode: { account: "ACCOUNT LABEL", model: "provider/model", cwd, executable: "/tmp/opencode", env: ["OPENCODE_TEST_TOKEN"] },
+  };
+  await assert.rejects(loadLiveProfiles({ BIRBCREW_LIVE_PROFILES: JSON.stringify({ ...document, gemini: {} }) }), /unknown gemini/);
+  const profiles = await loadLiveProfiles({
+    BIRBCREW_LIVE_PROFILES: JSON.stringify(document),
+    BIRBCREW_CURSOR_API_KEY: "cursor-secret",
+    OPENCODE_TEST_TOKEN: "oc-secret",
+  });
+  assert.deepEqual([...profiles.keys()].sort(), ["cursor.v1", "opencode.v1"]);
+  assert.equal(profiles.get("cursor.v1")?.protectedTool, undefined);
+  assert.equal(profiles.get("cursor.v1")?.delegateTask, undefined);
+  assert.equal(profiles.get("opencode.v1")?.humanTool, undefined);
+  assert.equal(profiles.get("cursor.v1")?.cursor?.apiKey, "cursor-secret");
+  assert.deepEqual(profiles.get("opencode.v1")?.opencode?.env, { OPENCODE_TEST_TOKEN: "oc-secret" });
+  await assert.rejects(loadLiveProfiles({ BIRBCREW_LIVE_PROFILES: JSON.stringify({ cursor: document.cursor }) }), /BIRBCREW_CURSOR_API_KEY/);
+});

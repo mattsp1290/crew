@@ -24,9 +24,10 @@ import type { Pool, PoolClient } from "pg";
 import type { z } from "zod";
 import {
   checkpointSchema, claimSchema, commitSchema, conversationKey, executionSchema, initiatorColumns, initiatorFromColumns,
-  MemberStoreError, openSchema, ownerInitiator, requestInitiator, submitSchema, turnRequestSchema,
-  type BeginTurn, type Conversation, type Member, type RequestInitiator, type TurnRequest,
+  engineTraits, isTextEngine, MemberStoreError, textEngines, opencodePromptRejected, openSchema, ownerInitiator, requestInitiator, submitSchema, TextAdmissionError, turnRequestSchema,
+  type BeginTurn, type Conversation, type Engine, type Member, type RequestInitiator, type TurnRequest,
 } from "./domain.ts";
+import { conversationTurnLimit, textConversationTurnLimit } from "./limits.ts";
 
 type SpawnedMember = Member & { subagents: MemberSubagents; instructions?: InstructionsSummary; instructionPacks?: string[];
   capabilities?: CapabilitySet };
@@ -73,6 +74,25 @@ function sameTerms(admission: { prompt_digest: Buffer; approval_deadline_seconds
     && admission.approval_deadline_seconds === (request.approvalDeadlineSeconds ?? null);
 }
 
+const turnBudgetSql = `SELECT turn_limit AS "limit",
+      (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
+       UNION SELECT request_id FROM birbcrew_ts.turns WHERE conversation_id=$1) ids)::integer AS used
+      FROM birbcrew_ts.conversations WHERE conversation_id=$1`;
+
+async function turnBudget(db: Pick<PoolClient, "query">, conversationId: string) {
+  const { rows: [budget] } = await db.query<{ limit: number; used: number }>(turnBudgetSql, [conversationId]);
+  return budget;
+}
+
+/** A request's turn refusal: the turn limit first, then OpenCode's prompt rule. A text engine's refusal
+ * is a TextAdmissionError (its Temporal type leaves the workflow open); a native engine's is input_limit. */
+function turnRefusal(engine: Engine, text: string, turnLimitReached: boolean) {
+  if (!isTextEngine(engine)) return turnLimitReached ? new MemberStoreError("input_limit") : undefined;
+  if (turnLimitReached) return new TextAdmissionError("input_limit");
+  if (engine === "opencode" && opencodePromptRejected(text)) return new TextAdmissionError("prompt_rejected");
+  return undefined;
+}
+
 /** recordAcceptance's checks of a request with no admission row that come before its member's
  * budget, in its order, inside the caller's transaction after it locked the conversation: a turn
  * a legacy submit already started, the conversation's request bound, a handoff's seal or
@@ -85,11 +105,9 @@ async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Co
   if(existingTurn) {
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
-    const {rows:[budget]}=await db.query<{limit:number;used:number}>(`SELECT turn_limit AS "limit",
-      (SELECT count(*) FROM (SELECT request_id FROM birbcrew_ts.request_admissions WHERE conversation_id=$1
-       UNION SELECT request_id FROM birbcrew_ts.turns WHERE conversation_id=$1) ids)::integer AS used
-      FROM birbcrew_ts.conversations WHERE conversation_id=$1`,[key.conversationId]);
-    if(budget.used>=budget.limit)throw new MemberStoreError("input_limit");
+    const budget = await turnBudget(db, key.conversationId);
+    const refusal = turnRefusal(conversation.engine, key.text, budget.used >= budget.limit);
+    if (refusal) throw refusal;
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
   const recorded=handoff??await firingInitiator(db,key,conversation)??attested;
@@ -121,8 +139,10 @@ export async function admittedInitiator(
  * is not a workflow or update argument, so recorded histories replay unchanged.
  * A seal lifts only through a recovery restore, so retrying it only delays the failure the workflow reaches anyway; and a
  * request that reached admission ahead of its target's reserved one must not slip in once that
- * one is admitted. Either refusal fails at once. The workflow does not inspect why an activity
- * failed, and a failure is history data, not a command, so replay is unaffected. */
+ * one is admitted. Either refusal fails at once.
+ * The workflow branches on the non-retryable types input_limit and prompt_rejected
+ * under patched("text-engine-budget-v1"). Those types are history. Keep them stable
+ * for any run that already recorded that marker; a new refusal type needs a new patch id. */
 export function ownerAdmissionActivity(store: MemberStore) {
   return async (request: TurnRequest): Promise<void> => {
     try {
@@ -134,6 +154,7 @@ export function ownerAdmissionActivity(store: MemberStore) {
       // Retrying cannot change a budget refusal within the activity's deadline. MemberClient
       // reads this failure type back as usage_limit_closed.
       if (error instanceof MemberStoreError && error.code === "usage_limit") throw ApplicationFailure.nonRetryable("usage_limit", "usage_limit");
+      if (error instanceof TextAdmissionError) throw ApplicationFailure.nonRetryable(error.failureType, error.failureType);
       throw error;
     }
   };
@@ -160,6 +181,9 @@ export class MemberStore {
     }
   }
 
+  /** Applies every pending migration. Migrations up to 041 never wait for a running native turn;
+   * 042 widens CHECKs on members and conversations, which needs ACCESS EXCLUSIVE, so it waits for
+   * running native turns (bounded, then 55P03 with nothing applied; see 042-text-members.sql). */
   async migrate(): Promise<void> {
     await this.transaction(async (db) => {
       await db.query("SELECT pg_advisory_xact_lock(hashtextextended('birbcrew_ts.migration', 0))");
@@ -167,7 +191,7 @@ export class MemberStore {
       await db.query("CREATE TABLE IF NOT EXISTS birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
       const migrations = [[1, "001-members.sql"], [2, "002-approvals.sql"], [3, "003-native-launches.sql"],
       [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"], [37, "037-named-child-targets.sql"], [38, "038-delegation-control.sql"], [39, "039-decision-receipts.sql"],
-      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"]] as const;
+      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"], [42, "042-text-members.sql"]] as const;
       // Number a new migration above every one already released.
       const { rows: [{ latest }] } = await db.query<{ latest: number | null }>("SELECT max(version) AS latest FROM birbcrew_ts.schema_versions");
       for (const [version, name] of migrations) {
@@ -195,6 +219,9 @@ export class MemberStore {
     const { ownerId, requestId, engine, profile, instructions, instructionPacks = [], capabilities } = spawnRequestSchema.parse(input);
     const requested = hasCapabilities(capabilities) ? capabilities : null;
     return this.transaction(async (db) => {
+      if (!engineTraits[engine].instructions && (instructions !== undefined || instructionPacks.length > 0)) {
+        throw new MemberStoreError("instructions_limit");
+      }
       const { rows: [created] } = await db.query<Member>(
         `INSERT INTO birbcrew_ts.members (owner_id, spawn_request_id, engine, profile)
          VALUES ($1, $2, $3, $4) ON CONFLICT (owner_id, spawn_request_id) DO NOTHING RETURNING ${memberColumns}`,
@@ -257,10 +284,11 @@ export class MemberStore {
   async openWithin(db: PoolClient, input: z.input<typeof openSchema>): Promise<Conversation> {
     const key = openSchema.parse(input);
     const inserted = await db.query(
-      `INSERT INTO birbcrew_ts.conversations (owner_id, member_id, conversation_id)
-       SELECT owner_id, member_id, $3 FROM birbcrew_ts.members WHERE owner_id = $1 AND member_id = $2
+      `INSERT INTO birbcrew_ts.conversations (owner_id, member_id, conversation_id, turn_limit)
+       SELECT owner_id, member_id, $3, CASE WHEN engine = ANY($4::text[]) THEN $5::smallint ELSE $6::smallint END
+         FROM birbcrew_ts.members WHERE owner_id = $1 AND member_id = $2
        ON CONFLICT (conversation_id) DO NOTHING`,
-      [key.ownerId, key.memberId, key.conversationId],
+      [key.ownerId, key.memberId, key.conversationId, [...textEngines], textConversationTurnLimit, conversationTurnLimit],
     );
     const conversation = await conversationFor(db, key, false);
     if (conversation.memberId !== key.memberId) throw new MemberStoreError("conflict");
@@ -292,20 +320,27 @@ export class MemberStore {
   }
 
   /** recordAcceptance's refusals of a new request, checked before MemberClient sends any workflow
-   * update: the same refusal inside the workflow's admission activity fails the whole conversation.
+   * update. The same refusal inside the workflow's admission activity fails the whole conversation,
+   * except a text engine's input_limit or prompt_rejected (TextAdmissionError), which leaves it open.
    * recordAcceptance repeats them under the conversation's lock. The member's budget comes last,
    * so a request refused for another reason records no budget refusal. A handoff's reserved
    * request met its target's budget when the handoff committed (handoffs.ts) and is never
    * refused by it afterwards: a refusal then would strand a sealed source. */
   async checkAdmission(input: z.input<typeof turnRequestSchema>): Promise<void> {
     const key = turnRequestSchema.parse(input);
-    await conversationFor(this.pool, key, false);
+    const conversation = await conversationFor(this.pool, key, false);
     if (await this.requestAdmission(key) !== undefined) return;
     const turn = await this.pool.query("SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",
       [key.conversationId, key.requestId]);
     if (turn.rowCount) return;
     if ((await handoffAdmission(this.pool, key))?.kind === "handoff") return;
     submitSchema.parse(key);
+    // Native engines' turn limit is enforced by recordAcceptance; only text engines pay for the count here.
+    if (isTextEngine(conversation.engine)) {
+      const counted = await turnBudget(this.pool, key.conversationId);
+      const refusal = turnRefusal(conversation.engine, key.text, counted.used >= counted.limit);
+      if (refusal) throw refusal;
+    }
     if (!await budgetApplies(this.pool, key)) return;
     // The lock waits for an admission, turn start or handoff that holds the conversation, and
     // recordAcceptance's earlier checks run again under it, so a request refused under the budget
@@ -509,11 +544,13 @@ export class MemberStore {
       if (conversation.engine === "codex") await interruptLiveLocked(db, key);
       const stopped = await db.query(`SELECT 1 FROM birbcrew_ts.tool_cancellations WHERE conversation_id=$1 AND request_id=$2
         AND NOT EXISTS (SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2 AND NOT stopped)`,
-        [key.conversationId,key.requestId]);
-      await publishObservation(db, key.conversationId, { kind: stopped.rowCount ? "stopped" : "failed", requestId:key.requestId });
+        [key.conversationId, key.requestId]);
+      const confirmedStop = Boolean(stopped.rowCount);
+      await publishObservation(db, key.conversationId, { kind: confirmedStop ? "stopped" : "failed", requestId:key.requestId });
       // recovery_closed above makes this uncertain outcome final; the "recover" return is not.
       await appendAudit(db, { type: "request.finished", ownerId: key.ownerId, memberId: conversation.memberId,
         conversationId: key.conversationId, requestId: key.requestId, payload: { status: "uncertain" } });
+      if (isTextEngine(conversation.engine)) return confirmedStop ? { kind: "stopped" as const } : { kind: "failed" as const };
       return null;
     });
   }

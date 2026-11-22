@@ -4,7 +4,7 @@ import {
 } from "@temporalio/workflow";
 import { workflowGenerationTurnLimit, historyRequiresRollover } from "./limits.ts";
 import { acceptsChoice } from "./deferral.ts";
-import { turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
+import { isTextEngine, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
 import type { Approval, Decision, Choice } from "./approvals.ts";
 import type { ChildKey, ChildStore } from "./children.ts";
 import { childTarget } from "./child-target.ts";
@@ -12,6 +12,7 @@ import type { expiryActivity, MemberActivities, Resume } from "./activities.ts";
 
 import type { MemberStore, ownerAdmissionActivity } from "./store.ts";
 import { activityQueue, memberTaskQueue } from "./queues.ts";
+import { textAdmissionFailure } from "./failure-type.ts";
 
 export const submitTurn = defineUpdate<string, [TurnRequest]>("submitTurn");
 export const acceptTurn = defineUpdate<string, [TurnRequest]>("acceptTurn");
@@ -85,7 +86,13 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   const { quarantineDelegation } = proxyActivities<Pick<ChildStore, "quarantineDelegation">>({
     taskQueue: memberTaskQueue, startToCloseTimeout: "15 seconds",
   });
-  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string> }>();
+  // sparesConversation marks a rejected turn that must not mark the conversation failed. Exactly two
+  // places set it. segment() sets it for a reaped text-engine stop ({kind:"stopped"}); that path also
+  // sets `cancelled`, so the run completes rather than failing. The admission catch sets it for a text
+  // engine's input_limit or prompt_rejected refusal under patched("text-engine-budget-v1"); that run
+  // stays running. The `previous` rejection handler reads it. It stays a flag rather than a new failure
+  // type so update failure payloads already recorded in histories keep replaying unchanged.
+  const turns = new Map<string, { text: string; deadline?: number; durable: boolean; admission: Promise<void>; result: Promise<string>; sparesConversation: boolean }>();
   let previous = Promise.resolve();
   let failed = false;
   let cancelled = false;
@@ -193,6 +200,13 @@ export async function memberConversation(conversation: Conversation): Promise<vo
         }
         const final = await CancellationScope.nonCancellable(() => reconcileTurn(request, run, false, false));
         if (final?.kind === "pending" || final?.kind === "complete") return final;
+      } else if (result && result.kind === "stopped") {
+        cancelled = true;
+        const current = turns.get(request.requestId);
+        if (current) current.sparesConversation = true;
+        throw ApplicationFailure.nonRetryable("Text turn stopped", "text_stopped");
+      } else if (result && result.kind === "failed") {
+        throw ApplicationFailure.nonRetryable("Text turn failed", "text_failed");
       } else if (result) {
         return result;
       }
@@ -307,11 +321,21 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     // execution; if an earlier turn prevents it from running, persist that outcome too.
     const admission = durable ? persistAdmission(request) : Promise.resolve();
     void admission.catch(() => {}); // Also observed by the queued runner and admission handler.
-    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string> };
+    const entry = { text: request.text, deadline: request.approvalDeadlineSeconds, durable, admission, result: undefined! as Promise<string>, sparesConversation: false };
     inFlight++;
     const result = previous.then(async () => {
       try { await entry.admission; }
       catch (error) {
+        // A text-engine admission activity reports input_limit or prompt_rejected when the turn
+        // did not start. Fail this update and leave the committed turn's workflow open.
+        // Older histories stay on the retryable path.
+        const refused = textAdmissionFailure(error) !== undefined;
+        if (isTextEngine(conversation.engine) && refused && patched("text-engine-budget-v1")) {
+          entry.sparesConversation = true;
+          await rejectUnstartedAdmission(request);
+          turns.delete(request.requestId);
+          throw error;
+        }
         // The SQL admission may have committed even if Temporal lost every ack.
         // Persist a no-execution outcome before closing whenever storage is available.
         if (patched("recover-admission-ack-v1")) await rejectUnstartedAdmission(request);
@@ -325,7 +349,10 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     });
     entry.result = result;
     turns.set(request.requestId, entry);
-    previous = result.then(() => { inFlight--; }, () => { inFlight--; failed = true; });
+    previous = result.then(() => { inFlight--; }, () => {
+      inFlight--;
+      if (!entry.sparesConversation) failed = true;
+    });
     return entry;
   }
   setHandler(submitTurn, value => enqueue(value).result, { validator: validate });

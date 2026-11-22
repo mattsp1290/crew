@@ -1,14 +1,14 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { ChildNativeStopUnconfirmed, ChildStore } from "./children.ts";
-import { commitSchema, engineSchema, spawnSchema } from "./domain.ts";
+import { childEngineSchema, commitSchema, spawnSchema } from "./domain.ts";
 import { transaction } from "./transaction.ts";
 
 const revision = z.string().max(19).regex(/^(0|[1-9][0-9]*)$/).refine(value => (value.length < 19 || value <= "9223372036854775807"));
 const privateText = (bytes: number) => z.string().min(1).refine(value => value.isWellFormed() && !value.includes("\0") && Buffer.byteLength(value) <= bytes);
 export const controlScopeSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("global") }),
-  z.strictObject({ kind: z.literal("target"), engine: engineSchema, profile: privateText(128) }),
+  z.strictObject({ kind: z.literal("target"), engine: childEngineSchema, profile: privateText(128) }),
 ]);
 export const controlCommandSchema = z.strictObject({ commandId: z.uuid(), expectedRevision: revision,
   scope: controlScopeSchema, enabled: z.boolean(), actor: privateText(256), reason: privateText(1024) });

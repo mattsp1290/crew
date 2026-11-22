@@ -1,6 +1,6 @@
 # Crew
 
-Crew runs durable Claude, Codex and Pi coding coworkers through their TypeScript SDKs. Temporal orders turns and human decisions. PostgreSQL stores the conversation and its AG-UI history. The original Python proof remains available.
+Crew runs durable Claude, Codex, Pi, Cursor SDK, and OpenCode ACP coding coworkers through their TypeScript SDKs. Temporal orders turns and human decisions. PostgreSQL stores the conversation and its AG-UI history. The original Python proof remains available.
 
 ## Repository name and compatibility
 
@@ -55,7 +55,7 @@ Codex Responses and Pi Chat Completions routes, request-scoped credential renewa
 and offline/live validation instructions. Run `npm run test:proxy` after building
 the native launcher; the tests require Linux Landlock support.
 
-### Run durable Claude, Codex and Pi members
+### Run durable Claude, Codex, Pi, Cursor SDK, and OpenCode ACP members
 
 A member's SDK and execution profile are fixed at spawn. The TypeScript worker
 uses Temporal to order turns and PostgreSQL to store the member, each

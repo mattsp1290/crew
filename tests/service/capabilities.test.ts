@@ -16,6 +16,7 @@ import { registerProfiles } from "../../src/service/deployment.ts";
 import { createGateway } from "../../src/service/gateway.ts";
 import { canonicalHost, hostMatches, hostPatternSchema } from "../../src/service/hosts.ts";
 import { withNativeAdmission } from "../../src/service/native-admission.ts";
+import { migrateThrough } from "./database-fixtures.ts";
 import type { MemberProfile } from "../../src/service/profiles.ts";
 import { createProxyProfile, usesRelayCredential } from "../../src/service/proxy-profiles.ts";
 import { InstallationRecovery, readRecoveryManifest, type RecoveryHooks, type RecoveryPins } from "../../src/service/recovery.ts";
@@ -614,7 +615,8 @@ test("migration 40 upgrades a v39 database without rewriting a table or waiting 
   }
 
   await withNativeAdmission(upgraded, { ...running, token: start.token, execution }, AbortSignal.timeout(30_000), async () => {
-    const migrated = await Promise.race([current.migrate().then(() => true), delay(5_000, false)]);
+    // Through 41: 042 waits for running native turns by design (text-member-contract.test.ts).
+    const migrated = await Promise.race([migrateThrough(current, 41).then(() => true), delay(5_000, false)]);
     assert.equal(migrated, true, "migration 40 must not wait for a running native turn");
     await current.appendText({ ownerId, conversationId, requestId: running.requestId, token: start.token },
       running.requestId + "/assistant", 0, "still running");

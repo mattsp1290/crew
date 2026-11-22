@@ -2,12 +2,54 @@ import type { ChildOutcome } from "@birbcrew/pi-subagents";
 import type { ChildKey } from "./children.ts";
 import type { Approval } from "./approvals.ts";
 import { z } from "zod";
+import type { TextAdmissionFailureType } from "./failure-type.ts";
 
-import { engineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
+import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
   createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema,
   requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
-export { engineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
+export { engineSchema, childEngineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
+export type ChildEngine = z.infer<typeof childEngineSchema>;
+/** The one-turn text members. Adding an engine here classifies it everywhere: the text protocol
+ * (isTextEngine), every capability gate (engineTraits), and the turn limit a conversation opens with. */
+export const textEngines = ["cursor", "opencode"] as const;
+export type TextEngine = (typeof textEngines)[number];
+export function isTextEngine(engine: Engine): engine is TextEngine {
+  return (textEngines as readonly string[]).includes(engine);
+}
+/** What each engine supports beyond a plain turn, derived from isTextEngine. Gates read the trait they
+ * mean, so each says why it refuses; today every trait is "not a text engine". */
+export interface EngineTraits {
+  /** Hands a conversation to, or receives one from, another member. */
+  readonly handoff: boolean;
+  /** Runs trusted context and trusted native execution. */
+  readonly trustedContext: boolean;
+  /** Takes member memories, fixed context, and notes. */
+  readonly memories: boolean;
+  /** Takes member instructions and instruction packs at spawn. */
+  readonly instructions: boolean;
+  /** Reports token usage that is recorded against prices. */
+  readonly meteredUsage: boolean;
+}
+function traitsOf(engine: Engine): EngineTraits {
+  const native = !isTextEngine(engine);
+  return { handoff: native, trustedContext: native, memories: native, instructions: native, meteredUsage: native };
+}
+export const engineTraits = Object.fromEntries(engineSchema.options.map((engine) => [engine, traitsOf(engine)])) as Readonly<Record<Engine, EngineTraits>>;
+/** True when `value` holds a C0 control (0-31), or a C1 control or DEL (127-159) unless `c1` is false,
+ * other than the characters in `allow`. */
+export function hasControlCharacter(value: string, { c1 = true, allow = "" }: { c1?: boolean; allow?: string } = {}): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if ((code <= 31 || (c1 && code >= 127 && code <= 159)) && !allow.includes(value[index])) return true;
+  }
+  return false;
+}
+/** OpenCode refuses a slash command, including one later in the prompt, and C0/C1 controls other than tab, LF, and CR. */
+export function opencodePromptRejected(text: string): boolean {
+  if (text.split(/\r\n|\n|\r/).some((line) => line.trimStart().startsWith("/"))) return true;
+  return hasControlCharacter(text, { allow: "\t\n\r" });
+}
 const ownerId = boundedText(256);
 const uuid = requestIdentitySchema.shape.requestId;
 export const spawnSchema = createMemberSchema.extend({ ownerId });
@@ -73,5 +115,15 @@ export class MemberStoreError extends Error {
     super(code);
     this.name = "MemberStoreError";
     this.code = code;
+  }
+}
+
+/** A text-engine admission refusal. The argument is the non-retryable Temporal type. */
+export class TextAdmissionError extends MemberStoreError {
+  readonly failureType: TextAdmissionFailureType;
+  constructor(failureType: TextAdmissionFailureType) {
+    super(failureType === "input_limit" ? "input_limit" : "conflict");
+    this.name = "TextAdmissionError";
+    this.failureType = failureType;
   }
 }
