@@ -78,3 +78,5 @@ tool calls and results carry the same `subagentRunId` until it finishes.
 Connecting during a sibling’s approval restores open child scopes and any
 partial text before further deltas arrive. Cancelling the parent closes active
 children and publishes a cancelled result for pending work items.
+
+Text profiles can configure `requestTextBytes`. See [request text limits](request-text-limits.md) for configuration, discovery, and qualification.

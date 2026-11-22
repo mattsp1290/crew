@@ -146,3 +146,10 @@ if (edge !== null && edge.firstRequestAdmitted) {
 The handoff command's `requestId` and the reserved target's `firstRequestId` identify separate roles. The server chooses the reserved ID. `CreateHandoff`, `HandoffRecord`, `CreateHandoffResponse`, `ConversationHandoff`, `HandoffsCapability` and `HandoffsCapabilityV1` are schema-derived exports at the root and `/contract` entry points. `HandoffCommandIdentity` is exported at the root. The `/contract` entry point also exports the shared schemas.
 
 `capabilities().handoffs` is optional. Use `/contract`'s `handoffsCapabilityV1Schema.safeParse(metadata)` to recognize supported version 1 routes, delivery and transcript limits. Absent metadata or an unknown positive version leaves handoffs unsupported for feature discovery. Unknown versions remain opaque metadata. Malformed advertised version 1 metadata fails validation. Capability discovery is an explicit application call.
+
+Text-member listings optionally carry `requestTextBytes`. Assume 16,384 bytes
+when absent (including old servers and spawn responses). Submit validation
+preserves exact well-formed text; the server enforces each immutable profile
+limit, up to 65,536 UTF-8 bytes, and the independent 128 KiB raw JSON cap.
+See [request text limits](../../docs/request-text-limits.md) for error precedence
+and the new-profile/new-member adoption procedure.

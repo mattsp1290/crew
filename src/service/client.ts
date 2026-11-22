@@ -1,6 +1,6 @@
 import { ApprovalStore, decisionSchema } from "./approvals.ts";
 import { ApplicationFailure, Client, WorkflowExecutionAlreadyStartedError, WorkflowNotFoundError, WorkflowUpdateFailedError } from "@temporalio/client";
-import { MemberStoreError, openSchema, TextAdmissionError, turnRequestSchema, conversationKey, turnKey, type Conversation, type TurnRequest } from "./domain.ts";
+import { isTextEngine, memberSubmitEnvelopeSchema, MemberStoreError, openSchema, TextAdmissionError, turnRequestSchema, conversationKey, turnKey, type Conversation, type TurnRequest } from "./domain.ts";
 import type { MemberStore } from "./store.ts";
 import type { memberConversation } from "./workflow.ts";
 
@@ -39,7 +39,7 @@ export class MemberClient {
   }
 
   private async throughRollover<T>(conversation: Conversation, request: TurnRequest,
-    action: (handle: Awaited<ReturnType<MemberClient["workflow"]>>) => Promise<T>): Promise<T> {
+    action: (handle: Awaited<ReturnType<MemberClient["workflow"]>>, validated: TurnRequest) => Promise<T>): Promise<T> {
     // Rejected updates were not accepted and are safe to resubmit. Never retry arbitrary
     // failures or an accepted update whose result is uncertain.
     const deadline = Date.now() + 30_000;
@@ -48,8 +48,8 @@ export class MemberClient {
         // Before every attempt and any workflow call: a handoff can seal the source, or the
         // member's budget run out, while a rollover holds this request back, and admission
         // refusing it would fail the conversation.
-        await this.store.checkAdmission(request);
-        return await action(await this.workflow(conversation));
+        const validated = await this.store.checkAdmission(request);
+        return await action(await this.workflow(conversation), validated);
       }
       catch (error) {
         // A text-engine admission refusal; the workflow keeps that run open.
@@ -134,12 +134,13 @@ export class MemberClient {
 
   async accept(input: unknown, deadline?: number): Promise<{ requestId: string }> {
     if (deadline !== undefined) return this.temporal.connection.withDeadline(deadline, () => this.accept(input));
-    const request = turnRequestSchema.parse(input);
-    const conversation = await this.store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
+    const envelope = memberSubmitEnvelopeSchema.parse(input);
+    const conversation = await this.store.getConversation({ ownerId: envelope.ownerId, conversationId: envelope.conversationId });
+    const request = isTextEngine(conversation.engine) ? await this.store.checkAdmission(envelope) : turnRequestSchema.parse(envelope);
     await this.reconcileAcceptance(request);
     if (await this.store.committedReply(request) === undefined) {
       try {
-        await this.throughRollover(conversation, request, handle => handle.executeUpdate<string, [typeof request]>("acceptTurn", { args: [request] }));
+        await this.throughRollover(conversation, request, (handle, validated) => handle.executeUpdate<string, [typeof validated]>("acceptTurn", { args: [validated] }));
       } catch (error) {
         // usage_limit still closes the member workflow.
         if (hasFailureType(error, "usage_limit")) throw new MemberStoreError("usage_limit_closed");
@@ -151,13 +152,14 @@ export class MemberClient {
   }
 
   async submit(input: unknown): Promise<string> {
-    const request = turnRequestSchema.parse(input);
-    const conversation = await this.store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
+    const envelope = memberSubmitEnvelopeSchema.parse(input);
+    const conversation = await this.store.getConversation({ ownerId: envelope.ownerId, conversationId: envelope.conversationId });
+    const request = isTextEngine(conversation.engine) ? await this.store.checkAdmission(envelope) : turnRequestSchema.parse(envelope);
     await this.reconcileAcceptance(request);
     const reply = await this.store.committedReply(request);
     if (reply !== undefined) return reply;
     try {
-      return await this.throughRollover(conversation, request, handle => handle.executeUpdate<string, [typeof request]>("submitTurn", { args: [request] }));
+      return await this.throughRollover(conversation, request, (handle, validated) => handle.executeUpdate<string, [typeof validated]>("submitTurn", { args: [validated] }));
     } catch (error) {
       // usage_limit still closes the member workflow.
       if (hasFailureType(error, "usage_limit")) throw new MemberStoreError("usage_limit_closed");
