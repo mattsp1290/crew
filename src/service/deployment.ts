@@ -1,7 +1,7 @@
 import { textStateLocation } from "./text-state-location.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { Pool } from "pg";
 import { z } from "zod";
 import type { MemberProfile } from "./profiles.ts";
@@ -9,7 +9,9 @@ import { capabilitySchema, hasCapabilities, includesShell, type CapabilitySet } 
 import { configuredDestination } from "./provider-identity.ts";
 import { childConsentSchema, childRoleSchema, childTargetSchema, holdsChildTools, sameDestination, type ProfileTargetSeal } from "./child-target.ts";
 import { fixedRoles } from "@birbcrew/pi-subagents";
-import { childEngineSchema, engineSchema, hasControlCharacter, type Engine, spawnSchema } from "./domain.ts";
+import { childEngineSchema, engineSchema, textEngines, type Engine, spawnSchema } from "./domain.ts";
+import { promptBytes, requestTextBytesSchema } from "@birbcrew/client/contract";
+import { cursorProfileSchema, opencodeProfileSchema } from "./text-profile-validation.ts";
 import { usesRelayCredential } from "./proxy-profiles.ts";
 
 async function nativeVolume(directory: string) {
@@ -44,46 +46,24 @@ function profileCeiling(name: string, entry: MemberProfile): CapabilitySet | nul
   return ceiling;
 }
 
-const identifierLimit = 1024;
-
-function callerModelId(value: string) {
-  return value.trim() === value && value.length > 0 && value.length <= 256 && !/\p{Cs}/u.test(value) && !hasControlCharacter(value);
-}
-function apiKeyText(value: string) {
-  return value.trim() === value && value.length > 0 && value.length <= 512 && !hasControlCharacter(value, { c1: false });
-}
-function identifier(value: string) {
-  return value.trim().length > 0 && value.length <= identifierLimit && !hasControlCharacter(value);
-}
-function resolvedPath(value: string) {
-  return isAbsolute(value) && resolve(value) === value;
-}
-function invalid(name: string, field: string): never {
-  throw new Error(`Profile ${JSON.stringify(name)} field ${field} is invalid`);
-}
-
 /** Rejects a cursor or opencode profile that cannot be spawned, before a member row exists. */
 function assertTextProfile(name: string, entry: MemberProfile) {
-  if (!entry.cursor && !entry.opencode) return;
+  const hasText = textEngines.some(engine => entry[engine]);
+  if (entry.requestTextBytes !== undefined) {
+    if (!hasText || !requestTextBytesSchema.safeParse(entry.requestTextBytes).success) {
+      throw new Error(`Profile ${JSON.stringify(name)} field requestTextBytes is invalid`);
+    }
+  }
+  if (!hasText) return;
   for (const field of ["pi", "claude", "codex", "childTargets", "capabilities", "protectedTool", "humanTool", "delegateTask"] as const) {
     if (entry[field] !== undefined) throw new Error(`Profile ${JSON.stringify(name)} refuses ${field}`);
   }
-  const cursor = entry.cursor;
-  if (cursor) {
-    if (!callerModelId(cursor.model)) invalid(name, "cursor.model");
-    if (!apiKeyText(cursor.apiKey)) invalid(name, "cursor.apiKey");
-    if (!resolvedPath(cursor.cwd) || !identifier(cursor.cwd)) invalid(name, "cursor.cwd");
-  }
-  const opencode = entry.opencode;
-  if (opencode) {
-    if (!callerModelId(opencode.model)) invalid(name, "opencode.model");
-    if (!resolvedPath(opencode.executable) || !identifier(opencode.executable)) invalid(name, "opencode.executable");
-    if (!resolvedPath(opencode.cwd) || !identifier(opencode.cwd)) invalid(name, "opencode.cwd");
-    if (!identifier(opencode.account)) invalid(name, "opencode.account");
-    if (opencode.env === null || typeof opencode.env !== "object" || Array.isArray(opencode.env)) invalid(name, "opencode.env");
-    const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
-    for (const [key, value] of Object.entries(opencode.env)) {
-      if (!envName.test(key) || typeof value !== "string" || hasControlCharacter(value, { c1: false })) invalid(name, "opencode.env");
+  for (const [engine, schema] of [["cursor", cursorProfileSchema], ["opencode", opencodeProfileSchema]] as const) {
+    if (!entry[engine]) continue;
+    const parsed = schema.safeParse(entry[engine]);
+    if (!parsed.success) {
+      const field = parsed.error.issues[0]?.path[0];
+      throw new Error(`Profile ${JSON.stringify(name)} field ${engine}${field === undefined ? "" : "." + String(field)} is invalid`);
     }
   }
 }
@@ -145,16 +125,16 @@ export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, M
         if (!entry[engine]) continue;
         const ceiling = ceilings.get(name);
         const key = [name, engine, digest, volumes[engine], entry.protectedTool ?? null, engine === "pi" && entry.delegateTask === true, entry.humanTool ?? null,
-          ceiling ? JSON.stringify(ceiling) : null];
+          ceiling ? JSON.stringify(ceiling) : null, entry.requestTextBytes ?? promptBytes];
         const declaration = declarations.get(JSON.stringify([engine, name]));
         const initial = declaration ?? { mode: "legacy" };
-        await db.query(`INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,volume,protected_tool,delegate_task,human_tool,capabilities,child_target_seal,child_target_active)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+        await db.query(`INSERT INTO birbcrew_ts.profiles (name,engine,account_digest,volume,protected_tool,delegate_task,human_tool,capabilities,request_text_bytes,child_target_seal,child_target_active)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`,
           [...key, JSON.stringify(initial), declaration?.mode === "named" ? Object.keys(declaration.roles) : []]);
         const match = await db.query(`SELECT 1 FROM birbcrew_ts.profiles WHERE name=$1 AND engine=$2
                          AND account_digest=$3 AND volume IS NOT DISTINCT FROM $4::uuid AND protected_tool IS NOT DISTINCT FROM $5::text AND delegate_task=$6 AND human_tool IS NOT DISTINCT FROM $7::text
-                         AND capabilities IS NOT DISTINCT FROM $8::jsonb`, key);
-        if (!match.rowCount) throw new Error("Profile registered for another account or native state volume, or with different tools or capabilities");
+                         AND capabilities IS NOT DISTINCT FROM $8::jsonb AND request_text_bytes=$9`, key);
+        if (!match.rowCount) throw new Error(`Profile ${JSON.stringify(name)} registered for another account or native state volume, or with different tools or capabilities or requestTextBytes; use a new profile name in a trusted module`);
         if (declaration?.mode === "named") {
           const { rows: [row] } = await db.query<{ child_target_seal: unknown; child_target_active: string[] }>(
             "SELECT child_target_seal,child_target_active FROM birbcrew_ts.profiles WHERE name=$1 AND engine=$2", [name, engine]);

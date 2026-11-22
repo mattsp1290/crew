@@ -8,9 +8,9 @@ import {
   textStopProofs,
 } from "./content-erasure-store.ts";
 import {
-  assertTextRoot,
+  assertTextVolumeRoot,
   rootAbsent,
-  textStateLocation,
+  pinTextStateLocation,
 } from "./text-state-location.ts";
 import { removePrivateDurably } from "./private-directory.ts";
 import type { MemberStore } from "./store.ts";
@@ -83,40 +83,42 @@ export function textLocationCleanupActivity(
   return async function cleanTextLocation(input: ErasureKey) {
     try {
       const key = erasureKeySchema.parse(input);
-      const marker = await textStateLocation(stateDir, engine);
-      if (marker.locationId !== locationId)
-        throw new Error("content_location_unknown");
-      const row = await contentErasureState(store.pool, key);
-      if (
-        row.content_erasure_id !== key.erasureId ||
-        !isTextEngine(row.engine) ||
-        row.engine !== engine
-      )
-        throw new Error("Invalid cleanup assignment");
-      const {
-        rows: [assignment],
-      } = await store.pool.query<{ cleaned_at: Date | null }>(
-        "SELECT cleaned_at FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=$1 AND erasure_id=$2 AND location_id=$3",
-        [key.conversationId, key.erasureId, locationId],
-      );
-      if (!assignment) throw new Error("Invalid cleanup assignment");
-      if (assignment.cleaned_at || row.erased_at) return;
-      await textStopProofs(store.pool, key);
-      const root = await assertTextRoot(stateDir, row, engine);
+      const marker = await pinTextStateLocation(stateDir, engine);
       try {
-        await removePrivateDurably(root);
-        if (!(await rootAbsent(root))) throw new Error();
-      } catch {
-        throw new Error("content_cleanup_failed");
-      }
-      await store.transaction(async (db) => {
-        await contentErasureState(db, key, true);
-        await textStopProofs(db, key);
-        await db.query(
-          "UPDATE birbcrew_ts.conversation_content_cleanup SET cleaned_at=clock_timestamp() WHERE conversation_id=$1 AND erasure_id=$2 AND location_id=$3 AND cleaned_at IS NULL",
+        if (marker.locationId !== locationId)
+          throw new Error("content_location_unknown");
+        const row = await contentErasureState(store.pool, key);
+        if (
+          row.content_erasure_id !== key.erasureId ||
+          !isTextEngine(row.engine) ||
+          row.engine !== engine
+        )
+          throw new Error("Invalid cleanup assignment");
+        const {
+          rows: [assignment],
+        } = await store.pool.query<{ cleaned_at: Date | null }>(
+          "SELECT cleaned_at FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=$1 AND erasure_id=$2 AND location_id=$3",
           [key.conversationId, key.erasureId, locationId],
         );
-      });
+        if (!assignment) throw new Error("Invalid cleanup assignment");
+        if (assignment.cleaned_at || row.erased_at) return;
+        await textStopProofs(store.pool, key);
+        const root = await assertTextVolumeRoot(marker.directory, row, engine);
+        try {
+          await removePrivateDurably(root);
+          if (!(await rootAbsent(root))) throw new Error();
+        } catch {
+          throw new Error("content_cleanup_failed");
+        }
+        await store.transaction(async (db) => {
+          await contentErasureState(db, key, true);
+          await textStopProofs(db, key);
+          await db.query(
+            "UPDATE birbcrew_ts.conversation_content_cleanup SET cleaned_at=clock_timestamp() WHERE conversation_id=$1 AND erasure_id=$2 AND location_id=$3 AND cleaned_at IS NULL",
+            [key.conversationId, key.erasureId, locationId],
+          );
+        });
+      } finally { await marker.close(); }
     } catch {
       throw new Error("content_cleanup_failed");
     }

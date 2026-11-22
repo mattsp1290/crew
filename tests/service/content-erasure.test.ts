@@ -13,7 +13,7 @@ import {
   requestReceiptResponseSchema,
 } from "@birbcrew/client/contract";
 import { MemberStore } from "../../src/service/store.ts";
-import { ownerInitiator } from "../../src/service/domain.ts";
+import { ownerInitiator, turnKey, memberSubmitEnvelopeSchema } from "../../src/service/domain.ts";
 import {
   beginContentErasure,
   contentErasureState,
@@ -288,7 +288,7 @@ test("stale REPEATABLE READ insertion aborts after the authoritative tuple chang
     stale.release();
   }
 });
-test("pending fence, finalization rollback, immutable tombstone and SQL resurrection refusal", async () => {
+test("pending fence, finalization rollback, immutable tombstone and SQL resurrection refusal", async (t) => {
   const { key, request } = await fixture();
   await pool.query(
     "INSERT INTO birbcrew_ts.public_snapshots(conversation_id,state,messages,open_text,open_tools,child_open_text) VALUES($1,$2,$3,$4,$5,$6)",
@@ -333,6 +333,21 @@ test("pending fence, finalization rollback, immutable tombstone and SQL resurrec
     await assert.rejects(pool.query(sql, [key.conversationId]), {
       code: "23514",
     });
+  }
+  const token = randomUUID(), gateway = createGateway(store, new MemberClient(store, new Client()), { [createHash("sha256").update(token).digest("hex")]: key.ownerId });
+  t.after(async () => { gateway.closeAllConnections(); gateway.close(); await gateway.stopped(); });
+  gateway.listen(0, "127.0.0.1"); await once(gateway, "listening");
+  const address = gateway.address(); assert.ok(address && typeof address !== "string");
+  const endpoint = `http://127.0.0.1:${address.port}`, headers = { Authorization: "Bearer " + token, "Content-Type": "application/json" };
+  for (const prefix of ["", "/v1"]) {
+    for (const suffix of ["", `/requests/${request.requestId}`]) {
+      const response = await fetch(`${endpoint}${prefix}/conversations/${key.conversationId}${suffix}`, { headers });
+      assert.equal(response.status, 503); assert.deepEqual(await response.json(), { error: "content_erasure_pending" });
+    }
+  }
+  for (const text of [request.text, "changed", "x".repeat(65537)]) {
+    const response = await fetch(`${endpoint}/v1/conversations/${key.conversationId}/requests`, { method: "POST", headers, body: JSON.stringify({ requestId: request.requestId, text }) });
+    assert.equal(response.status, 410); assert.deepEqual(await response.json(), { error: "conversation_erased" });
   }
   // Inject a transaction-local failing audit append, proving all scrub writes roll back with it.
   const broken = new MemberStore(pool);
@@ -494,6 +509,29 @@ test("completed turns erase atomically only after independent stop proofs, retai
   const cancellation = await cancelApi.cancel({ ...key, requestId });
   assert.equal(cancellation.status, "completed");
   assert.deepEqual(await cancelApi.cancel({ ...key, requestId }), cancellation);
+  for (const operation of ["accept", "submit"] as const) {
+    const { ApplicationFailure, WorkflowUpdateFailedError } = await import("@temporalio/client");
+    const closing = new MemberStore(pool);
+    let reads = 0;
+    closing.committedReply = async input => ++reads === 1 ? undefined : store.committedReply(input);
+    const temporal = { options: { namespace: "default" }, workflow: { getHandle: () => ({ executeUpdate: async () => {
+      throw new WorkflowUpdateFailedError("closing", ApplicationFailure.nonRetryable("closing", "conversation_open"));
+    } }) } } as unknown as Client;
+    const client = new MemberClient(closing, temporal);
+    if (operation === "submit") assert.equal(await client.submit(request), marker);
+    else assert.deepEqual(await client.accept(request), { requestId });
+  }
+  for (const operation of ["accept", "submit"] as const) {
+    const { WorkflowNotFoundError } = await import("@temporalio/client");
+    const closing = new MemberStore(pool); let checks = 0;
+    closing.checkAdmission = async input => ++checks < 3 ? memberSubmitEnvelopeSchema.parse(input) : store.checkAdmission(input);
+    closing.requestAdmission = async () => undefined;
+    const temporal = { options: { namespace: "default" }, workflow: { getHandle: () => ({ executeUpdate: async () => {
+      throw new WorkflowNotFoundError("closed", "fixture", undefined);
+    } }) } } as unknown as Client;
+    const late = { ...request, requestId: randomUUID() };
+    await assert.rejects(new MemberClient(closing, temporal)[operation](late), { code: "input_limit" });
+  }
   let releaseReplay!: () => void, reachedReplay!: () => void;
   const pausedReplay = new Promise<void>((r) => {
       releaseReplay = r;
@@ -508,7 +546,7 @@ test("completed turns erase atomically only after independent stop proofs, retai
     await pausedReplay;
     return value;
   };
-  const replay = assert.rejects(replayStore.committedReply(request), {
+  const replay = assert.rejects(new MemberClient(replayStore, new Client()).submit(request), {
     code: "conversation_erased",
   });
   await preparedReplay;
@@ -653,7 +691,7 @@ test("two real gateways discard a prepared JSON snapshot after DELETE commits on
   assert.equal(raw.includes(request.text), false);
   assert.equal(JSON.parse(raw).erased, true);
 });
-test("043 upgrades retained native/text data from 042, is idempotent, and protects every new recovery table", async (t) => {
+test("044 upgrades retained native/text data from 043, is idempotent, and protects every new recovery table", async (t) => {
   const { testDatabaseName } = await import("./database-fixtures.ts");
   const { readFile, readdir } = await import("node:fs/promises");
   const name = testDatabaseName("erasure_upgrade_");
@@ -671,7 +709,7 @@ test("043 upgrades retained native/text data from 042, is idempotent, and protec
   const sql = new URL("../../src/service/sql/", import.meta.url);
   for (const file of (await readdir(sql)).sort()) {
     const version = Number(file.slice(0, 3));
-    if (version > 42) continue;
+    if (version > 43) continue;
     await upgraded.query(await readFile(new URL(file, sql), "utf8"));
     await upgraded.query("INSERT INTO birbcrew_ts.schema_versions VALUES($1)", [
       version,
@@ -718,7 +756,7 @@ test("043 upgrades retained native/text data from 042, is idempotent, and protec
     assert.equal(
       (
         await upgraded.query(
-          "SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=43",
+          "SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=44",
         )
       ).rowCount,
       0,
@@ -1607,3 +1645,330 @@ test(
     assert.ok(raw.includes("MEMBER_FAILED"));
   },
 );
+
+test("a lost COMMIT acknowledgement abandons its frame and releases the live owner's durable ticket", async () => {
+  const { key } = await fixture();
+  await seal(key);
+  const transient = new Pool({ connectionString: database });
+  let loseCommit = true, emitted = 0;
+  transient.on("connect", (db) => {
+    const original = db.query.bind(db);
+    db.query = ((...args: unknown[]) => {
+      const statement = args[0];
+      const text = typeof statement === "string" ? statement
+        : statement && typeof statement === "object" && "text" in statement ? statement.text : undefined;
+      const result = Reflect.apply(original, db, args);
+      if (loseCommit && text === "COMMIT") {
+        loseCommit = false;
+        return Promise.resolve(result).then(async () => {
+          const backend = await original("SELECT pg_backend_pid() AS pid");
+          await pool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
+          throw Error("lost COMMIT acknowledgement");
+        });
+      }
+      return result;
+    }) as typeof db.query;
+  });
+  const output = new ConversationContentOutput(transient);
+  try {
+    await assert.rejects(output.enqueue(key, () => { emitted++; return { backpressure: false }; }), /lost COMMIT/);
+    assert.equal(emitted, 0);
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [key.conversationId])).rowCount, 1);
+    await assert.rejects(beginContentErasure(store, key), { code: "content_output_busy" });
+    const deadline = Date.now() + 5000;
+    while ((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [key.conversationId])).rowCount) {
+      assert.ok(Date.now() < deadline, "abandoned ticket required an unnecessary operator drain");
+      await new Promise(r => setTimeout(r, 20));
+    }
+    await beginContentErasure(store, key);
+    assert.ok(await finishContentErasure(store, key));
+    assert.equal(emitted, 0);
+  } finally { await output.stop(); await transient.end(); }
+});
+
+test("SQL cannot commit completed erasure without its owner audit fact", async () => {
+  const { key } = await fixture();
+  await seal(key);
+  await beginContentErasure(store, key);
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN");
+    await db.query("UPDATE birbcrew_ts.conversation_content_erasures SET erased_at=clock_timestamp() WHERE conversation_id=$1", [key.conversationId]);
+    await assert.rejects(db.query("COMMIT"), { code: "23514" });
+    await db.query("ROLLBACK");
+    assert.equal(await contentTombstone(pool, key), null);
+    assert.ok(await finishContentErasure(store, key));
+  } finally { await db.query("ROLLBACK"); db.release(); }
+});
+
+test("trusted enrollment preserves rejected-request proofs and cleans every independent volume", async (t) => {
+  const { mkdtemp, mkdir, writeFile, access, rm, rename, readFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { textStateLocation, textTurnRootPath } = await import("../../src/service/text-state-location.ts");
+  const { enrollErasureInventory } = await import("../../src/service/erasure-inventory.ts");
+  const { textLocationCleanupActivity } = await import("../../src/service/content-erasure-activities.ts");
+  const { key, member } = await fixture();
+  const closure = await seal(key), directories = await Promise.all([0,1].map(() => mkdtemp(join(tmpdir(), "crew-erasure-volume-"))));
+  t.after(() => Promise.all(directories.map(path => rm(path, { recursive: true, force: true }))));
+  const locations = await Promise.all(directories.map(async path => {
+    const [first, concurrent] = await Promise.all([textStateLocation(path, "cursor"), textStateLocation(path, "cursor")]);
+    assert.deepEqual(first, concurrent);
+    return first;
+  }));
+  assert.notEqual(locations[0].locationId, locations[1].locationId);
+  const conversation = await store.getConversation(key);
+  for (const [i, directory] of directories.entries()) {
+    await pool.query("INSERT INTO birbcrew_ts.text_state_locations(location_id,engine) VALUES($1,'cursor')", [locations[i].locationId]);
+    const root = textTurnRootPath(directory, conversation, "cursor");
+    await mkdir(root, { recursive: true }); await writeFile(join(root, "retained"), "must disappear");
+  }
+  const temporal = { options: { namespace: "default" }, connection: { withDeadline: async (_: number, action: () => Promise<unknown>) => action() },
+    workflow: { getHandle: () => ({ describe: async () => ({ runId: closure.runId, status: { name: "COMPLETED" } }) }) } } as unknown as Client;
+  await enrollErasureInventory(store, temporal, { version: 1, conversations: [{ ...key, inventory: { kind: "locations", locations: locations.map(location => ({ ...location, profile: member.profile })) } }] }, { async quiesce() {} });
+  await preflightContentErasure(store, key);
+  const erasureId = await beginContentErasure(store, key), assignment = { ...key, erasureId };
+  const cleanupPool = new Pool({ connectionString: database }), cleanupStore = new MemberStore(cleanupPool);
+  let reached!: () => void, release!: () => void, firstRead = true;
+  const ready = new Promise<void>(r => { reached = r; }), resume = new Promise<void>(r => { release = r; });
+  const query = cleanupPool.query.bind(cleanupPool);
+  cleanupPool.query = ((...args: unknown[]) => {
+    const result = Reflect.apply(query, cleanupPool, args);
+    if (!firstRead) return result;
+    firstRead = false;
+    return Promise.resolve(result).then(async value => { reached(); await resume; return value; });
+  }) as typeof cleanupPool.query;
+  const cleaning = textLocationCleanupActivity(cleanupStore, directories[0], locations[0].locationId, "cursor")(assignment);
+  const detached = join(directories[0], "detached");
+  try {
+    await ready;
+    await rename(join(directories[0], "cursor"), detached);
+    await mkdir(join(directories[0], "cursor"));
+    await writeFile(join(directories[0], "cursor", ".birbcrew-text-volume"), randomUUID());
+    await writeFile(join(directories[0], "cursor", "unrelated"), "preserve replacement");
+  } finally { release(); }
+  try { await cleaning; } finally { await cleanupPool.end(); }
+  const originalRoot = textTurnRootPath(directories[0], conversation, "cursor");
+  await assert.rejects(access(join(detached, originalRoot.slice(join(directories[0], "cursor").length + 1))), { code: "ENOENT" });
+  assert.equal(await readFile(join(directories[0], "cursor", "unrelated"), "utf8"), "preserve replacement");
+  assert.equal(await finishContentErasure(store, key), null);
+  await assert.rejects(textLocationCleanupActivity(store, directories[1], locations[0].locationId, "cursor")(assignment), /content_cleanup_failed/);
+  await access(join(textTurnRootPath(directories[1], conversation, "cursor"), "retained"));
+  await textLocationCleanupActivity(store, directories[1], locations[1].locationId, "cursor")(assignment);
+  const tombstone = await finishContentErasure(store, key);
+  assert.ok(tombstone);
+  await textLocationCleanupActivity(store, directories[1], locations[1].locationId, "cursor")(assignment);
+  assert.deepEqual(await finishContentErasure(store, key), tombstone);
+});
+
+test("cleanup refuses a different namespace before issuing any RPC", async () => {
+  const { key, member } = await fixture(), locationId = randomUUID();
+  await pool.query("INSERT INTO birbcrew_ts.text_state_locations(location_id,engine) VALUES($1,'cursor')", [locationId]);
+  await pool.query("INSERT INTO birbcrew_ts.text_conversation_locations(conversation_id,location_id,profile) VALUES($1,$2,$3)", [key.conversationId, locationId, member.profile]);
+  await seal(key);
+  const erasureId = await beginContentErasure(store, key);
+  let calls = 0;
+  const temporal = { options: { namespace: "other" }, connection: { withDeadline: async () => { calls++; throw Error("unexpected RPC"); } } } as unknown as Client;
+  await assert.rejects(new MemberClient(store, temporal).ensureCleanupWorkflow({ ...key, erasureId }), { code: "content_namespace_mismatch" });
+  assert.equal(calls, 0);
+});
+
+test("an accepted-status read crossing erasure returns the durable receipt without Temporal", async () => {
+  const ownerId = randomUUID(), member = await store.spawn({ ownerId, engine: "cursor", profile: "erasure.v1", requestId: randomUUID() });
+  const key = { ownerId, conversationId: randomUUID() };
+  await store.openConversation({ ...key, memberId: member.memberId });
+  const request = { ...key, requestId: randomUUID(), text: "accepted read race" };
+  await store.recordAcceptance(request, ownerInitiator);
+  let reached!: () => void, release!: () => void;
+  const ready = new Promise<void>(r => { reached = r; }), resume = new Promise<void>(r => { release = r; });
+  const reader = new MemberStore(pool); let first = true;
+  reader.requestStatus = async input => { const value = await store.requestStatus(input); if (first) { first = false; reached(); await resume; } return value; };
+  let calls = 0;
+  const temporal = { connection: { withDeadline: async () => { calls++; throw Error("unexpected RPC"); } } } as unknown as Client;
+  const result = new MemberClient(reader, temporal).requestStatus({ ...key, requestId: request.requestId });
+  try {
+    await ready; await store.rejectAccepted(request, "predecessor_failed"); await seal(key);
+    await beginContentErasure(store, key); await finishContentErasure(store, key);
+  } finally { release(); }
+  const status = await result;
+  assert.equal(status?.erased, true); assert.equal(status?.phase, "rejected"); assert.equal(calls, 0);
+});
+
+test("raw uncertain turns stay outside the terminal closure scanner", async () => {
+  const { startContentErasureReconciliation } = await import("../../src/service/content-erasure-reconciliation.ts");
+  const { key, member } = await fixture();
+  await pool.query("INSERT INTO birbcrew_ts.turns(conversation_id,request_id,position,prompt_digest,attempt,phase) SELECT conversation_id,request_id,1,prompt_digest,1,'uncertain' FROM birbcrew_ts.request_admissions WHERE conversation_id=$1", [key.conversationId]);
+  await pool.query("UPDATE birbcrew_ts.conversations SET text_closing_at=clock_timestamp()-interval '6 minutes' WHERE conversation_id=$1", [key.conversationId]);
+  let calls = 0;
+  const workflowId = `birbcrew-ts/member/${member.memberId}/conversation/${key.conversationId}`;
+  const temporal = { options: { namespace: "default" }, connection: { withDeadline: async (_: number, action: () => Promise<unknown>) => action() }, workflow: {
+    getHandle: (id: string) => ({ describe: async () => { if (id === workflowId) calls++; throw Error("offline"); } }), start: async () => { throw Error("offline"); },
+  } } as unknown as Client;
+  const loop = startContentErasureReconciliation(pool, temporal); await loop.stop();
+  assert.equal(calls, 0); assert.equal(loop.healthy(), true);
+  assert.equal((await contentErasureState(pool, key)).text_lifecycle, "startable");
+});
+
+test("UUID case variants serialize before acquiring a second database connection", async () => {
+  const { key } = await fixture(), db = await pool.connect();
+  const transient = new Pool({ connectionString: database });
+  let acquired = 0;
+  transient.on("acquire", () => { acquired++; });
+  const output = new ConversationContentOutput(transient);
+  let first: Promise<unknown> | undefined, second: Promise<unknown> | undefined;
+  try {
+    await db.query("BEGIN");
+    await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE", [key.conversationId]);
+    first = output.enqueue(key, () => ({ backpressure: false }));
+    const deadline = Date.now() + 1500;
+    while (!acquired) { assert.ok(Date.now() < deadline); await new Promise(r => setTimeout(r, 10)); }
+    const abort = new AbortController();
+    second = assert.rejects(output.enqueue({ ...key, conversationId: key.conversationId.toUpperCase() }, () => ({ backpressure: false }), abort.signal), /cancel queued frame/);
+    abort.abort(Error("cancel queued frame"));
+    await second;
+    assert.equal(acquired, 1, "case variant occupied a second pool slot behind the same row lock");
+  } finally {
+    await db.query("ROLLBACK"); db.release();
+    await Promise.all([first, second]); await output.stop(); await transient.end();
+  }
+});
+
+test("every store admission and replay checks the erasure fence before the byte ceiling", async () => {
+  const { ownerAdmissionActivity } = await import("../../src/service/store.ts");
+  const { key, request } = await fixture(); await seal(key); await beginContentErasure(store, key);
+  const oversized = { ...request, text: "x".repeat(65537) };
+  for (const action of [() => store.requestAdmission(oversized), () => store.committedReply(oversized), () => store.recordAcceptance(oversized, ownerInitiator)])
+    await assert.rejects(action(), { code: "conversation_erased" });
+  await assert.rejects(ownerAdmissionActivity(store)(oversized), { type: "conversation_erased", nonRetryable: true });
+});
+
+test("status reconciliation crossing a fence while awaiting Temporal rereads SQL", async () => {
+  for (const finalized of [false, true]) {
+    const ownerId = randomUUID(), member = await store.spawn({ ownerId, engine: "cursor", profile: "erasure.v1", requestId: randomUUID() });
+    const key = { ownerId, conversationId: randomUUID() }; await store.openConversation({ ...key, memberId: member.memberId });
+    const request = { ...key, requestId: randomUUID(), text: "status reconciliation race" }; await store.recordAcceptance(request, ownerInitiator);
+    let reached!: () => void, release!: () => void;
+    const ready = new Promise<void>(r => { reached = r; }), resume = new Promise<void>(r => { release = r; });
+    const temporal = { options: { namespace: "default" }, connection: { withDeadline: async (_: number, action: () => Promise<unknown>) => action() },
+      workflow: { getHandle: () => ({ describe: async () => { reached(); await resume; return { status: { name: "COMPLETED" } }; } }) } } as unknown as Client;
+    const result = new MemberClient(store, temporal).requestStatus({ ...key, requestId: request.requestId });
+    // Attach the pending rejection handler before releasing the controlled RPC.
+    const checked = finalized ? result.then(status => { assert.equal(status.erased, true); })
+      : assert.rejects(result, { code: "content_erasure_pending" });
+    try {
+      await ready; await store.rejectAccepted(request, "predecessor_failed"); await seal(key); await beginContentErasure(store, key);
+      if (finalized) await finishContentErasure(store, key);
+    } finally { release(); }
+    await checked;
+  }
+});
+
+test("a trusted absent legacy start with rejected admission cannot be replaced", async () => {
+  const { enrollErasureInventory } = await import("../../src/service/erasure-inventory.ts");
+  const { WorkflowNotFoundError } = await import("@temporalio/client");
+  const { key, member } = await fixture(); let starts = 0;
+  const temporal = { options: { namespace: "default" }, connection: { withDeadline: async (_: number, action: () => Promise<unknown>) => action() }, workflow: {
+    getHandle: (id: string) => ({ describe: async () => { throw new WorkflowNotFoundError("expired", id, undefined); } }), start: async () => { starts++; throw Error("replacement"); },
+  } } as unknown as Client;
+  await enrollErasureInventory(store, temporal, { version: 1, conversations: [{ ...key, inventory: { kind: "no_launch" } }] }, { async quiesce() {} });
+  const members = new MemberClient(store, temporal);
+  await members.open({ ...key, memberId: member.memberId });
+  assert.equal(starts, 0);
+  await assert.rejects(members.describeClosure(key), { code: "conversation_open" });
+  assert.equal((await contentErasureState(pool, key)).text_lifecycle, "startable");
+});
+
+test("a held scan cursor cannot indefinitely delay reconciler shutdown", async () => {
+  const { startContentErasureReconciliation } = await import("../../src/service/content-erasure-reconciliation.ts");
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN; SELECT 1 FROM birbcrew_ts.text_closure_scan WHERE singleton FOR UPDATE");
+    const loop = startContentErasureReconciliation(pool, new Client());
+    await Promise.race([loop.stop(), new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(Error("unbounded scan lock wait")), 3500); timer.unref(); })]);
+    assert.equal(loop.healthy(), false);
+  } finally { await db.query("ROLLBACK"); db.release(); }
+});
+
+test("expired output checkouts leave no queued acquisitions or destroyed healthy clients", async () => {
+  const transient = new Pool({ connectionString: database, max: 1 }), held = await transient.connect();
+  const output = new ConversationContentOutput(transient);
+  let released = false;
+  try {
+    await Promise.all([0,1,2].map(async () => {
+      const { key } = await fixture();
+      await assert.rejects(output.enqueue(key, () => ({ backpressure: false })), /timeout|exceeded/i);
+    }));
+    assert.equal(transient.waitingCount, 0);
+    held.release(); released = true;
+    assert.equal((await transient.query("SELECT 1 AS value")).rows[0].value, 1);
+    assert.equal(transient.totalCount, 1);
+  } finally { if (!released) held.release(); await output.stop(); await transient.end(); }
+});
+
+function failedAcknowledgements(failures: number) {
+  const transient = new Pool({ connectionString: database });
+  transient.on("connect", db => {
+    const original = db.query.bind(db);
+    db.query = ((...args: unknown[]) => {
+      const statement = args[0], text = typeof statement === "string" ? statement
+        : statement && typeof statement === "object" && "text" in statement ? statement.text : undefined;
+      if (failures && typeof text === "string" && text.startsWith("DELETE FROM birbcrew_ts.content_output_reservations")) {
+        failures--; return Promise.reject(Error("injected acknowledgement failure"));
+      }
+      return Reflect.apply(original, db, args);
+    }) as typeof db.query;
+  });
+  return transient;
+}
+test("graceful output shutdown makes a final acknowledgement attempt", async () => {
+  const { key } = await fixture(), transient = failedAcknowledgements(1), output = new ConversationContentOutput(transient);
+  try {
+    await output.enqueue(key, () => ({ backpressure: false }));
+    await output.stop();
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [key.conversationId])).rowCount, 0);
+    await seal(key); await beginContentErasure(store, key); assert.ok(await finishContentErasure(store, key));
+  } finally { await output.stop(); await transient.end(); }
+});
+test("a blocked acknowledgement does not starve another conversation's ticket", async () => {
+  const first = await fixture(), second = await fixture(), transient = failedAcknowledgements(2), output = new ConversationContentOutput(transient), lock = await pool.connect();
+  try {
+    await output.enqueue(first.key, () => ({ backpressure: false }));
+    await output.enqueue(second.key, () => ({ backpressure: false }));
+    await lock.query("BEGIN");
+    await lock.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE", [first.key.conversationId]);
+    const deadline = Date.now() + 4500;
+    while ((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [second.key.conversationId])).rowCount) {
+      assert.ok(Date.now() < deadline, "unrelated acknowledgement starved behind a held row"); await new Promise(r => setTimeout(r, 20));
+    }
+    assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [first.key.conversationId])).rowCount, 1);
+  } finally { await lock.query("ROLLBACK"); lock.release(); await output.stop(); await transient.end(); }
+});
+
+test("legacy cancellation crossing a fence refuses pending and finalized content", async () => {
+  for (const finalized of [false, true]) {
+    const { key, request } = await fixture(); await seal(key);
+    const members = new MemberClient(store, new Client());
+    let reached!: () => void, release!: () => void;
+    const ready = new Promise<void>(r => { reached = r; }), resume = new Promise<void>(r => { release = r; });
+    members.requestStatus = async input => { reached(); await resume; return store.requestStatus(turnKey.parse(input)); };
+    const result = assert.rejects(members.cancelPending({ ...key, requestId: request.requestId }), { code: "conversation_erased" });
+    try { await ready; await beginContentErasure(store, key); if (finalized) await finishContentErasure(store, key); }
+    finally { release(); }
+    await result;
+  }
+});
+
+test("HTTP open replay crossing a pending fence reports 410 rather than a read error", async (t) => {
+  const { key, member } = await fixture(); await seal(key);
+  const members = new MemberClient(store, new Client());
+  let reached!: () => void, release!: () => void;
+  const ready = new Promise<void>(r => { reached = r; }), resume = new Promise<void>(r => { release = r; });
+  members.open = async () => { const conversation = await store.getConversation(key); reached(); await resume; return conversation; };
+  const token = randomUUID(), server = createGateway(store, members, { [createHash("sha256").update(token).digest("hex")]: key.ownerId });
+  t.after(async () => { release(); server.closeAllConnections(); server.close(); await server.stopped(); });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const addr = server.address(); assert.ok(addr && typeof addr !== "string");
+  const response = fetch(`http://127.0.0.1:${addr.port}/v1/conversations`, { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: key.conversationId, memberId: member.memberId }) });
+  try { await ready; await beginContentErasure(store, key); } finally { release(); }
+  const result = await response; assert.equal(result.status, 410); assert.deepEqual(await result.json(), { error: "conversation_erased" });
+});

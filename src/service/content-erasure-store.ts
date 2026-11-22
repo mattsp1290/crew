@@ -151,8 +151,7 @@ export async function textStopProofs(db: Pool | PoolClient, key: Key) {
       AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n WHERE n.conversation_id=t.conversation_id AND n.request_id=t.request_id)
     UNION ALL SELECT 1 FROM birbcrew_ts.text_request_no_launch_proofs p WHERE p.conversation_id=$1 AND (
       EXISTS(SELECT 1 FROM birbcrew_ts.turns t WHERE t.conversation_id=p.conversation_id AND t.request_id=p.request_id) OR
-      EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n WHERE n.conversation_id=p.conversation_id AND n.request_id=p.request_id) OR
-      EXISTS(SELECT 1 FROM birbcrew_ts.text_conversation_locations l WHERE l.conversation_id=p.conversation_id)) LIMIT 1`,
+      EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n WHERE n.conversation_id=p.conversation_id AND n.request_id=p.request_id)) LIMIT 1`,
     [key.conversationId],
   );
   if (bad) throw new MemberStoreError("content_runtime_unconfirmed");
@@ -170,7 +169,6 @@ export async function recordNoLaunchProof(
       AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2)
       AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_launches WHERE conversation_id=$1 AND request_id=$2)
       AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.text_runtime_cleanup_proofs WHERE conversation_id=$1 AND request_id=$2)
-      AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.text_conversation_locations WHERE conversation_id=$1)
     ON CONFLICT DO NOTHING`,
     [key.conversationId, key.requestId],
   );

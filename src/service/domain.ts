@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { TextAdmissionFailureType } from "./failure-type.ts";
 
 import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
-  createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema,
+  createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema, memberSubmitEnvelopeSchema as publicMemberSubmitEnvelopeSchema,
   requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
 export { engineSchema, childEngineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
@@ -56,8 +56,9 @@ export const spawnSchema = createMemberSchema.extend({ ownerId });
 export const conversationKey = conversationIdentitySchema.extend({ ownerId });
 export const openSchema = openConversationSchema.extend({ ownerId });
 export const turnKey = requestIdentitySchema.extend({ ownerId });
+export const memberSubmitEnvelopeSchema = publicMemberSubmitEnvelopeSchema.extend({ ownerId });
 export const submitSchema = submitRequestSchema.extend({ ownerId });
-/** Only a handoff's reserved first request may exceed promptBytes. Admission checks the reservation. */
+/** Text profiles and reserved native handoffs may exceed promptBytes. Admission checks the reservation. */
 export const turnTextBytes = 65_536;
 export const turnRequestSchema = submitSchema.extend({ text: boundedText(turnTextBytes) });
 export const executionSchema = z.strictObject({
@@ -65,7 +66,7 @@ export const executionSchema = z.strictObject({
   activityId: boundedText(256),
   attempt: z.number().int().min(1).max(2_147_483_647),
 });
-export type TurnRequest = z.infer<typeof submitSchema>;
+export type TurnRequest = z.infer<typeof turnRequestSchema>;
 export const claimSchema = turnKey.extend({ token: uuid });
 
 export const checkpointSchema = z.strictObject({

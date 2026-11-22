@@ -29,7 +29,7 @@ const tokenLimit = z.int().min(1).max(1_000_000_000_000);
 export const actorKinds = ["owner", "system"] as const;
 type Actor = (typeof actorKinds)[number];
 /** The closed audit vocabulary. 021-audit.sql repeats these types in a CHECK, widened by
- * 024-standing-grants.sql, 025-routines.sql, 026-memories.sql, 027-handoffs.sql, 028-approval-expiry.sql, 029-member-instructions.sql, 031-usage.sql, 032-webhooks.sql, 033-instruction-packs.sql 036-delegation-audit.sql and 043-conversation-content-erasure.sql (which preserves the prior catalog expression). Payloads are strict: identifiers, digests, choices and statuses only,
+ * 024-standing-grants.sql, 025-routines.sql, 026-memories.sql, 027-handoffs.sql, 028-approval-expiry.sql, 029-member-instructions.sql, 031-usage.sql, 032-webhooks.sql, 033-instruction-packs.sql 036-delegation-audit.sql and 044-conversation-content-erasure.sql (which preserves the prior catalog expression). Payloads are strict: identifiers, digests, choices and statuses only,
  * never prompt/reply text, tool arguments or secrets. An actor given as a function is
  * decided by the validated payload. A routine acts with its owner's authority, so rows its
  * firings cause name the owner; Crew's own decisions about a routine name the system.

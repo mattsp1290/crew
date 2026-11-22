@@ -123,6 +123,7 @@ export async function loadLiveProfiles(env: NodeJS.ProcessEnv, transport: typeof
   if (accounts.cursor) {
     configured.set("cursor.v1", {
       accountId: accounts.cursor.account,
+      requestTextBytes: accounts.cursor.requestTextBytes,
       cursor: { model: accounts.cursor.model, cwd: accounts.cursor.cwd, apiKey: credential(env.BIRBCREW_CURSOR_API_KEY, "BIRBCREW_CURSOR_API_KEY") },
     });
   }
@@ -131,6 +132,7 @@ export async function loadLiveProfiles(env: NodeJS.ProcessEnv, transport: typeof
     for (const name of accounts.opencode.env) variables[name] = credential(env[name], name);
     configured.set("opencode.v1", {
       accountId: accounts.opencode.account,
+      requestTextBytes: accounts.opencode.requestTextBytes,
       opencode: {
         model: accounts.opencode.model, cwd: accounts.opencode.cwd, executable: accounts.opencode.executable,
         account: accounts.opencode.account, env: variables,

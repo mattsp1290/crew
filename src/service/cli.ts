@@ -1,5 +1,8 @@
+import { once } from "node:events";
+import { ConversationContentOutput } from "./content-output.ts";
+import { isTextEngine, memberSubmitEnvelopeSchema, MemberStoreError } from "./domain.ts";
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { json } from "node:stream/consumers";
@@ -24,7 +27,8 @@ async function main() {
   try {
     await store.migrate();
     if (operation === "worker") {
-      const stateDir = process.env.BIRBCREW_STATE_DIR, heartbeat = process.env.BIRBCREW_WORKER_HEARTBEAT_FILE;
+      let stateDir = process.env.BIRBCREW_STATE_DIR;
+      const heartbeat = process.env.BIRBCREW_WORKER_HEARTBEAT_FILE;
       if (!stateDir || !configPath) throw new Error("Supply BIRBCREW_STATE_DIR and the trusted provider module path");
       if (heartbeat !== undefined) {
         if (!isAbsolute(heartbeat)) throw new Error("BIRBCREW_WORKER_HEARTBEAT_FILE must be an absolute path");
@@ -40,6 +44,8 @@ async function main() {
       const { profiles, close } = await import(pathToFileURL(resolve(configPath)).href);
       const controlPool = new Pool({ connectionString: url, max: 2, ...controlPoolBounds });
       try {
+        await mkdir(stateDir, { recursive: true, mode: 0o700 });
+        stateDir = await realpath(stateDir);
         await registerProfiles(pool, profiles, stateDir);
         await runMemberWorker({ store, temporal, profiles, configPath: resolve(configPath), stateDir, heartbeat, controlPool });
       } finally {
@@ -76,7 +82,22 @@ async function main() {
           await members.cancelPending(input);
           result = { cancelled: true };
           break;
-        default: result = { text: await members.submit(input) };
+        default: {
+          result = { text: await members.submit(input) };
+          const request = memberSubmitEnvelopeSchema.parse(input);
+          const key = { ownerId: request.ownerId, conversationId: request.conversationId };
+          const conversation = await store.getConversation(key);
+          if (isTextEngine(conversation.engine)) {
+            const output = new ConversationContentOutput(pool);
+            try {
+              const frame = JSON.stringify(result) + "\n";
+              const sent = await output.enqueue(key, () => ({ backpressure: !process.stdout.write(frame) }));
+              if (sent.kind !== "retained") throw new MemberStoreError("conversation_erased");
+              if (sent.backpressure && process.stdout.writableNeedDrain) await once(process.stdout, "drain");
+            } finally { await output.stop(); }
+            return;
+          }
+        }
       }
       console.log(JSON.stringify(result));
     } finally {

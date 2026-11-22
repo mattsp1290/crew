@@ -13,7 +13,7 @@ import {
   openConversationSchema,
   requestIdentitySchema,
   routes,
-  submitRequestSchema,
+  memberSubmitEnvelopeSchema,
   type ApprovalDetailIdentity,
   type OwnerApprovalDetail,
   type CreateMember,
@@ -181,7 +181,7 @@ export class CrewClient {
       query?: string;
       command?: CommandIdentity;
       signal?: AbortSignal;
-      expect?: (value: T) => boolean;
+      expect?: (value: T, status: number) => boolean;
     } = {},
   ): Promise<T> {
     input.signal?.throwIfAborted();
@@ -228,7 +228,7 @@ export class CrewClient {
       if (documented) {
         const parsed = route.response.safeParse(value);
         if (parsed.success) {
-          if (input.expect && !input.expect(parsed.data))
+          if (input.expect && !input.expect(parsed.data, response.status))
             throw new CrewProtocolError();
           return parsed.data;
         }
@@ -360,7 +360,7 @@ export class CrewClient {
   async closeConversation(input: { readonly conversationId: string }, options: CallOptions = {}) {
     const params = conversationIdentitySchema.parse(input);
     return this.#call(routes.closeConversation, { ...options, params, body: {},
-      command: { kind: "conversation_close", ...params }, expect: value => value.conversationId === params.conversationId });
+      command: { kind: "conversation_close", ...params }, expect: (value, status) => value.conversationId === params.conversationId && value.closure === (status === 200 ? "closed" : "requested") });
   }
   async conversation(
     input: { readonly conversationId: string },
@@ -423,7 +423,7 @@ export class CrewClient {
     });
   }
   async submit(input: SubmitRequest, options: CallOptions = {}) {
-    const { conversationId, ...body } = submitRequestSchema.parse(input);
+    const { conversationId, ...body } = memberSubmitEnvelopeSchema.parse(input);
     return this.#receipt(
       routes.submit,
       { conversationId, requestId: body.requestId },

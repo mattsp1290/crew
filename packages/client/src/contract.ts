@@ -4,21 +4,14 @@ import { z } from "zod";
 export const engineSchema = z.enum(["pi", "claude", "codex", "cursor", "opencode"]);
 /** Child destinations and delegation targets stay on the original three engines. */
 export const childEngineSchema = z.enum(["pi", "claude", "codex"]);
+export const validRequestTextSchema = z.string().min(1).refine(
+  text => !text.includes("\0") && text.isWellFormed(),
+  { message: "Expected valid UTF-8 text without NUL" },
+).meta({ "x-forbidden": "NUL; unpaired surrogates" });
 export function boundedText(bytes: number) {
-  return z
-    .string()
-    .min(1)
-    .refine(
-      (text) =>
-        !text.includes("\0") &&
-        text.isWellFormed() &&
-        new TextEncoder().encode(text).length <= bytes,
-      { message: `Expected valid UTF-8 text of at most ${bytes} bytes` },
-    )
-    .meta({
-      "x-maxUtf8Bytes": bytes,
-      "x-forbidden": "NUL; unpaired surrogates",
-    });
+  return validRequestTextSchema.refine(text => new TextEncoder().encode(text).length <= bytes,
+    { message: `Expected valid UTF-8 text of at most ${bytes} bytes` })
+    .meta({ "x-maxUtf8Bytes": bytes, "x-forbidden": "NUL; unpaired surrogates" });
 }
 const disallowedControl = /(?![\t\n])\p{Cc}/u;
 /** Owner-authored model context in memories, member instructions and instruction packs. */
@@ -45,6 +38,8 @@ export const uuid = z.uuid().overwrite((value) => value.toLowerCase());
 export const instructionsBytes = 16_384;
 /** Owner, CLI and routine prompt bound. Reserved handoff requests use the server turnTextBytes bound. */
 export const promptBytes = 16_384;
+export const requestTextCeilingBytes = 65_536;
+export const requestTextBytesSchema = z.int().min(promptBytes).max(requestTextCeilingBytes);
 /** Must match the position CHECK in src/service/sql/033-instruction-packs.sql. */
 export const instructionPacksPerMember = 8;
 const instructionPackIds = z
@@ -132,6 +127,11 @@ export const conversationHandoffSchema = z.object({
 export const submitRequestSchema = requestIdentitySchema.extend({
   text: boundedText(promptBytes),
   approvalDeadlineSeconds: approvalDeadlineSeconds.optional(),
+});
+export const memberSubmitEnvelopeSchema = submitRequestSchema.extend({
+  text: validRequestTextSchema.meta({
+    description: "Exact decoded UTF-8 text. Fresh text-member requests use the profile requestTextBytes (default 16384, ceiling 65536); native HTTP requests use 16384. Reused UUIDs compare exact terms before text-member sizing. Raw JSON is independently limited to 128 KiB.",
+  }),
 });
 /** New accepted kinds require a case in server initiatorColumns and migrations widening
  * request_admissions_initiator_kind_check and audit_events_initiator_check. Owner has no id.
@@ -426,6 +426,9 @@ export const memberSchema = z.object({
   memberId: z.uuid(),
   engine: engineSchema,
   profile: z.string(),
+  requestTextBytes: requestTextBytesSchema.optional().meta({
+    description: "Effective immutable request-text byte limit, emitted for text members in listings. Absence means assume 16384.",
+  }),
   subagents: memberSubagentsSchema.default({ mode: "legacy", targets: [] }),
   instructions: instructionsSummarySchema.optional(),
   instructionPacks: instructionPackIds.optional(),
@@ -537,7 +540,7 @@ export type ConversationHandoff = z.output<typeof conversationHandoffSchema>;
 export type HandoffsCapability = z.output<typeof handoffsCapabilitySchema>;
 export type HandoffsCapabilityV1 = z.output<typeof handoffsCapabilityV1Schema>;
 export type OpenConversation = z.input<typeof openConversationSchema>;
-export type SubmitRequest = z.input<typeof submitRequestSchema>;
+export type SubmitRequest = z.input<typeof memberSubmitEnvelopeSchema>;
 export type RequestIdentity = z.infer<typeof requestIdentitySchema>;
 export type RequestInitiator = z.infer<typeof requestInitiator>;
 export type ObservedRequestInitiator = z.infer<
@@ -657,7 +660,7 @@ export const routes = {
   submit: {
     method: "POST",
     path: "/v1/conversations/{conversationId}/requests",
-    body: submitRequestSchema.omit({ conversationId: true }),
+    body: memberSubmitEnvelopeSchema.omit({ conversationId: true }),
     response: retainedRequestReceiptResponseSchema,
     statuses: [202],
     command: true,

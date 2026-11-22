@@ -1,7 +1,7 @@
 import { contentErasureActivities, textLocationCleanupActivity } from "./content-erasure-activities.ts";
 import { textStateLocation, textCleanupQueue } from "./text-state-location.ts";
 import { startContentErasureReconciliation } from "./content-erasure-reconciliation.ts";
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { progressActivity } from "./progress-activity.ts";
 import { cancelLive, decideLiveActivity } from "./codex-calls.ts";
 import { open, mkdir, realpath } from "node:fs/promises";
@@ -41,6 +41,7 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
   await mkdir(stateDir,{recursive:true,mode:0o700});
   stateDir=await realpath(stateDir);
   const { namespace } = temporal;
+  const erasurePool = new Pool({ ...store.pool.options, password: store.pool.options.password, max: 2, connectionTimeoutMillis: 2000, statement_timeout: 5000, query_timeout: 7000 });
   const workers: Worker[] = [];
   const running: Promise<void>[] = [];
   let connection: NativeConnection | undefined;
@@ -83,7 +84,7 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
     }
     if (workers.length === 1) throw new Error("No member engines configured");
     reconciler = startDelegationReconciliation(control, controlPool);
-    erasureReconciler = startContentErasureReconciliation(controlPool,new Client({connection:clientConnection,namespace}));
+    erasureReconciler = startContentErasureReconciliation(erasurePool,new Client({connection:clientConnection,namespace}));
     let reported = false;
     const beat = () => {
       if (!erasureReconciler?.healthy() || !reconciler?.healthy() || heartbeat === undefined || !workers.every((worker) => worker.getState() === "RUNNING")) return;
@@ -107,7 +108,8 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
     } finally {
       try { await supervisor?.close(); }
       finally {
-        try { await clientConnection?.close(); } finally { await connection?.close(); }
+        try { await clientConnection?.close(); }
+        finally { try { await connection?.close(); } finally { await erasurePool.end(); } }
       }
     }
   }

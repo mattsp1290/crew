@@ -148,3 +148,10 @@ The handoff command's `requestId` and the reserved target's `firstRequestId` ide
 `capabilities().handoffs` is optional. Use `/contract`'s `handoffsCapabilityV1Schema.safeParse(metadata)` to recognize supported version 1 routes, delivery and transcript limits. Absent metadata or an unknown positive version leaves handoffs unsupported for feature discovery. Unknown versions remain opaque metadata. Malformed advertised version 1 metadata fails validation. Capability discovery is an explicit application call.
 
 Owners can close eligible text conversations with `closeConversation({conversationId})`, then erase their content with `eraseConversationContent({conversationId})`. Erased receipts preserve their terminal status and carry `erased: true` without a result. Pending cleanup returns HTTP 503, exposed by the SDK as `CrewUnknownOutcomeError`; repeat its `content_erasure` command with the same conversation ID. See the integration API retention and operator inventory requirements.
+
+Text-member listings optionally carry `requestTextBytes`. Assume 16,384 bytes
+when absent (including old servers and spawn responses). Submit validation
+preserves exact well-formed text; the server enforces each immutable profile
+limit, up to 65,536 UTF-8 bytes, and the independent 128 KiB raw JSON cap.
+See [request text limits](../../docs/request-text-limits.md) for error precedence
+and the new-profile/new-member adoption procedure.

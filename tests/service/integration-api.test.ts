@@ -277,7 +277,17 @@ test("legacy committed turn without an admission retains result and cancellation
   assert.equal(result.result.text, "legacy original result");
   assert.equal(result.initiator, undefined, "no admission recorded what started it");
   const before = f.counts();
-  const cancel = await f.api(path + "/cancel", {}); assert.equal(cancel.status, 202);
+  const lock = await pool.connect();
+  let cancel: Response;
+  try {
+    await lock.query("BEGIN");
+    await lock.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR NO KEY UPDATE", [f.conversationId]);
+    cancel = await Promise.race([
+      f.api(path + "/cancel", {}),
+      delay(1500).then(() => { throw Error("native cancellation blocked on erasure's exclusive parent lock"); }),
+    ]);
+  } finally { await lock.query("ROLLBACK"); lock.release(); }
+  assert.equal(cancel.status, 202);
   const receipt = await cancel.json();
   assert.equal(receipt.status, "completed");
   assert.deepEqual(receipt.result, result.result);

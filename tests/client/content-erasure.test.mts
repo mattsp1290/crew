@@ -230,3 +230,12 @@ test("erased receipts are read results and cannot acknowledge submit or cancel",
   assert.equal(routes.submit.response.safeParse(receipt).success, false);
   assert.equal(routes.cancel.response.safeParse(receipt).success, false);
 });
+
+test("close rejects a successful status paired with the wrong closure acknowledgement", async () => {
+  const conversationId = randomUUID();
+  for (const [status, closure] of [[200, "requested"], [202, "closed"]] as const) {
+    const client = new CrewClient({ baseUrl: "http://127.0.0.1:34567", token: "fixture",
+      fetch: async () => new Response(JSON.stringify({ apiVersion: "1", conversationId, closure }), { status }) });
+    await assert.rejects(client.closeConversation({ conversationId }), error => error instanceof CrewUnknownOutcomeError && error.command.kind === "conversation_close");
+  }
+});

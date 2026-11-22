@@ -15,6 +15,7 @@ const json = (response: ServerResponse, value: unknown, status = 200) => { respo
 async function serve(handler: (request: IncomingMessage, response: ServerResponse, body: string) => void | Promise<void>) {
   const seen: { path: string; method: string; auth: string | undefined; body: string }[] = [];
   const server = createServer((request, response) => { void (async () => {
+    request.setEncoding("utf8");
     let body = "";
     for await (const chunk of request) body += chunk;
     seen.push({ path: request.url!, method: request.method!, auth: request.headers.authorization, body });
@@ -55,10 +56,10 @@ test("all domain methods send one authenticated request with exact text", async 
   } finally { await s.close(); }
 });
 
-test("invalid UUID, text, byte bounds and pre-aborted calls dispatch nothing", async () => {
+test("invalid UUID, text and pre-aborted calls dispatch nothing", async () => {
   const s = await serve((_, response) => json(response, receipt));
   try {
-    for (const text of ["", "\0", "\ud800", "é".repeat(8193)]) await assert.rejects(s.client.submit({ ...key, text }));
+    for (const text of ["", "\0", "\ud800"]) await assert.rejects(s.client.submit({ ...key, text }));
     await assert.rejects(s.client.submit({ ...key, conversationId: "../evil", text: "x" }));
     await assert.rejects(s.client.createMember({ requestId, engine: "pi", profile: "p", instructions: "\r" }));
     await assert.rejects(s.client.submit({ ...key, text: "x" }, { signal: AbortSignal.abort("stopped") }), error => error === "stopped");
@@ -444,4 +445,26 @@ test("decision receipt capability is optional and future versions stay opaque", 
   assert.equal(capabilitiesSchema.safeParse({ ...base, decisionReceipts: { ...decisionReceipts, conflictCode: "conflict" } }).success, false);
   const { unverifiableCode: _, ...withoutUnverifiable } = decisionReceipts;
   assert.equal(decisionReceiptsCapabilityV1Schema.safeParse(withoutUnverifiable).success, false);
+});
+
+test("text-member limits are optional for old servers and submissions preserve large exact text", async () => {
+  const { memberSchema, memberSubmitEnvelopeSchema } = await import("@birbcrew/client/contract");
+  const old = { memberId: randomUUID(), engine: "cursor", profile: "cursor.v1" };
+  assert.equal(memberSchema.parse(old).requestTextBytes, undefined);
+  assert.equal(memberSchema.parse({ ...old, requestTextBytes: 65_536 }).requestTextBytes, 65_536);
+  assert.equal(memberSchema.safeParse({ ...old, requestTextBytes: 65_537 }).success, false);
+  const text = "é".repeat(32_768);
+  assert.equal(memberSubmitEnvelopeSchema.parse({ ...key, text }).text, text);
+  assert.equal(memberSubmitEnvelopeSchema.safeParse({ ...key, text, ownerId: "injected" }).success, false);
+});
+
+
+test("portable submit sends profile-sized text without applying a global member limit", async () => {
+  const s = await serve((_, response) => json(response, receipt, 202));
+  try {
+    const text = "é".repeat(32_768);
+    await s.client.submit({ ...key, text });
+    assert.equal(s.seen.length, 1);
+    assert.equal(s.seen[0].body, JSON.stringify({ requestId, text }));
+  } finally { await s.close(); }
 });

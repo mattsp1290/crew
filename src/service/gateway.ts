@@ -1,5 +1,4 @@
 import { ConversationContentOutput } from "./content-output.ts";
-import { isTextEngine } from "./domain.ts";
 import { approvalDetailIdentitySchema, routes } from "@birbcrew/client/contract";
 import { readDecisionRecord, readOwnerApprovalDetail } from "./approvals.ts";
 import { childOpener } from "./child-observation.ts";
@@ -23,7 +22,7 @@ import { HandoffApi } from "./handoffs.ts";
 import { MemoryApi, memoryListParameterNames } from "./memories.ts";
 import { readInstructions } from "./instructions.ts";
 import { PackApi, packListParameterNames } from "./instruction-packs.ts";
-import { MemberStoreError, turnKey } from "./domain.ts";
+import { isTextEngine, submitSchema, MemberStoreError, turnKey } from "./domain.ts";
 import { readEvents, readSnapshot, toolBootstrap, type Phase, type PublicSnapshot } from "./observation.ts";
 import { MemberStore } from "./store.ts";
 import { IntegrationApi, integrationCapabilities, ReceiptContractError } from "./integration-api.ts";
@@ -125,7 +124,7 @@ async function health(schemaVersion: () => Promise<number | null>, members: Memb
 
 /** `hubs` is the fan-out; without it this observer polls the database on its own. */
 async function observe(
-  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse, hubs?: ObserverHubs, output = new ConversationContentOutput(pool),
+  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse, hubs: ObserverHubs | undefined, output: ConversationContentOutput,
 ) {
   if (response.destroyed) return;
   const { conversationId: threadId } = snapshot.state;
@@ -422,7 +421,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       const conversationId = z.uuid().parse(requestRoute[1]);
       if (!requestRoute[2] && request.method === "POST") {
         const prompt = routes.submit.body.parse(await body(request));
-        return contentJson(response,{ownerId,conversationId},202,await integration.submit({ ownerId, conversationId, ...prompt }));
+        return contentJson(response,{ownerId,conversationId},202,await integration.submit({ ...prompt, ownerId, conversationId }));
       }
       if (requestRoute[2]) {
         const requestId = z.uuid().parse(requestRoute[2]);
@@ -444,7 +443,13 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     if (path === "/conversations" && request.method === "POST") {
       const input = routes.openConversation.body.parse(await body(request));
       await members.open({ ownerId, ...input });
-      return contentJson(response,{ownerId,conversationId:input.conversationId},201,await readSnapshot(store.pool,ownerId,input.conversationId));
+      let snapshot: PublicSnapshot;
+      try { snapshot = await readSnapshot(store.pool,ownerId,input.conversationId); }
+      catch(error) {
+        if(error instanceof MemberStoreError && error.code === "content_erasure_pending") throw new MemberStoreError("conversation_erased");
+        throw error;
+      }
+      return contentJson(response,{ownerId,conversationId:input.conversationId},201,snapshot);
     }
     const statusPath = /^\/conversations\/([^/]+)\/requests\/([^/]+)$/.exec(path);
     if (statusPath && request.method === "GET") {
@@ -455,14 +460,17 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     if (!parts) throw new HttpError(404, "not_found");
     const conversationId = z.uuid().parse(parts[1]);
     if (!parts[2] && request.method === "GET") return contentJson(response,{ownerId,conversationId},200,await readSnapshot(store.pool,ownerId,conversationId),()=>readSnapshot(store.pool,ownerId,conversationId));
+    if (parts[2] === "inputs" && request.method === "POST") {
+      const prompt = routes.submit.body.parse(await body(request));
+      const conversation = await store.getConversation({ ownerId, conversationId });
+      const input = { ...prompt, ownerId, conversationId };
+      if (!isTextEngine(conversation.engine)) submitSchema.parse(input);
+      return contentJson(response,{ownerId,conversationId},202,await members.accept(input));
+    }
     await store.getConversation({ ownerId, conversationId });
     if (request.method !== "POST") throw new HttpError(405, "method_not_allowed");
     const input = await body(request);
     switch (parts[2]) {
-      case "inputs": {
-        const prompt = routes.submit.body.parse(input);
-        return json(response, 202, await members.accept({ ownerId, conversationId, ...prompt }));
-      }
       case "cancel": {
         const key = turnKey.omit({ ownerId: true, conversationId: true }).parse(input);
         await members.cancelPending({ ownerId, conversationId, ...key });

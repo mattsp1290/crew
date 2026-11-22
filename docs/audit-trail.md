@@ -104,8 +104,8 @@ audit version may switch to a keyed per-owner digest.
 
 The registry is the `auditEvents` object in `src/service/audit.ts`.
 `audit_events_type_check` in `src/service/sql/021-audit.sql`, widened by
-`024-standing-grants.sql`, `025-routines.sql`, `026-memories.sql`, `027-handoffs.sql`, `028-approval-expiry.sql`, `029-member-instructions.sql`, `031-usage.sql`, `032-webhooks.sql`, `033-instruction-packs.sql` `036-delegation-audit.sql` and `043-conversation-content-erasure.sql`, lists the same types.
-Released widenings through 036 restate the vocabulary. Migration 043 preserves the catalog expression and adds the erasure alternative.
+`024-standing-grants.sql`, `025-routines.sql`, `026-memories.sql`, `027-handoffs.sql`, `028-approval-expiry.sql`, `029-member-instructions.sql`, `031-usage.sql`, `032-webhooks.sql`, `033-instruction-packs.sql` `036-delegation-audit.sql` and `044-conversation-content-erasure.sql`, lists the same types.
+Released widenings through 036 restate the vocabulary. Migration 044 preserves the catalog expression and adds the erasure alternative.
 A test checks that the two lists match. `GET /v1/capabilities` lists them under
 `audit.eventTypes`.
 
@@ -644,4 +644,4 @@ trusted sessions makes that unreachable, so no test drives it.
 
 ## Text conversation erasure
 
-`conversation.content_erased` is one owner-authorized fact per conversation, appended in the same transaction as the final database scrub and immutable erased timestamp. Its strict payload contains only `{erasureId}`. A pending operation emits no completed audit fact. Repeated DELETEs and cleanup retries append nothing. Request outcome audit facts and request/admission identities remain unchanged. The SQL vocabulary and partial unique index are added by migration 043.
+`conversation.content_erased` is one owner-authorized fact per conversation, appended in the same transaction as the final database scrub and immutable erased timestamp. Its strict payload contains only `{erasureId}`. A pending operation emits no completed audit fact. Repeated DELETEs and cleanup retries append nothing. Request outcome audit facts and request/admission identities remain unchanged. The SQL vocabulary and partial unique index are added by migration 044.

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeSync } from "node:fs";
+import { forwardWarnings } from "../../src/service/diagnostics.ts";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -12,6 +14,7 @@ import { childTargetSchema } from "../../src/service/child-target.ts";
 import { controlScopeSchema } from "../../src/service/delegation-control.ts";
 import { ownerInitiator, type Engine } from "../../src/service/domain.ts";
 import { registerProfiles } from "../../src/service/deployment.ts";
+import { RoutineApi } from "../../src/service/routines.ts";
 import { HandoffApi } from "../../src/service/handoffs.ts";
 import { MemoryApi } from "../../src/service/memories.ts";
 import type { MemberProfile } from "../../src/service/profiles.ts";
@@ -55,7 +58,7 @@ test("text-engine profiles store no volume and claude still requires one", async
   await assert.rejects(registerProfiles(pool, new Map([["text-bad-env.v1", badEnv]]), directory), /opencode\.env/);
   await registerProfiles(pool, new Map([["text-cursor.v1", cursor], ["text-opencode.v1", opencode], ["text-claude.v1", claude]]), directory);
   const { rows } = await pool.query<{ name: string; volume: string | null }>(
-    "SELECT name, volume FROM birbcrew_ts.profiles WHERE name LIKE 'text-%' ORDER BY name");
+    "SELECT name, volume FROM birbcrew_ts.profiles WHERE name = ANY(ARRAY['text-claude.v1','text-cursor.v1','text-opencode.v1']) ORDER BY name");
   assert.deepEqual(rows.map((row) => [row.name, row.volume === null]), [
     ["text-claude.v1", false], ["text-cursor.v1", true], ["text-opencode.v1", true],
   ]);
@@ -283,4 +286,210 @@ test("migration 042 fails closed with 55P03 and applies nothing when a native tu
   });
   assert.equal((await upgraded.query(applied42)).rows[0].n, 0);
   assert.equal((await upgraded.query(engineCheck)).rows[0].def, before);
+});
+
+test("migration 043 preserves registrations and fails atomically on a held profile lock", async t => {
+  const { upgraded, current } = await runningTurnAt(t, 42);
+  await upgraded.query(`INSERT INTO birbcrew_ts.profiles(name,engine,account_digest)
+    VALUES ('historical','cursor',decode(repeat('ab',32),'hex'))`);
+  const before = (await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile;
+  const lock = await upgraded.connect();
+  try {
+    await lock.query("BEGIN");
+    await lock.query("LOCK TABLE birbcrew_ts.profiles IN ACCESS SHARE MODE");
+    const migrating = current.migrate().then(() => ({ code: "applied" }), (error: Error & { code?: string }) => ({ code: error.code }));
+    await delay(100);
+    const reader = await upgraded.connect();
+    try {
+      await reader.query("SET statement_timeout='250ms'");
+      await reader.query("SELECT 1 FROM birbcrew_ts.profiles LIMIT 1");
+    } finally { await reader.query("RESET statement_timeout"); reader.release(); }
+    assert.deepEqual(await migrating, { code: "55P03" });
+    assert.equal((await upgraded.query("SELECT 1 FROM birbcrew_ts.schema_versions WHERE version=43")).rowCount, 0);
+    assert.deepEqual((await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile, before);
+  } finally { await lock.query("ROLLBACK"); lock.release(); }
+  await current.migrate();
+  await current.migrate();
+  const after = (await upgraded.query("SELECT to_jsonb(p) AS profile FROM birbcrew_ts.profiles p WHERE name='historical'")).rows[0].profile;
+  assert.deepEqual(after, { ...before, request_text_bytes: 16_384 });
+  await assert.rejects(upgraded.query("UPDATE birbcrew_ts.profiles SET request_text_bytes=32768 WHERE name='historical'"));
+  for (const [engine, limit] of [["cursor", 65_537], ["pi", 32_768]]) {
+    await assert.rejects(upgraded.query(`INSERT INTO birbcrew_ts.profiles(name,engine,account_digest,request_text_bytes)
+      VALUES($1,$2,decode(repeat('ab',32),'hex'),$3)`, ["invalid-" + engine, engine, limit]),
+      { code: "23514", constraint: "profiles_request_text_bytes_check" });
+  }
+});
+
+test("immutable text policy is shared by preflight, locked admission, restart and discovery", async t => {
+  const diagnosticLines: string[] = [];
+  forwardWarnings(line => diagnosticLines.push(line));
+  t.after(() => forwardWarnings(line => { writeSync(2, line + "\n"); }));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "text-policy-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { IntegrationApi } = await import("../../src/service/integration-api.ts");
+  const { MemberClient } = await import("../../src/service/client.ts");
+  const { Client } = await import("@temporalio/client");
+  const api = new IntegrationApi(store, new MemberClient(store, new Client()));
+  for (const engine of ["cursor", "opencode"] as const) {
+    const profile: MemberProfile = { accountId: "policy-fixture", ...(engine === "cursor"
+      ? { cursor: { model: "composer-2", apiKey: "marker-secret", cwd: directory } }
+      : { opencode: { model: "provider/model", executable: join(directory, "opencode"), cwd: directory, account: "account", env: {} } }) };
+    const name = `policy-${engine}-${randomUUID()}`;
+    for (const requestTextBytes of [0, 16_383, 65_537, 1.5]) {
+      await assert.rejects(registerProfiles(pool, new Map([[name, { ...profile, requestTextBytes }]]), directory),
+        (error: Error) => error.message.includes("requestTextBytes") && !error.message.includes("marker-secret"));
+    }
+    await registerProfiles(pool, new Map([[name, profile]]), directory);
+    await registerProfiles(pool, new Map([[name, { ...profile, requestTextBytes: 16_384 }]]), directory);
+    await assert.rejects(registerProfiles(pool, new Map([[name, { ...profile, requestTextBytes: 65_536 }]]), directory),
+      (error: Error) => error.message.includes(name) && error.message.includes("requestTextBytes") && error.message.includes("new profile name") && !error.message.includes("marker-secret"));
+    for (const n of [16_384, 32_768, 65_536]) {
+      const wideName = `${name}-${n}`;
+      await registerProfiles(pool, new Map([[wideName, { ...profile, requestTextBytes: n }]]), directory);
+      const member = await store.spawn({ ownerId: randomUUID(), requestId: randomUUID(), engine, profile: wideName });
+      const listing = await api.listMembers(member.ownerId, {});
+      assert.equal(listing.members.find(m => m.memberId === member.memberId)?.requestTextBytes, n);
+      assert.equal((await api.listMembers(randomUUID(), {})).members.some(m => m.memberId === member.memberId), false);
+      const conversationId = randomUUID();
+      await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+      const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "é".repeat(n / 2) };
+      const restarted = new MemberStore(pool);
+      await assert.rejects(restarted.checkAdmission({ ...request, text: "private-input-marker" + "x".repeat(n) }), { name: "ZodError" });
+      const diagnosticCount = diagnosticLines.length;
+      await assert.rejects(restarted.checkAdmission({ ...request, text: "\0" }), { name: "ZodError" });
+      assert.equal(diagnosticLines.length, diagnosticCount, "malformed text has no size-refusal diagnostic");
+      await assert.rejects(restarted.recordAcceptance({ ...request, text: request.text + "x" }, ownerInitiator), { name: "ZodError" });
+      assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.request_admissions WHERE conversation_id=$1", [conversationId])).rowCount, 0);
+      assert.deepEqual(await restarted.checkAdmission(request), request);
+      await restarted.recordAcceptance(request, ownerInitiator);
+      assert.deepEqual(await restarted.checkAdmission(request), request);
+      for (const text of ["different", "x".repeat(n + 1), "x".repeat(65_537)]) {
+        await assert.rejects(restarted.checkAdmission({ ...request, text }), { code: "conflict" });
+      }
+      await assert.rejects(restarted.checkAdmission({ ...request, text: "\0" }), { name: "ZodError" });
+      await assert.rejects(restarted.checkAdmission({ ...request, ownerId: randomUUID() }), { code: "not_found" });
+    }
+  }
+  assert.ok(diagnosticLines.some(line => line.includes('"event":"request_text_refused"') && line.includes('"limit":65536')));
+  assert.equal(diagnosticLines.join("\n").includes("private-input-marker"), false);
+  await assert.rejects(registerProfiles(pool, new Map([["native-policy", { accountId: "native", requestTextBytes: 16_384 }]]), directory), /requestTextBytes/);
+});
+
+
+test("a concurrent admission does not make an exact preflight retry exhaust its own slot", { timeout: 10_000 }, async () => {
+  for (const routine of [false, true]) for (const retryText of ["original", "changed", "x".repeat(16_385), "x".repeat(65_537)]) {
+    const member = await spawned("cursor");
+    const conversationId = randomUUID();
+    await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+    const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original" };
+    let routineId: string | undefined;
+    if (routine) {
+      const created = await new RoutineApi(store, () => new Date("2031-01-06T10:00:00Z")).create(member.ownerId, {
+        requestId: randomUUID(), memberId: member.memberId, schedule: "*/15 * * * *", prompt: request.text, approvalPolicy: "wait",
+      });
+      routineId = created.routineId;
+      await pool.query(`INSERT INTO birbcrew_ts.routine_firings
+        (routine_id,scheduled_for,status,conversation_id,request_id,recorded_at,lease_until)
+        VALUES($1,'2031-01-06T10:15Z','claimed',$2,$3,now(),now()+interval '1 minute')`, [routineId, conversationId, request.requestId]);
+    }
+    let resume = () => {}, pause = () => {}, intercept = true;
+    const resumed = new Promise<void>(resolve => { resume = resolve; });
+    const paused = new Promise<void>(resolve => { pause = resolve; });
+    const concurrent = new MemberStore(new Proxy(pool, {
+      get(target, property, receiver) {
+        if (property !== "query") return Reflect.get(target, property, receiver);
+        return async (...args: unknown[]) => {
+          const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
+          if (intercept && typeof args[0] === "string" && args[0].includes("a.phase") && args[0].includes("request_admissions a")) {
+            intercept = false;
+            pause();
+            await resumed;
+          }
+          return result;
+        };
+      },
+    }));
+    const retry = concurrent.checkAdmission({ ...request, text: retryText });
+    const expected = retryText !== request.text ? assert.rejects(retry, { code: "conflict" }) : retry;
+    await paused;
+    try {
+      await store.recordAcceptance(request, ownerInitiator);
+      if (routineId) await pool.query("UPDATE birbcrew_ts.routine_firings SET status='admitted',lease_until=NULL WHERE routine_id=$1", [routineId]);
+    } finally { resume(); }
+    await expected;
+  }
+});
+
+
+test("a concurrent committed reply cannot bypass a different approval deadline", { timeout: 10_000 }, async () => {
+  const { Client } = await import("@temporalio/client");
+  const { MemberClient } = await import("../../src/service/client.ts");
+  const member = await spawned("cursor");
+  const conversationId = randomUUID();
+  await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+  const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original", approvalDeadlineSeconds: 60 };
+  let resume = () => {}, pause = () => {}, reads = 0;
+  const resumed = new Promise<void>(resolve => { resume = resolve; });
+  const paused = new Promise<void>(resolve => { pause = resolve; });
+  const reader = new MemberStore(new Proxy(pool, {
+    get(target, property, receiver) {
+      if (property !== "query") return Reflect.get(target, property, receiver);
+      return async (...args: unknown[]) => {
+        const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
+        if (typeof args[0] === "string" && args[0].includes("a.phase") && args[0].includes("request_admissions a") && ++reads === 3) {
+          pause();
+          await resumed;
+        }
+        return result;
+      };
+    },
+  }));
+  const expected = assert.rejects(new MemberClient(reader, new Client()).submit({ ...request, approvalDeadlineSeconds: 120 }), { code: "conflict" });
+  await paused;
+  try {
+    await store.recordAcceptance(request, ownerInitiator);
+    const turn = await store.beginTurn(request);
+    assert.equal(turn.kind, "start");
+    if (turn.kind !== "start") throw new Error("Expected a new turn");
+    await store.commitTurn({ ownerId: request.ownerId, conversationId, requestId: request.requestId, token: turn.token,
+      reply: "winner", checkpoint: { version: 1, engine: "cursor", state: {} } });
+  } finally { resume(); }
+  await expected;
+});
+
+
+test("a budget preflight verifies concurrent admission terms before a workflow call", { timeout: 10_000 }, async t => {
+  const { Client } = await import("@temporalio/client");
+  const { MemberClient } = await import("../../src/service/client.ts");
+  const { UsageApi } = await import("../../src/service/usage.ts");
+  const member = await spawned("cursor");
+  await new UsageApi(store).setBudget(member.ownerId, member.memberId, { tokenLimit: 1_000_000 });
+  const conversationId = randomUUID();
+  await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
+  const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original", approvalDeadlineSeconds: 60 };
+  let resume = () => {}, pause = () => {}, counts = 0;
+  const resumed = new Promise<void>(resolve => { resume = resolve; });
+  const paused = new Promise<void>(resolve => { pause = resolve; });
+  const reader = new MemberStore(new Proxy(pool, {
+    get(target, property, receiver) {
+      if (property !== "query") return Reflect.get(target, property, receiver);
+      return async (...args: unknown[]) => {
+        const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
+        if (typeof args[0] === "string" && args[0].includes("UNION SELECT request_id") && ++counts === 2) {
+          pause();
+          await resumed;
+        }
+        return result;
+      };
+    },
+  }));
+  const temporal = new Client();
+  const starts = t.mock.method(temporal.workflow, "start", async () => { throw new Error("Unexpected workflow call"); });
+  const handles = t.mock.method(temporal.workflow, "getHandle", () => { throw new Error("Unexpected workflow call"); });
+  const expected = assert.rejects(new MemberClient(reader, temporal).submit({ ...request, approvalDeadlineSeconds: 120 }), { code: "conflict" });
+  await paused;
+  try { await store.recordAcceptance(request, ownerInitiator); }
+  finally { resume(); }
+  await expected;
+  assert.equal(starts.mock.callCount() + handles.mock.callCount(), 0);
 });

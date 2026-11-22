@@ -36,7 +36,10 @@ formats it covers, retry and restore semantics, and `insecureTargets`, which say
 operator setting for HTTP and private-address targets exists, not whether it is on),
 `instructionPacks` (the pack
 route, the spawn field, limits, order, deletion and restore), health dependencies and
-listing limits. Additive
+listing limits. `contentErasure` version 1 advertises the erase and close routes,
+Cursor/OpenCode scope, preconditions, retry rules and residual copies. An absent or
+unsupported version does not enable erasure. Its retention metadata states that
+text content is owner erasable and digest fences are permanent. Additive
 response fields are compatible; consumers must reject an unsupported major version.
 Trusted context is currently an operator-configured local runtime, **not** a public
 HTTP context/tool injection endpoint. Capabilities are implementation contracts, not
@@ -221,7 +224,7 @@ reported in the health body itself.
 
 The identity is **(authenticated owner, conversation UUID, request UUID)**.
 UUIDs are normalized to lowercase. Payload equivalence is exact UTF-8 text equality:
-whitespace and Unicode normalization are not changed. The 16 KiB text limit and valid
+whitespace and Unicode normalization are not changed. The default 16 KiB text limit (or the text profile's advertised `requestTextBytes`) and valid
 Unicode rules of the existing input contract apply. Only a conversation handoff's
 reserved first request, which the server submits, may be longer (see below). Reusing an identity with changed
 text returns `409 conflict`; it never creates a second turn. The optional
@@ -317,8 +320,9 @@ persist this terminal reconciliation, but never invoke inference. Temporal obser
 has a ten-second RPC deadline; failure returns retryable error instead of falsely
 asserting the request is still accepted.
 
-Receipts are retained and results remain available until an eligible text conversation is explicitly erased with the database, across gateway/client restarts
-and supported Continue-As-New rollover. There is no automatic receipt TTL in v1;
+Receipts are retained with the database across gateway/client restarts and supported
+Continue-As-New rollover. Results remain available unless an eligible text conversation's
+content is explicitly erased. There is no automatic receipt TTL in v1;
 operator deletion/restoration of storage has its own recovery contract. Native
 checkpoints, credentials, and storage paths are never returned.
 
@@ -509,7 +513,7 @@ would, and records a transcript of the source's newest whole committed turns, at
 submits that request through the normal path; the target model gets the transcript as a
 user message, quoted as data. The source keeps its snapshot and receipts but admits no
 new request (`409 handed_off`), and the target admits no other request before the
-reserved one (`409 handoff_pending`). Every other request keeps the 16 KiB limit. Retry a
+reserved one (`409 handoff_pending`). Other native requests and routines keep the 16 KiB limit; owner text-member requests use their profile limit. Retry a
 POST with the same `requestId`: it returns the same handoff and submits the reserved request again
 if a failure interrupted it. A target whose workflow has closed stays unadmitted. See [conversation handoff](handoffs.md) for what is carried, the
 errors, costs and the trust boundary.
@@ -634,7 +638,7 @@ After durably storing a reply, an owner can call `DELETE /v1/conversations/{conv
 
 The latest logical workflow must be closed, every receipt terminal, every writer confirmed stopped, and the storage-location inventory complete. New text workflows close after one settled turn. To close an existing text workflow idle after a terminal request, call `POST /v1/conversations/{conversationId}/close` with `{}` (`CrewClient.closeConversation`). It returns 202 with `closure: requested`, or 200 with `closure: closed` once a terminal execution is durably observed. DELETE never closes an open workflow. This version requires at least one terminal request; an empty conversation returns `content_requests_unresolved`. Unknown or wrong-owner identities return 404.
 
-A successful DELETE returns 200 and one immutable tombstone: `apiVersion`, `conversationId`, `memberId`, `engine`, `erasureId`, `erased: true`, `erasedAt`. Repeats return the same object. A committed pending fence returns `503 content_erasure_pending`; retry the same conversation. Pending content reads also return 503. Ineligible requests return 409 without changing content. Missing legacy location evidence gives `content_location_unknown`; missing process proof gives `content_runtime_unconfirmed`; unresolved start RPCs give `content_start_unresolved`.
+A successful DELETE returns 200 and one immutable tombstone: `apiVersion`, `conversationId`, `memberId`, `engine`, `erasureId`, `erased: true`, `erasedAt`. Repeats return the same object. A committed pending fence returns `503 content_erasure_pending`; retry the same conversation. Pending content reads also return 503. Ineligible requests return 409 without changing content. Missing process proof gives `content_runtime_unconfirmed` before location inventory is checked. Once process proofs pass, missing location inventory gives `content_location_unknown`. Trusted `erasure-inventory` enrollment repairs both evidence gaps. Unresolved start RPCs give `content_start_unresolved`.
 
 Successful request reads retain their original completed/failed/cancelled status and metadata, add `erased: true`, and omit `result` entirely. Conversation snapshots contain empty messages, no partial text/tools, and a minimal erased state. Legacy receipts omit `reply`. Any replay, changed-text replay, new request, cancellation or repeated open against the fenced identity returns `410 conversation_erased` before comparing digests. Request/admission identities, digest fences, event cursors and publication keys remain permanently; digests can confirm guesses.
 
@@ -643,3 +647,5 @@ Crew clears `turns.reply`, `turns.checkpoint`, snapshot `messages`, `state`, `op
 Temporal history remains until namespace retention expires; configure short retention for sensitive workloads (at least one day allows the closure reconciler time to capture evidence). See [trusted-context residuals](trusted-application-context.md#retention-and-deletion-contract). WAL, backups, provider copies and logs follow deployment policy. This command does not promise physical-media erasure or provider deletion. Launched failures/cancellations whose receipts remain uncertain cannot erase. Unknown legacy histories that expired before closure was observed also remain ineligible.
 
 Erased completed receipts are a coordinated contract change: clients built before this feature require `result.text` and reject them. Deploy the matching client build from the qualified Crew commit with the server. The unchanged package version `0.1.0` is not a compatibility guarantee between source pins; this change does not publish a package release.
+
+Text profiles can configure `requestTextBytes`. See [request text limits](request-text-limits.md) for configuration, discovery, and qualification.

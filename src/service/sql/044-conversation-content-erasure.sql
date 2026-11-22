@@ -1,18 +1,8 @@
--- Coordinated upgrade: no pre-043 writers/readers may serve once a fence exists.
+-- Coordinated upgrade: no pre-044 writers/readers may serve once a fence exists.
 SET LOCAL lock_timeout='2000ms';
-DO $$
-DECLARE deadline timestamptz := clock_timestamp() + interval '200 seconds';
-BEGIN
-  LOOP
-    BEGIN
-      LOCK TABLE birbcrew_ts.conversations, birbcrew_ts.turns, birbcrew_ts.audit_events IN ACCESS EXCLUSIVE MODE NOWAIT;
-      RETURN;
-    EXCEPTION WHEN lock_not_available THEN
-      IF clock_timestamp() > deadline THEN RAISE; END IF;
-    END;
-    PERFORM pg_sleep(0.05);
-  END LOOP;
-END $$;
+-- Earlier pending migrations may hold profile locks in this transaction.
+-- Do not wait here while those readers are blocked; retry the whole upgrade.
+LOCK TABLE birbcrew_ts.conversations, birbcrew_ts.turns, birbcrew_ts.audit_events IN ACCESS EXCLUSIVE MODE NOWAIT;
 
 ALTER TABLE birbcrew_ts.conversations
   ADD COLUMN content_erasure_id uuid,
@@ -174,6 +164,20 @@ BEGIN
 END $$;
 CREATE TRIGGER content_erasure_audit BEFORE INSERT ON birbcrew_ts.audit_events FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.check_content_erasure_audit();
 
+CREATE FUNCTION birbcrew_ts.require_completed_erasure_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.erased_at IS NOT NULL AND NOT EXISTS(
+    SELECT 1 FROM birbcrew_ts.audit_events a JOIN birbcrew_ts.conversations c USING(conversation_id)
+    WHERE a.conversation_id=NEW.conversation_id AND a.event_type='conversation.content_erased'
+      AND a.owner_id=c.owner_id AND a.member_id=c.member_id AND a.actor_kind='owner' AND a.actor_id=c.owner_id
+      AND a.payload=jsonb_build_object('erasureId',NEW.erasure_id)) THEN
+    RAISE EXCEPTION 'Completed erasure requires its audit fact' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE CONSTRAINT TRIGGER completed_erasure_audit AFTER UPDATE ON birbcrew_ts.conversation_content_erasures
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION birbcrew_ts.require_completed_erasure_audit();
+
 CREATE FUNCTION birbcrew_ts.erased_projection(cid uuid) RETURNS jsonb LANGUAGE sql STABLE AS $$
  SELECT jsonb_build_object('conversationId',c.conversation_id,'memberId',c.member_id,'engine',m.engine,'profile',m.profile,
    'phase',e.terminal_phase,'erased',true,'openStep',NULL,'pendingApprovals','[]'::jsonb)
@@ -181,12 +185,19 @@ CREATE FUNCTION birbcrew_ts.erased_projection(cid uuid) RETURNS jsonb LANGUAGE s
  JOIN birbcrew_ts.conversation_content_erasures e USING(conversation_id) WHERE c.conversation_id=cid
 $$;
 CREATE FUNCTION birbcrew_ts.content_fence_guard() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE cid uuid; fence uuid; lifecycle text; clearing boolean := false;
+DECLARE cid uuid; fence uuid; lifecycle text; engine text; clearing boolean := false;
 BEGIN
   IF TG_OP='UPDATE' AND OLD.conversation_id IS DISTINCT FROM NEW.conversation_id THEN
     RAISE EXCEPTION 'Conversation child bindings are immutable' USING ERRCODE='23514';
   END IF;
   IF TG_OP='DELETE' THEN cid:=OLD.conversation_id; ELSE cid:=NEW.conversation_id; END IF;
+  SELECT m.engine INTO engine FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING(owner_id,member_id) WHERE c.conversation_id=cid;
+  IF engine NOT IN ('cursor','opencode') THEN
+    IF TG_TABLE_NAME='turns' AND TG_OP<>'DELETE' THEN
+      IF NEW.erased THEN RAISE EXCEPTION 'Native turns cannot be erased' USING ERRCODE='23514'; END IF;
+    END IF;
+    IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+  END IF;
   SELECT content_erasure_id,text_lifecycle INTO fence,lifecycle FROM birbcrew_ts.conversations WHERE conversation_id=cid FOR UPDATE;
   IF fence IS NULL THEN
     IF TG_TABLE_NAME='turns' AND TG_OP<>'DELETE' THEN
@@ -272,6 +283,9 @@ BEGIN
     RAISE EXCEPTION 'content_output_busy' USING ERRCODE='23514';
   END IF;
   IF NEW.content_output_epoch<OLD.content_output_epoch THEN RAISE EXCEPTION 'Output epoch is monotonic' USING ERRCODE='23514'; END IF;
+  IF NEW.content_erasure_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.members WHERE owner_id=NEW.owner_id AND member_id=NEW.member_id AND engine IN ('cursor','opencode')) THEN
+    RAISE EXCEPTION 'content_erasure_unsupported' USING ERRCODE='23514';
+  END IF;
   IF NEW.content_erasure_id IS NOT NULL AND (NEW.text_lifecycle<>'sealed_closed' OR NOT NEW.text_location_inventory_complete OR
     NOT EXISTS(SELECT 1 FROM birbcrew_ts.conversation_content_erasures WHERE conversation_id=NEW.conversation_id AND erasure_id=NEW.content_erasure_id) OR
     NOT birbcrew_ts.content_cleanup_inventory_matches(NEW.conversation_id,NEW.content_erasure_id)) THEN

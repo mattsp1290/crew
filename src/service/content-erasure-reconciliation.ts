@@ -17,6 +17,7 @@ export function startContentErasureReconciliation(
   let pendingAfter: string | null = null;
   async function scan() {
     const { rows } = await store.transaction(async (db) => {
+      await db.query("SET LOCAL lock_timeout='2000ms'; SET LOCAL statement_timeout='2000ms'");
       const {
         rows: [cursor],
       } = await db.query<{ after_id: string | null }>(
@@ -26,6 +27,7 @@ export function startContentErasureReconciliation(
         `SELECT c.owner_id AS "ownerId",c.conversation_id AS "conversationId"
         FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING(owner_id,member_id)
         WHERE m.engine IN ('cursor','opencode') AND c.text_lifecycle='startable' AND c.content_erasure_id IS NULL
+          AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns t WHERE t.conversation_id=c.conversation_id AND t.phase='uncertain')
           AND (c.text_closing_at IS NOT NULL OR EXISTS(SELECT 1 FROM birbcrew_ts.conversation_workflow_starts s WHERE s.conversation_id=c.conversation_id AND s.state='acknowledged'))
           AND ($1::uuid IS NULL OR c.conversation_id>$1) ORDER BY c.conversation_id LIMIT 64`,
         [cursor.after_id],
@@ -79,7 +81,7 @@ export function startContentErasureReconciliation(
       }),
     );
     const lag = await pool.query(
-      "SELECT 1 FROM birbcrew_ts.conversations WHERE text_lifecycle='startable' AND text_closing_at<clock_timestamp()-interval '5 minutes' LIMIT 1",
+      "SELECT 1 FROM birbcrew_ts.conversations c WHERE text_lifecycle='startable' AND text_closing_at<clock_timestamp()-interval '5 minutes' AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns t WHERE t.conversation_id=c.conversation_id AND t.phase='uncertain') LIMIT 1",
     );
     healthy = true;
     if (lag.rowCount)

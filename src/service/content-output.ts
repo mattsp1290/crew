@@ -10,7 +10,7 @@ type Output =
 /** Serialize each conversation before acquiring a connection. No socket waits in SQL. */
 export class ConversationContentOutput {
   private readonly tails = new Map<string, Promise<void>>();
-  private readonly acknowledgements = new Set<string>();
+  private readonly acknowledgements = new Map<string, string>();
   private retryTimer: ReturnType<typeof setInterval> | undefined;
   private retrying: Promise<void> | undefined;
   private stopped = false;
@@ -18,29 +18,11 @@ export class ConversationContentOutput {
   private readonly gatewayId = randomUUID();
   constructor(pool: Pool) {
     this.pool = pool;
+    // pg removes expired checkout waiters; an external Promise race cannot.
+    pool.options.connectionTimeoutMillis = Math.min(pool.options.connectionTimeoutMillis || 2000, 2000);
   }
   private async connect(): Promise<PoolClient> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const acquisition = this.pool.connect();
-    try {
-      return await Promise.race([
-        acquisition,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("Content output connection deadline")),
-            2000,
-          );
-        }),
-      ]);
-    } catch (error) {
-      void acquisition.then(
-        (db) => db.release(true),
-        () => {},
-      );
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
+    return this.pool.connect();
   }
   private async acknowledge(db: PoolClient, outputId: string) {
     const statement = {
@@ -50,57 +32,75 @@ export class ConversationContentOutput {
     };
     await db.query(statement);
   }
-  private retryAcknowledgement(outputId: string) {
-    this.acknowledgements.add(outputId);
+  private retryAcknowledgement(outputId: string, conversationId: string) {
+    this.acknowledgements.set(outputId, conversationId);
     warn("content_output_acknowledgement_delayed", { code: "retrying" });
     if (this.stopped || this.retryTimer) return;
     this.retryTimer = setInterval(() => {
       if (this.retrying) return;
-      this.retrying = (async () => {
-        for (const id of this.acknowledgements) {
-          let db: PoolClient | undefined;
-          const connectionError = () => {};
-          try {
-            db = await this.connect();
-            db.on("error", connectionError);
-            await this.acknowledge(db, id);
-            this.acknowledgements.delete(id);
-            db.release();
-            db.off("error", connectionError);
-            db = undefined;
-          } catch {
-            db?.release(true);
-            db?.off("error", connectionError);
-            break;
-          }
-        }
-        if (!this.acknowledgements.size) {
-          clearInterval(this.retryTimer);
-          this.retryTimer = undefined;
-        }
-      })().finally(() => {
+      this.retrying = this.flushAcknowledgements().finally(() => {
         this.retrying = undefined;
       });
     }, 1000);
     this.retryTimer.unref();
   }
+  private async flushAcknowledgements() {
+    for (const [id, conversationId] of this.acknowledgements) {
+      let db: PoolClient | undefined;
+      const connectionError = () => {};
+      try {
+        db = await this.connect();
+        db.on("error", connectionError);
+        // The abandoned frame can never emit. Serialize with its original
+        // transaction so DELETE cannot miss a reservation still committing.
+        const begin = {
+          text: "BEGIN; SET LOCAL lock_timeout='2000ms'; SET LOCAL statement_timeout='2000ms'",
+          query_timeout: 2000,
+        };
+        await db.query(begin);
+        const lock = {
+          text: "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE",
+          values: [conversationId],
+          query_timeout: 2000,
+        };
+        await db.query(lock);
+        await this.acknowledge(db, id);
+        const commit = { text: "COMMIT", query_timeout: 2000 };
+        await db.query(commit);
+        this.acknowledgements.delete(id);
+        db.release();
+        db.off("error", connectionError);
+        db = undefined;
+      } catch {
+        db?.release(true);
+        db?.off("error", connectionError);
+        continue;
+      }
+    }
+    if (!this.acknowledgements.size) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = undefined;
+    }
+  }
   async stop() {
     this.stopped = true;
     clearInterval(this.retryTimer);
     await this.retrying;
+    await this.flushAcknowledgements();
   }
   async enqueue(
     key: { ownerId: string; conversationId: string },
     emit: () => Enqueued,
     signal?: AbortSignal,
   ): Promise<Output> {
+    const queueKey = key.conversationId.toLowerCase();
     let release!: () => void;
-    const previous = this.tails.get(key.conversationId) ?? Promise.resolve();
+    const previous = this.tails.get(queueKey) ?? Promise.resolve();
     const next = new Promise<void>((resolve) => {
       release = resolve;
     });
     const tail = previous.then(() => next);
-    this.tails.set(key.conversationId, tail);
+    this.tails.set(queueKey, tail);
     try {
       if (signal) {
         signal.throwIfAborted();
@@ -176,10 +176,9 @@ export class ConversationContentOutput {
           if (ticket) await this.acknowledge(db, ticket);
         } catch {
           poisoned = true;
-          // Once COMMIT is acknowledged, this process can prove that emit either
-          // returned or will never run. Retry its own release without failing a
-          // frame already delivered. Ambiguous COMMIT tickets stay fail-closed.
-          if (committed && ticket) this.retryAcknowledgement(ticket);
+          // Emit returned or this frame has been irrevocably abandoned. A live
+          // owner can release either ticket after serializing with its transaction.
+          if (ticket) this.retryAcknowledgement(ticket, key.conversationId);
         } finally {
           db.release(poisoned || !committed);
           db.off("error", connectionError);
@@ -188,8 +187,7 @@ export class ConversationContentOutput {
     } finally {
       release();
       void tail.then(() => {
-        if (this.tails.get(key.conversationId) === tail)
-          this.tails.delete(key.conversationId);
+        if (this.tails.get(queueKey) === tail) this.tails.delete(queueKey);
       });
     }
   }

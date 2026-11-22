@@ -1,9 +1,8 @@
 import { assertContentWritable, contentErasureState, preflightContentErasure, reserveTextWorkflowStart, settleTextWorkflowStart, sealTextClosure, terminalWorkflowStatuses, type ClosureEvidence } from "./content-erasure-store.ts";
-import { isTextEngine } from "./domain.ts";
 import { hasFailureType as erasureFailureType } from "./failure-type.ts";
 import { ApprovalStore, decisionSchema } from "./approvals.ts";
 import { ApplicationFailure, Client, WorkflowExecutionAlreadyStartedError, WorkflowNotFoundError, WorkflowUpdateFailedError } from "@temporalio/client";
-import { MemberStoreError, openSchema, TextAdmissionError, turnRequestSchema, conversationKey, turnKey, type Conversation, type TurnRequest } from "./domain.ts";
+import { isTextEngine, memberSubmitEnvelopeSchema, MemberStoreError, openSchema, TextAdmissionError, turnRequestSchema, conversationKey, turnKey, type Conversation, type TurnRequest } from "./domain.ts";
 import type { MemberStore } from "./store.ts";
 import type { memberConversation } from "./workflow.ts";
 
@@ -27,8 +26,8 @@ export class MemberClient {
       const state = await contentErasureState(this.store.pool,conversation);
       if(state.text_workflow_namespace && state.text_workflow_namespace!==this.temporal.options.namespace) throw new MemberStoreError("content_namespace_mismatch");
       if (state.text_lifecycle === "sealed_closed" || !state.text_location_inventory_complete || (await this.store.pool.query(
-        "SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 LIMIT 1",[conversation.conversationId])).rowCount || (await this.store.pool.query(
-        "SELECT 1 FROM birbcrew_ts.conversation_workflow_starts WHERE conversation_id=$1 AND state='acknowledged' LIMIT 1", [conversation.conversationId])).rowCount) {
+        "SELECT 1 FROM birbcrew_ts.turns WHERE conversation_id=$1 UNION ALL SELECT 1 FROM birbcrew_ts.request_admissions WHERE conversation_id=$1 LIMIT 1",[conversation.conversationId])).rowCount || (await this.store.pool.query(
+        "SELECT 1 FROM birbcrew_ts.conversation_workflow_starts WHERE conversation_id=$1 AND state IN ('acknowledged','absent_after_trusted_drain') LIMIT 1", [conversation.conversationId])).rowCount) {
         return this.temporal.workflow.getHandle<typeof memberConversation>(workflowId);
       }
       const attempt = await reserveTextWorkflowStart(this.store,conversation,workflowId,this.temporal.options.namespace);
@@ -91,6 +90,7 @@ export class MemberClient {
     const state = await contentErasureState(this.store.pool,key);
     if (state.erased_at) return;
     if (state.content_erasure_id !== key.erasureId) throw new MemberStoreError("conflict");
+    if(state.text_workflow_namespace!==this.temporal.options.namespace)throw new MemberStoreError("content_namespace_mismatch");
     await this.temporal.connection.withDeadline(Date.now()+5_000, () => this.temporal.workflow.start("conversationContentErasure", {
       taskQueue:memberTaskQueue, workflowId:`birbcrew-ts/content-erasure/${key.conversationId}`,
       workflowIdConflictPolicy:"USE_EXISTING", workflowIdReusePolicy:"ALLOW_DUPLICATE", args:[key],
@@ -121,7 +121,7 @@ export class MemberClient {
   }
 
   private async throughRollover<T>(conversation: Conversation, request: TurnRequest,
-    action: (handle: Awaited<ReturnType<MemberClient["workflow"]>>) => Promise<T>): Promise<T> {
+    action: (handle: Awaited<ReturnType<MemberClient["workflow"]>>, validated: TurnRequest) => Promise<T>): Promise<T> {
     // Rejected updates were not accepted and are safe to resubmit. Never retry arbitrary
     // failures or an accepted update whose result is uncertain.
     const deadline = Date.now() + 30_000;
@@ -130,8 +130,8 @@ export class MemberClient {
         // Before every attempt and any workflow call: a handoff can seal the source, or the
         // member's budget run out, while a rollover holds this request back, and admission
         // refusing it would fail the conversation.
-        await this.store.checkAdmission(request);
-        return await action(await this.workflow(conversation));
+        const validated = await this.store.checkAdmission(request);
+        return await action(await this.workflow(conversation), validated);
       }
       catch (error) {
         for (const code of ["conversation_erased","conversation_closed"] as const) {
@@ -165,19 +165,19 @@ export class MemberClient {
     const conversation=await this.store.getConversation({ownerId:key.ownerId,conversationId:key.conversationId});
     let status=await this.store.requestStatus(key);
     const state=isTextEngine(conversation.engine)?await contentErasureState(this.store.pool,key):undefined;
-    if(status.phase!=="accepted") {
-      if (state && !state.text_closure && !state.content_erasure_id && ["committed","rejected"].includes(status.phase)) await this.describeClosure(key).catch(() => undefined);
-      return status;
-    }
+    if(state?.content_erasure_id)return this.store.requestStatus(key);
+    if(status.phase!=="accepted") return status;
     if(state?.text_workflow_namespace && state.text_workflow_namespace!==this.temporal.options.namespace) throw new MemberStoreError("content_namespace_mismatch");
     // Observation only: do not start a workflow or repeat an update to repair status.
     const workflowId=`birbcrew-ts/member/${conversation.memberId}/conversation/${conversation.conversationId}`;
     const execution=await this.temporal.connection.withDeadline(Date.now()+10_000,
       ()=>this.temporal.workflow.getHandle(workflowId).describe());
-    if(["COMPLETED","FAILED","CANCELLED","CANCELED","TERMINATED","TIMED_OUT"].includes(execution.status.name)) {
-      await this.store.rejectUnstartedAdmission(key);
+    if(terminalWorkflowStatuses.includes(execution.status.name)) {
+      try { await this.store.rejectUnstartedAdmission(key); }
+      catch(error) {
+        if(!(error instanceof MemberStoreError && error.code==="conversation_erased"))throw error;
+      }
       status=await this.store.requestStatus(key);
-      if (isTextEngine(conversation.engine)) await this.describeClosure(key).catch(() => undefined);
     }
     return status;
   }
@@ -185,7 +185,13 @@ export class MemberClient {
   private async reconcileAcceptance(request: ReturnType<typeof turnRequestSchema.parse>) {
     if((await this.store.requestAdmission(request))?.phase!=="accepted")return;
     const {ownerId,conversationId,requestId}=request;
-    const status=await this.requestStatus({ownerId,conversationId,requestId});
+    let status;
+    try {status=await this.requestStatus({ownerId,conversationId,requestId});}
+    catch(error){
+      if(error instanceof MemberStoreError && error.code==="content_erasure_pending")throw new MemberStoreError("conversation_erased");
+      throw error;
+    }
+    if(status.erased)throw new MemberStoreError("conversation_erased");
     if(status.phase==="rejected")throw new MemberStoreError("request_rejected");
   }
 
@@ -219,7 +225,13 @@ export class MemberClient {
     const conversation = await this.store.getConversation({ ownerId: key.ownerId, conversationId: key.conversationId });
     if(isTextEngine(conversation.engine)) {
       await assertContentWritable(this.store.pool,key,false);
-      const status = await this.requestStatus(key);
+      let status;
+      try { status = await this.requestStatus(key); }
+      catch(error) {
+        if(error instanceof MemberStoreError && error.code==="content_erasure_pending") throw new MemberStoreError("conversation_erased");
+        throw error;
+      }
+      if(status.erased) throw new MemberStoreError("conversation_erased");
       if (["committed","rejected"].includes(status.phase)) return;
     }
     const ledger = new ApprovalStore(this.store.pool);
@@ -230,36 +242,44 @@ export class MemberClient {
 
   async accept(input: unknown, deadline?: number): Promise<{ requestId: string }> {
     if (deadline !== undefined) return this.temporal.connection.withDeadline(deadline, () => this.accept(input));
-    const request = turnRequestSchema.parse(input);
-    const conversation = await this.store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
+    const envelope = memberSubmitEnvelopeSchema.parse(input);
+    const conversation = await this.store.getConversation({ ownerId: envelope.ownerId, conversationId: envelope.conversationId });
+    const request = isTextEngine(conversation.engine) ? await this.store.checkAdmission(envelope) : turnRequestSchema.parse(envelope);
     await this.reconcileAcceptance(request);
     if (await this.store.committedReply(request) === undefined) {
       try {
-        await this.throughRollover(conversation, request, handle => handle.executeUpdate<string, [typeof request]>("acceptTurn", { args: [request] }));
+        await this.throughRollover(conversation, request, (handle, validated) => handle.executeUpdate<string, [typeof validated]>("acceptTurn", { args: [validated] }));
       } catch (error) {
         // usage_limit still closes the member workflow.
         if (hasFailureType(error, "usage_limit")) throw new MemberStoreError("usage_limit_closed");
-        if (!(error instanceof WorkflowNotFoundError)) throw error;
-        if (await this.store.committedReply(request) === undefined) throw new MemberStoreError("conflict");
+        if (!(error instanceof WorkflowNotFoundError) && !(isTextEngine(conversation.engine) && erasureFailureType(error,"conversation_open"))) throw error;
+        if (await this.store.committedReply(request) === undefined) {
+          if (isTextEngine(conversation.engine)) await this.store.checkAdmission(request);
+          if (!(error instanceof WorkflowNotFoundError)) throw error;
+          throw new MemberStoreError("conflict");
+        }
       }
     }
     return { requestId: request.requestId };
   }
 
   async submit(input: unknown): Promise<string> {
-    const request = turnRequestSchema.parse(input);
-    const conversation = await this.store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
+    const envelope = memberSubmitEnvelopeSchema.parse(input);
+    const conversation = await this.store.getConversation({ ownerId: envelope.ownerId, conversationId: envelope.conversationId });
+    const request = isTextEngine(conversation.engine) ? await this.store.checkAdmission(envelope) : turnRequestSchema.parse(envelope);
     await this.reconcileAcceptance(request);
     const reply = await this.store.committedReply(request);
     if (reply !== undefined) return reply;
     try {
-      return await this.throughRollover(conversation, request, handle => handle.executeUpdate<string, [typeof request]>("submitTurn", { args: [request] }));
+      return await this.throughRollover(conversation, request, (handle, validated) => handle.executeUpdate<string, [typeof validated]>("submitTurn", { args: [validated] }));
     } catch (error) {
       // usage_limit still closes the member workflow.
       if (hasFailureType(error, "usage_limit")) throw new MemberStoreError("usage_limit_closed");
-      if (!(error instanceof WorkflowNotFoundError)) throw error;
+      if (!(error instanceof WorkflowNotFoundError) && !(isTextEngine(conversation.engine) && erasureFailureType(error,"conversation_open"))) throw error;
       const settled = await this.store.committedReply(request);
       if (settled !== undefined) return settled;
+      if (isTextEngine(conversation.engine)) await this.store.checkAdmission(request);
+      if (!(error instanceof WorkflowNotFoundError)) throw error;
       throw new MemberStoreError("conflict");
     }
   }
