@@ -18,10 +18,12 @@ export class ConversationContentOutput {
   private readonly gatewayId = randomUUID();
   constructor(pool: Pool) {
     this.pool = pool;
-    // pg removes expired checkout waiters; an external Promise race cannot.
-    pool.options.connectionTimeoutMillis = Math.min(pool.options.connectionTimeoutMillis || 2000, 2000);
   }
   private async connect(): Promise<PoolClient> {
+    // Configure checkout only after authorization, when output actually needs SQL.
+    // pg removes expired waiters; an external Promise race cannot.
+    const options = this.pool.options;
+    options.connectionTimeoutMillis = Math.min(options.connectionTimeoutMillis || 2000, 2000);
     return this.pool.connect();
   }
   private async acknowledge(db: PoolClient, outputId: string) {
