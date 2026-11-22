@@ -474,6 +474,35 @@ test("completed turns erase atomically only after independent stop proofs, retai
     reply: marker,
     checkpoint: { version: 1, engine: "cursor", state: { secret: marker } },
   });
+  await pool.query(`UPDATE birbcrew_ts.public_snapshots SET
+    state=state||jsonb_build_object('synthetic', $2::text),
+    messages=jsonb_build_array(jsonb_build_object('id','synthetic','role','user','content',$2::text)),
+    open_text=jsonb_build_object('id','synthetic','prefix',$2::text),
+    open_tools=jsonb_build_object('synthetic',jsonb_build_object('prefix',$2::text)),
+    child_open_text=jsonb_build_object('synthetic',jsonb_build_object('prefix',$2::text))
+    WHERE conversation_id=$1`, [key.conversationId, marker]);
+  async function retainedMarkerColumns() {
+    const columns = await pool.query<{table_name:string;column_name:string;binary:boolean}>(`
+      SELECT c.relname AS table_name,a.attname AS column_name,base.typname='bytea' AS binary
+      FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_type t ON t.oid=a.atttypid
+      JOIN pg_type base ON base.oid=COALESCE(NULLIF(t.typbasetype,0),t.oid)
+      WHERE n.nspname='birbcrew_ts' AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped
+        AND base.typname IN ('text','varchar','bpchar','json','jsonb','bytea')`);
+    const hits: string[] = [], quote = (name:string) => '"' + name.replaceAll('"','""') + '"';
+    for (const column of columns.rows) {
+      const value = column.binary ? "$1::bytea" : "$1::text";
+      const target = quote(column.column_name) + (column.binary ? "" : "::text");
+      const found = await pool.query(`SELECT 1 FROM birbcrew_ts.${quote(column.table_name)} WHERE position(${value} IN ${target})>0 LIMIT 1`, [column.binary ? Buffer.from(marker) : marker]);
+      if (found.rowCount) hits.push(column.table_name + "." + column.column_name);
+    }
+    return hits.sort();
+  }
+  assert.deepEqual(await retainedMarkerColumns(), [
+    "public_events.event", "public_snapshots.child_open_text", "public_snapshots.messages",
+    "public_snapshots.open_text", "public_snapshots.open_tools", "public_snapshots.state",
+    "turns.checkpoint", "turns.reply",
+  ]);
   await assert.rejects(
     pool.query(
       "UPDATE birbcrew_ts.turns SET erased=true,reply=NULL,checkpoint=NULL WHERE conversation_id=$1",
@@ -569,6 +598,7 @@ test("completed turns erase atomically only after independent stop proofs, retai
   );
   // Even with Temporal offline an already-acknowledged pending operation finalizes from SQL.
   await eraseConversationContent({ store, lifecycle: offline, key });
+  assert.deepEqual(await retainedMarkerColumns(), [], "a catalog-discovered text, JSON or binary column retained content");
   assert.deepEqual(
     (
       await pool.query(
