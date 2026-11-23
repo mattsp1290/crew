@@ -1,5 +1,8 @@
+import { storeActivityFailure } from "./failure-type.ts";
+import { assertContentWritable, contentErasureState, recordNoLaunchProof, receiptContentState } from "./content-erasure-store.ts";
+
 import { boundedText, promptBytes } from "@birbcrew/client/contract";
-import { storedRequestTextBytes } from "./text-profile-validation.ts";
+import { effectiveRequestTextBytes } from "./text-profile-validation.ts";
 import { warn } from "./diagnostics.ts";
 import { matchesNativeReply, type ItemReceipt } from "./codex-items.ts";
 import { interruptLiveLocked } from "./codex-calls.ts";
@@ -65,6 +68,7 @@ async function conversationFor(
     [key.ownerId, key.conversationId],
   );
   if (!result.rows.length) throw new MemberStoreError("not_found");
+  if (lock && isTextEngine(result.rows[0].engine)) await assertContentWritable(db, key);
   if (lock && (await db.query("SELECT 1 FROM birbcrew_ts.trusted_sessions WHERE conversation_id=$1", [key.conversationId])).rowCount) {
     throw new MemberStoreError("conflict");
   }
@@ -100,7 +104,7 @@ async function requestTextPolicy(db: Pool | PoolClient, conversation: Conversati
   const { rows: [row] } = await db.query<{ request_text_bytes: unknown }>(
     "SELECT request_text_bytes FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2",
     [conversation.engine, conversation.profile]);
-  return row ? storedRequestTextBytes(row.request_text_bytes) : promptBytes;
+  return effectiveRequestTextBytes(row);
 }
 
 async function validateRequestTextPolicy(db: Pool | PoolClient, key: TurnRequest, conversation: Conversation, lane: RequestInitiator) {
@@ -120,18 +124,20 @@ async function validateRequestTextPolicy(db: Pool | PoolClient, key: TurnRequest
  * initiator an admission would record, and whether the request's turn already started. */
 async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Conversation, attested: RequestInitiator) {
   const digest=createHash("sha256").update(key.text).digest();
+  const textLane = isTextEngine(conversation.engine) ? await firingInitiator(db, key, conversation) ?? attested : undefined;
   const {rows:[existingTurn]}=await db.query<{prompt_digest:Buffer}>(
     "SELECT prompt_digest FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",[key.conversationId,key.requestId]);
   if(existingTurn) {
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
+    if (textLane) await validateRequestTextPolicy(db, key, conversation, textLane);
     const budget = await turnBudget(db, key.conversationId);
     const refusal = turnRefusal(conversation.engine, key.text, budget.used >= budget.limit);
     if (refusal) throw refusal;
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
-  const recorded=handoff??await firingInitiator(db,key,conversation)??attested;
-  if (!existingTurn) await validateRequestTextPolicy(db, key, conversation, recorded);
+  const recorded=handoff??textLane??await firingInitiator(db,key,conversation)??attested;
+  if (!existingTurn && !textLane) await validateRequestTextPolicy(db, key, conversation, recorded);
   return {recorded,started:Boolean(existingTurn)};
 }
 
@@ -168,8 +174,8 @@ export function ownerAdmissionActivity(store: MemberStore) {
     try {
       await store.recordAcceptance(request, ownerInitiator);
     } catch (error) {
-      if (error instanceof MemberStoreError && (error.code === "handed_off" || error.code === "handoff_pending")) {
-        throw ApplicationFailure.nonRetryable(error.code);
+      if (error instanceof MemberStoreError && (error.code === "handed_off" || error.code === "handoff_pending" || error.code === "conversation_erased" || error.code === "conversation_closed")) {
+        throw storeActivityFailure(error);
       }
       // Retrying cannot change a budget refusal within the activity's deadline. MemberClient
       // reads this failure type back as usage_limit_closed.
@@ -187,17 +193,24 @@ export class MemberStore {
   }
 
   async transaction<T>(action: (db: PoolClient) => Promise<T>): Promise<T> {
-    const db = await this.pool.connect();
-    try {
-      await db.query("BEGIN");
-      const result = await action(db);
-      await db.query("COMMIT");
-      return result;
-    } catch (error) {
-      await db.query("ROLLBACK");
-      throw error;
-    } finally {
-      db.release();
+    for (let attempt=0;;attempt++) {
+      const db = await this.pool.connect();
+      let connectionFailure: Error | undefined;
+      const failed = (error: Error) => { connectionFailure = error; };
+      db.on("error", failed);
+      try {
+        await db.query("BEGIN");
+        const result = await action(db);
+        if (connectionFailure) throw connectionFailure;
+        await db.query("COMMIT");
+        return result;
+      } catch (error) {
+        await db.query("ROLLBACK").catch(() => { connectionFailure ??= new Error("Transaction connection lost"); });
+        if (error instanceof Error && "code" in error && ["40001","40P01"].includes(String(error.code)) && attempt<2) continue;
+        if(error instanceof Error && "code" in error && error.code==="23514" &&
+          (error.message==="conversation_erased" || error.message==="content_erasure_unsupported" || error.message==="conversation_closed" || error.message==="content_output_busy")) throw new MemberStoreError(error.message);
+        throw error;
+      } finally { db.release(Boolean(connectionFailure)); db.off("error", failed); }
     }
   }
 
@@ -211,7 +224,7 @@ export class MemberStore {
       await db.query("CREATE TABLE IF NOT EXISTS birbcrew_ts.schema_versions (version integer PRIMARY KEY)");
       const migrations = [[1, "001-members.sql"], [2, "002-approvals.sql"], [3, "003-native-launches.sql"],
       [4, "004-observation.sql"], [5, "005-pi-children.sql"], [6, "006-open-text.sql"], [7, "007-native-stops.sql"], [8, "008-tool-previews.sql"], [9, "009-project-notes.sql"], [10, "010-next-step.sql"], [11, "011-codex-members.sql"], [12, "012-codex-calls.sql"], [13, "013-codex-item-receipts.sql"], [14, "014-trusted-context.sql"], [15, "015-trusted-receipt-authority.sql"], [16, "016-conversation-rollover.sql"], [17, "017-conversation-admissions.sql"], [18, "018-integration-cancellations.sql"], [19, "019-recovery.sql"], [20, "020-admission-reconciliation.sql"], [21, "021-audit.sql"], [22, "022-conversation-owner-index.sql"], [23, "023-request-initiator.sql"], [24, "024-standing-grants.sql"], [25, "025-routines.sql"], [26, "026-memories.sql"], [27, "027-handoffs.sql"], [28, "028-approval-expiry.sql"], [29, "029-member-instructions.sql"], [30, "030-audit-filters.sql"], [31, "031-usage.sql"], [32, "032-webhooks.sql"], [33, "033-instruction-packs.sql"], [34, "034-notification-formats.sql"], [35, "035-usage-cost.sql"], [36, "036-delegation-audit.sql"], [37, "037-named-child-targets.sql"], [38, "038-delegation-control.sql"], [39, "039-decision-receipts.sql"],
-      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"], [42, "042-text-members.sql"], [43, "043-profile-request-text.sql"]] as const;
+      [40, "040-capabilities.sql"], [41, "041-tool-calls.sql"], [42, "042-text-members.sql"], [43, "043-profile-request-text.sql"], [44, "044-conversation-content-erasure.sql"]] as const;
       // Number a new migration above every one already released.
       const { rows: [{ latest }] } = await db.query<{ latest: number | null }>("SELECT max(version) AS latest FROM birbcrew_ts.schema_versions");
       for (const [version, name] of migrations) {
@@ -311,6 +324,10 @@ export class MemberStore {
       [key.ownerId, key.memberId, key.conversationId, [...textEngines], textConversationTurnLimit, conversationTurnLimit],
     );
     const conversation = await conversationFor(db, key, false);
+    if (isTextEngine(conversation.engine)) {
+      await assertContentWritable(db,key);
+      if(inserted.rowCount) await db.query("UPDATE birbcrew_ts.conversations SET text_location_inventory_complete=true WHERE conversation_id=$1",[key.conversationId]);
+    }
     if (conversation.memberId !== key.memberId) throw new MemberStoreError("conflict");
     if (inserted.rowCount) {
       const capture = await captureProjectNotes(key.ownerId);
@@ -329,7 +346,10 @@ export class MemberStore {
   }
 
   async requestAdmission(input: z.input<typeof turnRequestSchema>) {
-    return (await this.requestRecord(turnRequestSchema.parse(input))).admission;
+    const key = memberSubmitEnvelopeSchema.parse(input);
+    const record = await this.requestRecord(key);
+    turnRequestSchema.parse(key);
+    return record.admission;
   }
 
   private async requestRecord(key: TurnRequest, db: Pool | PoolClient = this.pool): Promise<{
@@ -339,13 +359,16 @@ export class MemberStore {
     const { rows: [row] } = await db.query<{
       admissionPhase: "accepted" | "rejected" | null; reason: string | null; admissionDigest: Buffer | null;
       deadline: number | null; turnPhase: TurnRow["phase"] | null; turnDigest: Buffer | null; reply: string | null;
+      engine: Engine; content_erasure_id: string | null;
     }>(`SELECT a.phase AS "admissionPhase",a.reason,a.prompt_digest AS "admissionDigest",
-        a.approval_deadline_seconds AS deadline,t.phase AS "turnPhase",t.prompt_digest AS "turnDigest",t.reply
-      FROM birbcrew_ts.conversations c
+        a.approval_deadline_seconds AS deadline,t.phase AS "turnPhase",t.prompt_digest AS "turnDigest",t.reply,
+        m.engine,to_jsonb(c)->>'content_erasure_id' AS content_erasure_id
+      FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING(owner_id,member_id)
       LEFT JOIN birbcrew_ts.request_admissions a ON a.conversation_id=c.conversation_id AND a.request_id=$3
       LEFT JOIN birbcrew_ts.turns t ON t.conversation_id=c.conversation_id AND t.request_id=$3
       WHERE c.owner_id=$1 AND c.conversation_id=$2`, [key.ownerId, key.conversationId, key.requestId]);
     if (!row) return { admission: undefined, turn: undefined };
+    if(isTextEngine(row.engine) && row.content_erasure_id)throw new MemberStoreError("conversation_erased");
     let admission: { phase: "accepted" | "rejected"; reason: string | null } | undefined;
     if (row.admissionPhase !== null) {
       if (row.admissionDigest === null) throw new Error("Invalid stored request identity");
@@ -376,6 +399,7 @@ export class MemberStore {
   async checkAdmission(input: unknown): Promise<TurnRequest> {
     const envelope = memberSubmitEnvelopeSchema.parse(input);
     const conversation = await conversationFor(this.pool, envelope, false);
+    if(isTextEngine(conversation.engine))await assertContentWritable(this.pool,envelope,false);
     const key = isTextEngine(conversation.engine) ? envelope : turnRequestSchema.parse(envelope);
     if (await this.recordedRequest(key)) return turnRequestSchema.parse(key);
     try {
@@ -420,7 +444,7 @@ export class MemberStore {
    * reserved, both read in this transaction; a caller cannot name either. Only that reserved
    * request may carry more than promptBytes. */
   async recordAcceptance(input: z.input<typeof turnRequestSchema>, initiator: RequestInitiator): Promise<void> {
-    const key=turnRequestSchema.parse(input);
+    const key=memberSubmitEnvelopeSchema.parse(input);
     const attested=requestInitiator.parse(initiator);
     if(attested.kind!=="owner")throw new MemberStoreError("conflict");
     const digest=createHash("sha256").update(key.text).digest();
@@ -434,6 +458,7 @@ export class MemberStore {
         if(prior.phase==="rejected")throw new MemberStoreError("request_rejected");
         return;
       }
+      turnRequestSchema.parse(key);
       const {recorded,started}=await admissionTerms(db,key,conversation,attested);
       // A request whose turn already started (a legacy non-durable submit) is running, never refused,
       // and a handoff's reserved request met its target's budget when the handoff committed.
@@ -458,6 +483,7 @@ export class MemberStore {
         AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns t WHERE t.conversation_id=a.conversation_id AND t.request_id=a.request_id)`,
         [key.conversationId,key.requestId,createHash("sha256").update(key.text).digest(),reason]);
       if(!result.rowCount)throw new MemberStoreError("conflict");
+      await recordNoLaunchProof(db,key);
       await appendAudit(db,{type:"request.finished",ownerId:key.ownerId,memberId:conversation.memberId,conversationId:key.conversationId,
         requestId:key.requestId,payload:{status:reason==="predecessor_cancelled"?"cancelled":"failed",reason}});
     });
@@ -476,6 +502,7 @@ export class MemberStore {
         AND ($3::bytea IS NULL OR prompt_digest=$3)
         AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.turns t WHERE t.conversation_id=a.conversation_id AND t.request_id=a.request_id)`,
         [key.conversationId,key.requestId,digest]);
+      if(rejected.rowCount)await recordNoLaunchProof(db,key);
       if(rejected.rowCount)await appendAudit(db,{type:"request.finished",ownerId:key.ownerId,memberId:conversation.memberId,
         conversationId:key.conversationId,requestId:key.requestId,payload:{status:"failed",reason:"admission_unconfirmed"}});
     });
@@ -484,12 +511,15 @@ export class MemberStore {
   async requestStatus(input: {ownerId:string;conversationId:string;requestId:string}) {
     const key=claimSchema.omit({token:true}).parse(input);
     await conversationFor(this.pool,key,false);
-    const {rows:[row]}=await this.pool.query(`SELECT a.phase AS admission,a.reason,t.phase,t.reply
+    const {rows:[row]}=await this.pool.query(`SELECT c.content_erasure_id,e.erased_at,a.phase AS admission,a.reason,t.phase,t.reply
       FROM birbcrew_ts.request_admissions a FULL JOIN birbcrew_ts.turns t USING(conversation_id,request_id)
+      JOIN birbcrew_ts.conversations c ON c.conversation_id=COALESCE(a.conversation_id,t.conversation_id)
+      LEFT JOIN birbcrew_ts.conversation_content_erasures e ON e.conversation_id=c.conversation_id
       WHERE COALESCE(a.conversation_id,t.conversation_id)=$1 AND COALESCE(a.request_id,t.request_id)=$2`,[key.conversationId,key.requestId]);
     if(!row)throw new MemberStoreError("not_found");
-    return {requestId:key.requestId,phase:row.admission==="rejected"?"rejected":row.phase??"accepted",
-      ...(row.reason?{reason:row.reason}:{}),...(row.phase==="committed"?{reply:row.reply}:{})};
+    const content = receiptContentState(row);
+    return {requestId:key.requestId,...(content === "erased" ? {erased:true} : {}),phase:row.admission==="rejected"?"rejected":row.phase??"accepted",
+      ...(row.reason?{reason:row.reason}:{}),...(row.phase==="committed" && content === "retained" ? {reply:row.reply}:{})};
   }
 
   async conversationProgress(key: ConversationKey): Promise<{ turns: number; terminal: boolean; limit: number }> {
@@ -516,8 +546,9 @@ export class MemberStore {
   }
 
   async committedReply(input: z.input<typeof turnRequestSchema>): Promise<string | undefined> {
-    const key = turnRequestSchema.parse(input);
+    const key = memberSubmitEnvelopeSchema.parse(input);
     const { admission, turn } = await this.requestRecord(key);
+    turnRequestSchema.parse(key);
     if (admission?.phase === "rejected") throw new MemberStoreError("request_rejected");
     if (!turn) return undefined;
     if (turn.phase === "uncertain") throw new MemberStoreError("conflict");

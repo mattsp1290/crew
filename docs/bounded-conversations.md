@@ -28,7 +28,7 @@ the effect is safe.
 
 `GET /conversations/:conversationId/requests/:requestId` reads tenant-scoped
 status directly from PostgreSQL: accepted, started, committed, uncertain or
-rejected. Committed status includes the stored reply; rejected status includes
+rejected. Committed status includes the stored reply unless eligible text content was erased; rejected status includes
 the reason. It does not route to a historical Temporal run. Decisions and
 cancellation also address the logical workflow ID; first-turn `workflow_run_id`
 is audit evidence only. Pending work never transfers across a rollover boundary:
@@ -42,16 +42,17 @@ conversations receive the 128-turn budget. Patched workflow code preserves old
 captured history behavior. Migration 17 backfills request admissions for existing
 turns without inventing prompt text or native state.
 
-Keep request admission identities, prompt digests, terminal turn results and
-side-effect receipts for the lifetime of the logical conversation, including
-closed conversations. There is no automatic TTL or reuse of expired request IDs.
+Keep request admission identities, prompt digests, and side-effect receipts for the
+lifetime of the logical conversation, including closed conversations. Native turn
+results remain retained. Eligible text results remain available until owner erasure. There is no automatic TTL or reuse of expired request IDs.
 The count is bounded per conversation, not globally across all user-created
 conversations. PostgreSQL receipts are authoritative even after Temporal's
 history retention expires. An operator must not purge them independently and
-then reuse the conversation ID. A future coordinated retention/erasure API must
-retain a denial tombstone or permanently retire that identity.
+then reuse the conversation ID. Owner-controlled text erasure retains receipt identities and digest fences while
+clearing eligible Cursor/OpenCode results. See [the erasure contract](integration-api-v1.md#erase-text-conversation-content).
 
-Public AG-UI snapshots preserve final messages across generations; the event
+Public AG-UI snapshots preserve final messages across generations until eligible
+text content is erased. The event
 tail remains 256 events and an expired cursor requires a new snapshot. Native
 context and model budgets are separate: see [native bounds](native-conversation-bounds.md).
 No native summarization, cross-engine conversion or unlimited retention is added.
@@ -189,3 +190,9 @@ Temporal lookup failure is surfaced as unavailable after a ten-second deadline,
 not permission to replay. Ownership is checked before the Temporal lookup.
 Migration 20 permits the new reason; migrations 18/19 belong to downstream API
 and backup work and are not prerequisites for this isolated change.
+
+## Text content erasure
+
+Text conversations close naturally after their single settled turn, behind the Temporal `text-conversation-close-v1` replay patch. Existing idle histories can use the separate owner close command; DELETE never changes an open workflow. See [the integration API](integration-api-v1.md#erase-text-conversation-content).
+
+Erasure preserves conversation/request identities, original terminal receipt outcomes, prompt digest fences, publication identities and cursors. A permanent conversation-row fence serializes admission, launches and direct SQL content writes. Durable output reservations prevent HTTP enqueue from racing that fence, even when the gateway loses its database backend; orphaned reservations require a trusted gateway drain. Pending cleanup survives restarts. Any UUID or text replay after fencing returns 410 before digest comparison and never executes inference. Uncertainty remains an explicit refusal; erasure does not resolve it.

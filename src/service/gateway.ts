@@ -1,3 +1,4 @@
+import { ConversationContentOutput } from "./content-output.ts";
 import { approvalDetailIdentitySchema, routes } from "@birbcrew/client/contract";
 import { readDecisionRecord, readOwnerApprovalDetail } from "./approvals.ts";
 import { childOpener } from "./child-observation.ts";
@@ -123,7 +124,7 @@ async function health(schemaVersion: () => Promise<number | null>, members: Memb
 
 /** `hubs` is the fan-out; without it this observer polls the database on its own. */
 async function observe(
-  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse, hubs?: ObserverHubs,
+  pool: Pool, owner: string, snapshot: PublicSnapshot, runId: string, response: ServerResponse, hubs: ObserverHubs | undefined, output: ConversationContentOutput,
 ) {
   if (response.destroyed) return;
   const { conversationId: threadId } = snapshot.state;
@@ -134,7 +135,14 @@ async function observe(
   async function send(event: Event, id?: number) {
     stop.signal.throwIfAborted();
     const data = (id === undefined ? "" : `id: ${id}\n`) + encoder.encode(event);
-    if (!response.write(data)) await once(response, "drain", { signal: stop.signal });
+    const emit = () => ({backpressure:!response.write(data)});
+    const enqueued = isTextEngine(snapshot.state.engine) && !snapshot.erased
+      ? await output.enqueue({ownerId:owner,conversationId:threadId},emit,stop.signal) : {kind:"retained" as const,...emit()};
+    if (enqueued.kind !== "retained") {
+      stop.abort(); hubs?.invalidate(owner,threadId);
+      throw new MemberStoreError("conversation_erased");
+    }
+    if (enqueued.backpressure && response.writableNeedDrain) await once(response,"drain",{signal:stop.signal});
   }
   async function finish(phase: Phase) {
     if (phase === "failed") await send({ type: E.RUN_ERROR, code: "MEMBER_FAILED", message: "Member conversation failed" });
@@ -186,9 +194,13 @@ async function observe(
       for (const row of rows) if (await deliver(row)) return;
       if (!rows.length) await delay(readEventsIdleMs, undefined, { signal: stop.signal });
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof MemberStoreError && ["conversation_erased","content_erasure_pending"].includes(error.code)) {
+      if (!response.destroyed) response.write(encoder.encode({type:E.RUN_ERROR,code:"CONVERSATION_ERASED",message:"Reconnect for the current conversation snapshot"}));
+      stop.abort(); hubs?.invalidate(owner,threadId);
+    }
     if (!stop.signal.aborted && !response.destroyed) {
-      await send({ type: E.RUN_ERROR, code: "OBSERVATION_FAILED", message: "Reconnect for the current conversation snapshot" });
+      response.write(encoder.encode({ type: E.RUN_ERROR, code: "OBSERVATION_FAILED", message: "Reconnect for the current conversation snapshot" }));
     }
   } finally {
     response.end();
@@ -207,9 +219,10 @@ function queryOf(url: URL, names: readonly string[]) {
  * observer. It defaults to BIRBCREW_OBSERVER_FANOUT so the kill switch also reaches gateways that suites build
  * in process; an invalid value throws ObserverSettingsError. `fanoutBounds` are for tests. */
 export function createGateway(store: MemberStore, members: MemberClient, owners: Record<string, string>,
-  { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env), fanoutBounds }:
-    { clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean; fanoutBounds?: Partial<FanoutBounds> } = {}) {
+  { clock = () => new Date(), webhookTargets = defaultTargetPolicy, fanout = observerFanout(process.env), fanoutBounds, contentOutput }:
+    { contentOutput?: ConversationContentOutput; clock?: Clock; webhookTargets?: TargetPolicy; fanout?: boolean; fanoutBounds?: Partial<FanoutBounds> } = {}) {
   const hubs = fanout ? new ObserverHubs(store.pool, fanoutBounds) : undefined;
+  const output = contentOutput ?? new ConversationContentOutput(store.pool);
   const integration = new IntegrationApi(store, members);
   const accounts = Object.entries(credentials.parse(owners)).map(([hash, actor]) => ({ digest: Buffer.from(hash, "hex"), actor }));
   // One database probe at a time, shared by concurrent health calls, so polling holds at most one probe connection.
@@ -228,6 +241,24 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
   const dispatcher = new RoutineDispatcher({ store, members, integration, owners: accounts.map(({ actor }) => actor), clock });
   const webhooks = new WebhookApi(store, clock, webhookTargets);
   const deliveries = new WebhookDispatcher({ store, owners: accounts.map(({ actor }) => actor), clock, policy: webhookTargets });
+  async function contentResponse(
+    response: ServerResponse, key: { ownerId: string; conversationId: string }, status: number,
+    content: { kind: "query"; read: () => Promise<unknown> } | { kind: "command"; data: unknown },
+  ) {
+    const conversation = await store.getConversation({ownerId:key.ownerId, conversationId:key.conversationId});
+    const data = content.kind === "query" ? await content.read() : content.data;
+    if (!isTextEngine(conversation.engine)) return json(response, status, data);
+    const abort = new AbortController(), onClose = () => abort.abort();
+    response.once("close", onClose);
+    try {
+      const result = await output.enqueue(key, () => { json(response,status,data); return {backpressure:false}; }, abort.signal);
+      if (result.kind === "retained") return;
+      hubs?.invalidate(key.ownerId,key.conversationId);
+      if (content.kind === "command") throw new MemberStoreError("conversation_erased");
+      if (result.kind === "erasing") throw new MemberStoreError("content_erasure_pending");
+      return json(response,status,await content.read());
+    } finally { response.off("close",onClose); }
+  }
   async function route(request: IncomingMessage, response: ServerResponse) {
     const auth = request.headers.authorization;
     if (!auth?.startsWith("Bearer ") || auth.length === 7) throw new HttpError(401, "authentication_required");
@@ -371,19 +402,37 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       if (detailRoute.groups?.decision) return json(response, 200, await readDecisionRecord(store.pool, ownerId, key));
       return json(response, 200, await readOwnerApprovalDetail(store.pool, ownerId, key));
     }
+    const contentRoute = versioned && /^\/conversations\/([^/]+)\/(content|close)$/.exec(path);
+    if (contentRoute) {
+      const key={ownerId,conversationId:z.uuid().parse(contentRoute[1])};
+      z.strictObject({}).parse(searchParams(url));
+      if (contentRoute[2]==="close") {
+        if (request.method!=="POST") throw new HttpError(405,"method_not_allowed");
+        routes.closeConversation.body.parse(await body(request));
+        const ack=await integration.closeTextConversation(key);
+        return json(response,ack.closure==="closed"?200:202,ack);
+      }
+      if (request.method!=="DELETE") throw new HttpError(405,"method_not_allowed");
+      for await (const chunk of request.iterator({destroyOnReturn:false})) {
+        if (Buffer.byteLength(chunk)) { request.resume(); throw new HttpError(400,"invalid_input"); }
+      }
+      const tombstone=await integration.eraseConversationContent(key);
+      hubs?.invalidate(ownerId,key.conversationId);
+      return json(response,200,tombstone);
+    }
     const requestRoute = versioned && /^\/conversations\/([^/]+)\/requests(?:\/([^/]+)(\/cancel)?)?$/.exec(path);
     if (requestRoute) {
       const conversationId = z.uuid().parse(requestRoute[1]);
       if (!requestRoute[2] && request.method === "POST") {
         const prompt = routes.submit.body.parse(await body(request));
-        return json(response, 202, await integration.submit({ ...prompt, ownerId, conversationId }));
+        return contentResponse(response,{ownerId,conversationId},202,{kind:"command",data:await integration.submit({ ...prompt, ownerId, conversationId })});
       }
       if (requestRoute[2]) {
         const requestId = z.uuid().parse(requestRoute[2]);
-        if (!requestRoute[3] && request.method === "GET") return json(response, 200, await integration.status({ ownerId, conversationId, requestId }));
+        if (!requestRoute[3] && request.method === "GET") return contentResponse(response,{ownerId,conversationId},200,{kind:"query",read:()=>integration.status({ownerId,conversationId,requestId})});
         if (requestRoute[3] && request.method === "POST") {
           routes.cancel.body.parse(await body(request));
-          return json(response, 202, await integration.cancel({ ownerId, conversationId, requestId }));
+          return contentResponse(response,{ownerId,conversationId},202,{kind:"command",data:await integration.cancel({ ownerId, conversationId, requestId })});
         }
       }
       throw new HttpError(405, "method_not_allowed");
@@ -398,22 +447,29 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
     if (path === "/conversations" && request.method === "POST") {
       const input = routes.openConversation.body.parse(await body(request));
       await members.open({ ownerId, ...input });
-      return json(response, 201, await readSnapshot(store.pool, ownerId, input.conversationId));
+      let snapshot: PublicSnapshot;
+      try { snapshot = await readSnapshot(store.pool,ownerId,input.conversationId); }
+      catch(error) {
+        if(error instanceof MemberStoreError && error.code === "content_erasure_pending") throw new MemberStoreError("conversation_erased");
+        throw error;
+      }
+      return contentResponse(response,{ownerId,conversationId:input.conversationId},201,{kind:"command",data:snapshot});
     }
     const statusPath = /^\/conversations\/([^/]+)\/requests\/([^/]+)$/.exec(path);
-    if (statusPath && request.method === "GET") return json(response,200,await members.requestStatus({
-      ownerId,conversationId:z.uuid().parse(statusPath[1]),requestId:z.uuid().parse(statusPath[2]),
-    }));
+    if (statusPath && request.method === "GET") {
+      const key={ownerId,conversationId:z.uuid().parse(statusPath[1]),requestId:z.uuid().parse(statusPath[2])};
+      return contentResponse(response,key,200,{kind:"query",read:()=>members.requestStatus(key)});
+    }
     const parts = /^\/conversations\/([^/]+)(?:\/(events|inputs|human|cancel))?$/.exec(path);
     if (!parts) throw new HttpError(404, "not_found");
     const conversationId = z.uuid().parse(parts[1]);
-    if (!parts[2] && request.method === "GET") return json(response, 200, await readSnapshot(store.pool, ownerId, conversationId));
+    if (!parts[2] && request.method === "GET") return contentResponse(response,{ownerId,conversationId},200,{kind:"query",read:()=>readSnapshot(store.pool,ownerId,conversationId)});
     if (parts[2] === "inputs" && request.method === "POST") {
       const prompt = routes.submit.body.parse(await body(request));
       const conversation = await store.getConversation({ ownerId, conversationId });
       const input = { ...prompt, ownerId, conversationId };
       if (!isTextEngine(conversation.engine)) submitSchema.parse(input);
-      return json(response, 202, await members.accept(input));
+      return contentResponse(response,{ownerId,conversationId},202,{kind:"command",data:await members.accept(input)});
     }
     await store.getConversation({ ownerId, conversationId });
     if (request.method !== "POST") throw new HttpError(405, "method_not_allowed");
@@ -441,7 +497,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
         const snapshot = await readSnapshot(store.pool, ownerId, conversationId);
         const after = url.searchParams.get("after");
         if (after !== null && after !== String(snapshot.cursor)) throw new HttpError(410, "CURSOR_EXPIRED");
-        return observe(store.pool, ownerId, snapshot, run.runId, response, hubs);
+        return observe(store.pool, ownerId, snapshot, run.runId, response, hubs, output);
       }
       default: throw new HttpError(404, "not_found");
     }
@@ -453,7 +509,7 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       if (error instanceof ReceiptContractError) return json(response, 500, { error: "retry_same_request" });
       if (error instanceof z.ZodError) return json(response, 400, { error: "invalid_input" });
       if (error instanceof CapabilityCeilingError) return json(response, 400, { error: error.message });
-      if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : 409, { error: error.code });
+      if (error instanceof MemberStoreError) return json(response, error.code === "not_found" ? 404 : error.code === "conversation_erased" ? 410 : (error.code === "content_erasure_pending" || error.code === "content_output_busy") ? 503 : 409, { error: error.code });
       if (error instanceof WorkflowUpdateFailedError) return json(response, 409, { error: "update_rejected" });
       if (error instanceof AuditUnsettledError) return json(response, 503, { error: "audit_unsettled" }, { "Retry-After": "1" });
       // No reason: which names resolve to private addresses is not the caller's to learn.
@@ -475,12 +531,14 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       loop();
     }
   });
-  let stopping = Promise.resolve();
-  server.once("close", () => {
-    for (const timer of timers) clearInterval(timer);
-    hubs?.close();
-    stopping = Promise.all([dispatcher.stop(), deliveries.stop()]).then(() => {});
+  const stopping = new Promise<void>((resolve, reject) => {
+    server.once("close", () => {
+      for (const timer of timers) clearInterval(timer);
+      hubs?.close();
+      Promise.all([dispatcher.stop(), deliveries.stop(), output.stop()]).then(() => resolve(), reject);
+    });
   });
+  void stopping.catch(() => {});
   // Settles once the close has ended both dispatchers' passes; await it before closing the pool.
   // `observerStats` reports the observer hubs, or undefined when every observer polls on its own.
   return Object.assign(server, { stopped: () => stopping, observerStats: () => hubs?.stats() });

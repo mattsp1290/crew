@@ -1,3 +1,4 @@
+import { sealTextClosure } from "../../src/service/content-erasure-store.ts";
 import { testDatabaseName } from "./database-fixtures.ts";
 import { ajv, gatewayFixture, openApi, responseValidator, validateResponse } from "./gateway-fixtures.ts";
 import assert from "node:assert/strict";
@@ -193,7 +194,7 @@ test("ambiguous cancellation delivery retries the original durable intent", asyn
   const input = { ownerId: f.ownerId, conversationId: f.conversationId, requestId: randomUUID(), text: "retry intent" };
   await store.recordAcceptance(input, ownerInitiator);
   let deliveries = 0;
-  const api = new IntegrationApi(store, { accept: f.members.accept.bind(f.members), requestStatus: f.members.requestStatus.bind(f.members), async cancelPending() {
+  const api = new IntegrationApi(store, { describeClosure:f.members.describeClosure.bind(f.members),ensureCleanupWorkflow:f.members.ensureCleanupWorkflow.bind(f.members),closeTextConversation:f.members.closeTextConversation.bind(f.members), accept: f.members.accept.bind(f.members), requestStatus: f.members.requestStatus.bind(f.members), async cancelPending() {
     if (++deliveries === 1) throw new Error("ambiguous transport failure");
   } });
   const key = { ownerId: input.ownerId, conversationId: input.conversationId, requestId: input.requestId };
@@ -212,7 +213,7 @@ test("failing older cancellation intents cannot starve a later healthy request",
   const ids = Array.from({ length: 65 }, () => randomUUID());
   const healthy = ids[64];
   let delivered = false;
-  const api = new IntegrationApi(store, { accept: f.members.accept.bind(f.members), requestStatus: f.members.requestStatus.bind(f.members), async cancelPending(input, deadline) {
+  const api = new IntegrationApi(store, { describeClosure:f.members.describeClosure.bind(f.members),ensureCleanupWorkflow:f.members.ensureCleanupWorkflow.bind(f.members),closeTextConversation:f.members.closeTextConversation.bind(f.members), accept: f.members.accept.bind(f.members), requestStatus: f.members.requestStatus.bind(f.members), async cancelPending(input, deadline) {
     assert.equal(typeof deadline, "number");
     assert.ok(deadline! > Date.now() && deadline! <= Date.now() + 10_000, "delivery gets a bounded actual RPC deadline");
     const { requestId } = input as { requestId: string };
@@ -276,7 +277,17 @@ test("legacy committed turn without an admission retains result and cancellation
   assert.equal(result.result.text, "legacy original result");
   assert.equal(result.initiator, undefined, "no admission recorded what started it");
   const before = f.counts();
-  const cancel = await f.api(path + "/cancel", {}); assert.equal(cancel.status, 202);
+  const lock = await pool.connect();
+  let cancel: Response;
+  try {
+    await lock.query("BEGIN");
+    await lock.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR NO KEY UPDATE", [f.conversationId]);
+    cancel = await Promise.race([
+      f.api(path + "/cancel", {}),
+      delay(1500).then(() => { throw Error("native cancellation blocked on erasure's exclusive parent lock"); }),
+    ]);
+  } finally { await lock.query("ROLLBACK"); lock.release(); }
+  assert.equal(cancel.status, 202);
   const receipt = await cancel.json();
   assert.equal(receipt.status, "completed");
   assert.deepEqual(receipt.result, result.result);
@@ -758,6 +769,16 @@ test("published OpenAPI accepts real core gateway responses and keeps request bo
   const handoffOperation = openApi.paths[routes.createHandoff.path].post;
   assert.deepEqual(handoffOperation["x-unknown-outcome-errors"], routes.createHandoff.unknownOutcomeErrors);
   assert.match(handoffOperation.responses[409].description, /unknown.*update_rejected/);
+  const textMember=await store.spawn({ownerId:f.ownerId,requestId:randomUUID(),engine:"cursor",profile:"openapi-erasure"});
+  const erasureKey={ownerId:f.ownerId,conversationId:randomUUID()};
+  await store.openConversation({...erasureKey,memberId:textMember.memberId});
+  const rejected={...erasureKey,requestId:randomUUID(),text:"no-execution-schema-fixture"};
+  await store.recordAcceptance(rejected,ownerInitiator);await store.rejectAccepted(rejected,"predecessor_failed");
+  await sealTextClosure(store,erasureKey,{workflowId:`birbcrew-ts/member/${textMember.memberId}/conversation/${erasureKey.conversationId}`,
+    runId:randomUUID(),status:"COMPLETED",namespace:"fixture",generation:"0"});
+  await check("closeConversation",`/v1/conversations/${erasureKey.conversationId}/close`,{});
+  const erased=await fetch(f.endpoint+`/v1/conversations/${erasureKey.conversationId}/content`,{method:"DELETE",headers:{Authorization:"Bearer "+f.token}});
+  assert.equal(erased.status,200);await validateResponse("eraseConversationContent",erased);checked.add("eraseConversationContent");
   assert.deepEqual([...checked].sort(), Object.keys(routes).sort());
 
   const validateMember = responseValidator("createMember", 201);

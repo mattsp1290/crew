@@ -1,4 +1,14 @@
+import type { MemberStoreError } from "./domain.ts";
 import { ApplicationFailure } from "@temporalio/common";
+
+export const classifiedStoreFailureTypes = ["conversation_erased", "conversation_closed"] as const;
+const classifiedStoreFailures = new Set<string>(classifiedStoreFailureTypes);
+
+/** Preserve the failure types that workflow callers can classify. */
+export function storeActivityFailure(error: MemberStoreError) {
+  return ApplicationFailure.nonRetryable(error.code,
+    classifiedStoreFailures.has(error.code) ? error.code : undefined);
+}
 
 /** True when `error` or any error in its cause chain is an ApplicationFailure of `type`.
  * Shared by MemberClient and the workflow, so it stays free of Node and I/O imports. */

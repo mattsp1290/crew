@@ -44,7 +44,8 @@ the conversation can accept a valid request with that UUID afterwards.
 
 The server parses strict body keys and nonempty, well-formed decoded text without
 NUL first. It then resolves the owner-scoped conversation. A missing or foreign
-conversation returns 404. A reused request UUID compares exact text and deadline
+conversation returns 404. A fenced text conversation returns 410 `conversation_erased`
+before digest comparison or size validation. For an unfenced conversation, a reused request UUID compares exact text and deadline
 terms before the text-member size decision: changed valid text returns 409
 `conflict`, including text above the profile or internal ceiling. Exact replay
 keeps its recorded outcome; it does not consume another turn. No Unicode,
@@ -76,7 +77,9 @@ IDs, profile, limit and byte count. Prompt and reply content are never logged.
 Temporal update, admission/turn activity and history payloads. Replies remain
 in `turns.reply`, observations and history. Session-directory cleanup does not
 erase those copies. PostgreSQL has no automatic content TTL. Temporal retention
-is controlled by the deployment. Content erasure is separate work.
+is controlled by the deployment. [Owner content erasure](integration-api-v1.md#erase-text-conversation-content)
+clears retained SQL and enrolled volume copies after closure and positive writer proofs.
+Temporal history remains until retention; WAL, backups and provider copies remain outside this operation.
 
 The offline fixture uses synthetic Cursor/OpenCode doubles, PostgreSQL 17,
 Node 24.22.3 and Temporal CLI 1.10.0. It exercises 16,384, 32,768 and 65,536-byte
@@ -92,12 +95,13 @@ while checking every current payload/event against the recorded budgets. The ded
 runs both text-member suites and shared-validation tests without paid inference.
 
 A text conversation completes its public one-turn outcome below the normal
-four-turn rollover threshold. Its Temporal run remains open and idle. Sizing
+four-turn rollover threshold. Current runs close naturally after the turn. The
+checked-in idle history captures predate owner erasure and remain replay fixtures. Sizing
 waits for all activities and the workflow task to settle, then verifies the
 recorded admission/turn inputs and exact reply before measuring and replaying
 the complete recorded history prefix. The maximum-size path has no
-Continue-As-New. Existing rollover regressions test native routing independently. Workflow code, command
-ordering, failure types and serialized Conversation/update shapes are unchanged.
+Continue-As-New. Existing rollover regressions test native routing independently.
+The erasure-aware workflow uses a patch marker to preserve replay of older idle histories.
 
 ## Upgrade and recovery
 
@@ -116,6 +120,11 @@ and run a synthetic request. Existing profiles stay unchanged. Enabling larger
 profiles requires passing qualification against the deployment's effective
 Temporal payload/message limits; local fixture headroom does not configure a
 production installation.
+
+This rollback procedure permits a pre-erasure gateway only before any conversation
+has an erasure fence. After a fence exists, every gateway and submitter must support
+erasure, regardless of profile size. Recover forward if the rollback revision predates
+migration 044 support. See [the deployment rollback floor](persistent-deployment.md#coordinated-text-erasure-upgrade-schema-044).
 
 For rollback, stop **all** submissions to larger-profile members, including
 small requests, from gateways, routines and CLI submitters. Keep new workers

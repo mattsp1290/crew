@@ -40,15 +40,23 @@ for (const [label, runtime] of [["node22", node22], ["node24", node24]]) {
   await writeFile(join(evidence, `${label}-tree.json`), run(npm, ["ls", "--all", "--json"], consumer));
   if (label === "node22") {
     run(npm, ["install", "--save-dev", "--ignore-scripts", "--no-audit", "--no-fund", "typescript@5.9.3", "esbuild@0.25.12", "@apidevtools/swagger-parser@13.1.0"], consumer);
-    await copyFile(join(root, "packages/client/openapi.json"), join(consumer, "openapi.json"));
+    const installedOpenApi = join(consumer, "node_modules/@birbcrew/client/openapi.json");
+    assert.equal(await readFile(installedOpenApi, "utf8"), await readFile(join(root, "packages/client/openapi.json"), "utf8"), "packed OpenAPI matches the generated source");
+    await copyFile(installedOpenApi, join(consumer, "openapi.json"));
     await writeFile(join(evidence, "openapi-validation.log"), run(runtime, ["--input-type=module", "-e", "import SwaggerParser from '@apidevtools/swagger-parser'; await SwaggerParser.validate('openapi.json'); console.log('OpenAPI 3.1 validates');"], consumer));
-    await writeFile(join(consumer, "browser.ts"), `import {CrewClient, CrewUnknownOutcomeError, type CommandIdentity, type HandoffCommandIdentity, type CreateHandoff, type CreateHandoffResponse, type ConversationHandoff, type HandoffRecord, type HandoffsCapability, type HandoffsCapabilityV1, type RequestReceipt, type OwnerApprovalDetail, type ApprovalDetailIdentity, type RecordWorkItemArguments, type GrantList, type ListGrants, type RevokeGrant, type RevokeGrantResponse, type PublicGrant} from '@birbcrew/client';
+    await writeFile(join(consumer, "browser.ts"), `import {CrewClient, CrewUnknownOutcomeError, type CommandIdentity, type HandoffCommandIdentity, type CreateHandoff, type CreateHandoffResponse, type ConversationHandoff, type HandoffRecord, type HandoffsCapability, type HandoffsCapabilityV1, type RequestReceipt, type OwnerApprovalDetail, type ApprovalDetailIdentity, type RecordWorkItemArguments, type GrantList, type ListGrants, type RevokeGrant, type RevokeGrantResponse, type PublicGrant, type ConversationContentTombstone, type ConversationClosure} from '@birbcrew/client';
 import {createHandoffBodySchema, createHandoffSchema, handoffRecordSchema, createHandoffResponseSchema, conversationHandoffSchema, handoffsCapabilityV1Schema, handoffsCapabilitySchema, type CreateHandoff as ContractCreateHandoff, type CreateHandoffResponse as ContractCreateHandoffResponse, type ConversationHandoff as ContractConversationHandoff, type HandoffRecord as ContractHandoffRecord, type HandoffsCapability as ContractHandoffsCapability, type HandoffsCapabilityV1 as ContractHandoffsCapabilityV1, type GrantList as ContractGrantList, type PublicGrant as ContractGrant, type OwnerApprovalDetail as ContractDetail, type RequestReceipt as ContractReceipt, type ServerRequestReceipt} from '@birbcrew/client/contract';
 export const fromContract = (receipt: ContractReceipt): RequestReceipt => receipt;
 export const toContract = (receipt: RequestReceipt): ContractReceipt => receipt;
 export const fromServer = (receipt: ServerRequestReceipt): RequestReceipt => receipt;
 const client = new CrewClient({baseUrl:'https://crew.example', token:'token'});
 export const read = () => client.listMembers();
+export const eraseContent = (conversationId: string): Promise<ConversationContentTombstone> => client.eraseConversationContent({conversationId});
+export const closeConversation = (conversationId: string): Promise<ConversationClosure> => client.closeConversation({conversationId});
+export const completedSubmitText = async (conversationId: string, requestId: string) => {
+ const receipt=await client.submit({conversationId,requestId,text:'fixture'});
+ if(receipt.status==='completed') return receipt.result.text;
+};
 export const createHandoff = (key: CreateHandoff): Promise<CreateHandoffResponse> => client.createHandoff(key);
 export const handoff = (conversationId: string): Promise<ConversationHandoff> => client.handoff({conversationId});
 export const handoffInputFromContract = (value: ContractCreateHandoff): CreateHandoff => value;
@@ -83,7 +91,7 @@ const invalidGrant: PublicGrant = {grantId:'id', memberId:'id', toolName:'record
 export const detail = (key: ApprovalDetailIdentity): Promise<OwnerApprovalDetail> => client.approvalDetail(key);
 export const detailFromContract = (value: ContractDetail): OwnerApprovalDetail => value;
 export const completeArguments = (value: OwnerApprovalDetail): RecordWorkItemArguments => value.arguments;
-export function result(receipt: RequestReceipt): string | undefined { if (receipt.status === 'completed') return receipt.result.text; }
+export function result(receipt: RequestReceipt): string | undefined { if (receipt.status === 'completed' && !receipt.erased) return receipt.result.text; }
 // @ts-expect-error completed receipts require result
 const invalid: RequestReceipt = {apiVersion:'1',conversationId:'id',requestId:'id',acceptance:{boundary:'sql_admission_and_temporal_queue'},status:'completed'};
 // @ts-expect-error owner identity comes only from bearer authentication

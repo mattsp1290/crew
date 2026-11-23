@@ -1,3 +1,4 @@
+import { storeActivityFailure } from "./failure-type.ts";
 import { nativeProposal } from "./deferral.ts";
 import type { z } from "zod";
 import { traced } from "./telemetry.ts";
@@ -127,7 +128,7 @@ export function memberActivities(store: MemberStore, supervisor: Supervisor, pro
       try {
         return await ledger.decide(input);
       } catch (error) {
-        if (error instanceof MemberStoreError) throw ApplicationFailure.nonRetryable(error.code);
+        if (error instanceof MemberStoreError) throw storeActivityFailure(error);
         throw error;
       }
     },
@@ -136,7 +137,7 @@ export function memberActivities(store: MemberStore, supervisor: Supervisor, pro
       try {
         await ledger.cancelTurn({ ownerId, memberId, conversationId, requestId });
       } catch (error) {
-        if (error instanceof MemberStoreError) throw ApplicationFailure.nonRetryable(error.code);
+        if (error instanceof MemberStoreError) throw storeActivityFailure(error);
         throw error;
       }
     },
@@ -161,7 +162,7 @@ export function memberActivities(store: MemberStore, supervisor: Supervisor, pro
         if (result.kind === "childDone") throw ApplicationFailure.nonRetryable("Invalid native parent response");
         return result;
       } catch (error) {
-        if (error instanceof MemberStoreError) throw ApplicationFailure.nonRetryable(error.code);
+        if (error instanceof MemberStoreError) throw storeActivityFailure(error);
         throw error;
       } finally {
         clearInterval(timer);
@@ -179,7 +180,7 @@ export function expiryActivity(store: MemberStore) {
     try {
       return await ledger.expireTurn(approval);
     } catch (error) {
-      if (error instanceof MemberStoreError) throw ApplicationFailure.nonRetryable(error.code);
+      if (error instanceof MemberStoreError) throw storeActivityFailure(error);
       throw error;
     }
   };

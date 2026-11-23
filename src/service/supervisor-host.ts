@@ -1,3 +1,5 @@
+import { assertContentWritable } from "./content-erasure-store.ts";
+import { assertTextVolumeRoot, pinTextStateLocation, registerTextLaunch } from "./text-state-location.ts";
 import { requestNativeStop } from "./native-admission.ts";
 import { fork, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -58,6 +60,8 @@ async function groupStopped(pid: number) {
 
 // Text runners get the longer grace (limits.ts); a runner with no entry is native.
 const textRunners = new WeakSet<ChildProcess>();
+// Published proc-FD paths must not rebind while an unconfirmed writer may reopen them.
+const unconfirmedVolumes = new Map<string, Awaited<ReturnType<typeof pinTextStateLocation>>>();
 // The acknowledgement has to outlast the longest grace kill, groupStopped's one second poll, and the
 // stopped update. A prompt abort still returns as soon as native_launches.stopped is set.
 const stopConfirmMs = stopLeaseWaitMs(true) + 3_000;
@@ -91,6 +95,7 @@ async function lockedTurn(db: PoolClient, launch: Launch, allowRevokedAttempt = 
   const lock = await db.query("SELECT 1 FROM birbcrew_ts.conversations WHERE owner_id=$1 AND conversation_id=$2 FOR UPDATE",
     [launch.ownerId, launch.conversationId]);
   if (!lock.rowCount) throw new Error("Unknown conversation");
+  await assertContentWritable(db, launch);
   const { rows: [turn] } = await db.query<Conversation & {
     phase: string; reply: string | null; checkpoint: Checkpoint | null; paused: boolean; resuming: boolean; delegated: boolean; child_resume: boolean;
   }>(`SELECT c.owner_id AS "ownerId", c.member_id AS "memberId", c.conversation_id AS "conversationId",
@@ -114,147 +119,172 @@ async function lockedTurn(db: PoolClient, launch: Launch, allowRevokedAttempt = 
 
 async function start(launch: Launch): Promise<SegmentResult> {
   const args = [launch.conversationId, launch.requestId, launch.token];
-  // Commit the one-shot reservation before forking; a lost fork acknowledgement must never start a second process.
-  const inspect = async (db: PoolClient): Promise<SegmentResult | ReadySegment> => {
-    if (launch.childId) return inspectChild(db,launch);
-    const turn = await lockedTurn(db, launch);
-    if (turn.reply !== null) return { kind: "complete", text: turn.reply } as const;
-    if (turn.phase !== "started") throw new Error("Native admission revoked");
-    const approval = turn.paused ? await savedProposal(db, turn, launch.requestId) : undefined;
-    if (turn.paused && !approval) throw new Error("Missing canonical proposal");
-    if (approval && !turn.resuming) return { kind: "pending", approval } as const;
-    const {ownerId,memberId,conversationId,engine,profile} = turn;
-    const conversation = {ownerId,memberId,conversationId,engine,profile};
-    if (turn.delegated && !turn.child_resume) {
-      return {kind:"delegated",children:await childrenFor(db,conversation,launch.requestId)};
-    }
-    let childResults: ChildOutcome[] | undefined;
-    if (turn.child_resume) {
-      const {rows} = await db.query<{outcome:ChildOutcome|null}>(
-        "SELECT outcome FROM birbcrew_ts.pi_children WHERE conversation_id=$1 AND request_id=$2 ORDER BY ordinal",
-        [conversationId,launch.requestId]);
-      childResults = rows.map(({outcome}) => {
-        if (!outcome) throw new Error("Child outcome missing");
-        return outcome;
-      });
-      if (!childResults.length) throw new Error("Delegation has no children");
-    }
-    return {kind:"ready", approval, conversation, checkpoint:turn.checkpoint, parentToken:launch.token, childResults};
-
-  };
-  const admission = await transaction(async (db) => {
-    const status = await inspect(db);
-    if (status.kind !== "ready") return status;
-    const { approval } = status;
-    const continuation = approval ? { nativeCallId: approval.nativeCallId,
-      result: await ledger.settleLocked(db, { ...approval, token: status.parentToken }) } : undefined;
-    const digest = continuation ? createHash("sha256").update(JSON.stringify(continuation.result)).digest() : null;
-    const inserted = await db.query(`INSERT INTO birbcrew_ts.native_launches
-      (conversation_id,request_id,token,approval_id,receipt_digest,workflow_run_id,activity_id,attempt,child_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (conversation_id,request_id,token) DO NOTHING`,
-      [...args, approval?.approvalId ?? null, digest, launch.execution.workflowRunId, launch.execution.activityId, launch.execution.attempt, launch.childId ?? null]);
-    return { kind: inserted.rowCount ? "launch" : "observe", continuation, resuming:!!(continuation || status.childResults) } as const;
-  });
-  if (!("continuation" in admission)) return admission;
-  if (admission.kind === "observe") {
-    const until = Date.now() + 170_000;
-    while (!closing && Date.now() < until) {
-      const status = await transaction(inspect);
-      if (status.kind !== "ready") return status;
-      await delay(100);
-    }
-    throw new Error("Previous SDK launch outcome is uncertain");
-  }
-
-  let reply: unknown;
-  let preview: Promise<void> | undefined;
-  let exited: Promise<boolean> | undefined;
-  let confirmed = false;
-  let reaped = false;
-  let runnerEnd = "no exit";
+  const conversation = await store.getConversation({ownerId:launch.ownerId,conversationId:launch.conversationId});
+  const location = isTextEngine(conversation.engine) ? await pinTextStateLocation(process.argv[3], conversation.engine) : null;
+  let published = false, writersStopped = false;
   try {
-    const { continuation } = admission;
-    const project = await textProjection(pool, launch.conversationId);
-    const messageId = (launch.childId ?? launch.requestId) + (admission.resuming ? "/resumed-assistant" : "/assistant");
-    const stream = textWriter((index, delta) => store.appendText(launch, messageId, index, delta));
-    // Recheck under the takeover lock after reservation. Both the fork and its command happen before releasing it.
-    const member = await transaction(async (db) => {
+    // Commit the one-shot reservation before forking; a lost fork acknowledgement must never start a second process.
+    const inspect = async (db: PoolClient): Promise<SegmentResult | ReadySegment> => {
+      if (launch.childId) return inspectChild(db,launch);
+      const turn = await lockedTurn(db, launch);
+      if (turn.reply !== null) return { kind: "complete", text: turn.reply } as const;
+      if (turn.phase !== "started") throw new Error("Native admission revoked");
+      const approval = turn.paused ? await savedProposal(db, turn, launch.requestId) : undefined;
+      if (turn.paused && !approval) throw new Error("Missing canonical proposal");
+      if (approval && !turn.resuming) return { kind: "pending", approval } as const;
+      const {ownerId,memberId,conversationId,engine,profile} = turn;
+      const conversation = {ownerId,memberId,conversationId,engine,profile};
+      if (turn.delegated && !turn.child_resume) {
+        return {kind:"delegated",children:await childrenFor(db,conversation,launch.requestId)};
+      }
+      let childResults: ChildOutcome[] | undefined;
+      if (turn.child_resume) {
+        const {rows} = await db.query<{outcome:ChildOutcome|null}>(
+          "SELECT outcome FROM birbcrew_ts.pi_children WHERE conversation_id=$1 AND request_id=$2 ORDER BY ordinal",
+          [conversationId,launch.requestId]);
+        childResults = rows.map(({outcome}) => {
+          if (!outcome) throw new Error("Child outcome missing");
+          return outcome;
+        });
+        if (!childResults.length) throw new Error("Delegation has no children");
+      }
+      return {kind:"ready", approval, conversation, checkpoint:turn.checkpoint, parentToken:launch.token, childResults};
+
+    };
+    const admission = await transaction(async (db) => {
       const status = await inspect(db);
-      if (closing || status.kind !== "ready") throw new Error("Native admission revoked");
-      const { conversation, checkpoint, childProfile, childResults } = status;
-      const child = fork(new URL("./supervisor-runner.ts", import.meta.url), process.argv.slice(2), {
-        stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], detached: true,
-      });
-      active.set(launch.token, child);
-      if (isTextEngine(conversation.engine)) textRunners.add(child);
-      child.on("message", (value) => {
-        if (value && typeof value === "object" && "delta" in value && typeof value.delta === "string") {
-          stream.push(project(value.delta));
-        } else if (value && typeof value === "object" && "toolArgs" in value && typeof value.toolArgs === "string" && !continuation) {
-          const id = value.toolArgs;
-          const matched = "matchedOperation" in value && value.matchedOperation === true;
-          preview = (preview ?? stream.drain()).then(() => store.previewTool(launch, id, matched));
-          void preview.catch(() => { });
-        } else if (value && typeof value === "object" && "warning" in value && typeof value.warning === "string") {
-          relayWarning(value.warning, { conversationId: launch.conversationId, requestId: launch.requestId });
-        } else {
-          reply = value;
-        }
-      });
-      exited = new Promise<boolean>((resolve) => {
-        child.once("error", () => { runnerEnd = "process error"; resolve(false); });
-        child.once("close", (code, signal) => { runnerEnd = signal ? "signal " + signal : "exit code " + code; resolve(code === 0); });
-      });
-      child.send({ launch, conversation, checkpoint, continuation, childProfile, childResults,threadId:launch.childId ?? conversation.conversationId, runId: launch.requestId, text: launch.text }, (error) => {
-        if (error) killNativeGroup(child);
-      });
-      return status;
+      if (status.kind !== "ready") return status;
+      const { approval } = status;
+      const continuation = approval ? { nativeCallId: approval.nativeCallId,
+        result: await ledger.settleLocked(db, { ...approval, token: status.parentToken }) } : undefined;
+      const digest = continuation ? createHash("sha256").update(JSON.stringify(continuation.result)).digest() : null;
+      const inserted = await db.query(`INSERT INTO birbcrew_ts.native_launches
+        (conversation_id,request_id,token,approval_id,receipt_digest,workflow_run_id,activity_id,attempt,child_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (conversation_id,request_id,token) DO NOTHING`,
+        [...args, approval?.approvalId ?? null, digest, launch.execution.workflowRunId, launch.execution.activityId, launch.execution.attempt, launch.childId ?? null]);
+      if (inserted.rowCount && location) await registerTextLaunch(db,conversation,launch,location.locationId);
+      return { kind: inserted.rowCount ? "launch" : "observe", continuation, resuming:!!(continuation || status.childResults) } as const;
     });
-    confirmed = Boolean(await exited && reply !== undefined);
-    stream.push(project("", true));
-    await stream.drain();
-    await preview;
-    const pid = active.get(launch.token)?.pid;
-    reaped = pid !== undefined && await groupStopped(pid);
-    if (!confirmed || !reaped) {
-      const state = [runnerEnd, reply === undefined && "no reply", !reaped && "process group still running"].filter(Boolean).join(", ");
-      throw new Error("SDK process stopped without a confirmed result (" + state + ")");
+    if (!("continuation" in admission)) return admission;
+    if (admission.kind === "observe") {
+      const until = Date.now() + 170_000;
+      while (!closing && Date.now() < until) {
+        const status = await transaction(inspect);
+        if (status.kind !== "ready") return status;
+        await delay(100);
+      }
+      throw new Error("Previous SDK launch outcome is uncertain");
     }
-    const {ownerId,conversationId,requestId,token} = launch;
-    const childKey = launch.childId ? {ownerId,conversationId,requestId,memberId:member.conversation.memberId,childId:launch.childId} : undefined;
-    if (z.strictObject({error:z.literal("Native SDK turn failed")}).safeParse(reply).success) {
-      if (!childKey) throw new Error("Native runner reported a failed turn");
-      await children.finish(childKey,token,null);
-      return {kind:"childDone"};
+
+    let reply: unknown;
+    let preview: Promise<void> | undefined;
+    let exited: Promise<boolean> | undefined;
+    let confirmed = false;
+    let reaped = false;
+    let writerInventoryComplete = false;
+    const writerGroups = new Set<number>();
+    let runnerEnd = "no exit";
+    try {
+      const { continuation } = admission;
+      const project = await textProjection(pool, launch.conversationId);
+      const messageId = (launch.childId ?? launch.requestId) + (admission.resuming ? "/resumed-assistant" : "/assistant");
+      const stream = textWriter((index, delta) => store.appendText(launch, messageId, index, delta));
+      // Recheck under the takeover lock after reservation. Both the fork and its command happen before releasing it.
+      const member = await transaction(async (db) => {
+        const status = await inspect(db);
+        if (closing || status.kind !== "ready") throw new Error("Native admission revoked");
+        const { conversation, checkpoint, childProfile, childResults } = status;
+        if (isTextEngine(conversation.engine)) {
+          if (!location || location.engine !== conversation.engine) throw new Error("Missing pinned text volume");
+          await assertTextVolumeRoot(location.directory, conversation, conversation.engine);
+        }
+        const child = fork(new URL("./supervisor-runner.ts", import.meta.url), process.argv.slice(2), {
+          stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], detached: true,
+        });
+        active.set(launch.token, child);
+        if (isTextEngine(conversation.engine)) textRunners.add(child);
+        child.on("message", (value) => {
+          if (value && typeof value === "object" && "textWriterGroup" in value && typeof value.textWriterGroup === "number") {
+            if (writerInventoryComplete || !Number.isSafeInteger(value.textWriterGroup) || value.textWriterGroup <= 1) writerInventoryComplete = false;
+            else writerGroups.add(value.textWriterGroup);
+          } else if (value && typeof value === "object" && "textWriterInventoryComplete" in value && value.textWriterInventoryComplete === true) {
+            writerInventoryComplete = true;
+          } else if (value && typeof value === "object" && "delta" in value && typeof value.delta === "string") {
+            stream.push(project(value.delta));
+          } else if (value && typeof value === "object" && "toolArgs" in value && typeof value.toolArgs === "string" && !continuation) {
+            const id = value.toolArgs;
+            const matched = "matchedOperation" in value && value.matchedOperation === true;
+            preview = (preview ?? stream.drain()).then(() => store.previewTool(launch, id, matched));
+            void preview.catch(() => { });
+          } else if (value && typeof value === "object" && "warning" in value && typeof value.warning === "string") {
+            relayWarning(value.warning, { conversationId: launch.conversationId, requestId: launch.requestId });
+          } else {
+            reply = value;
+          }
+        });
+        exited = new Promise<boolean>((resolve) => {
+          child.once("error", () => { runnerEnd = "process error"; resolve(false); });
+          child.once("close", (code, signal) => { runnerEnd = signal ? "signal " + signal : "exit code " + code; resolve(code === 0); });
+        });
+        published = location !== null;
+        child.send({ ...(location && {textVolume:{engine:location.engine,directory:location.directory,locationId:location.locationId}}), launch, conversation, checkpoint, continuation, childProfile, childResults,threadId:launch.childId ?? conversation.conversationId, runId: launch.requestId, text: launch.text }, (error) => {
+          if (error) killNativeGroup(child);
+        });
+        return status;
+      });
+      confirmed = Boolean(await exited && reply !== undefined);
+      stream.push(project("", true));
+      await stream.drain();
+      await preview;
+      const pid = active.get(launch.token)?.pid;
+      reaped = pid !== undefined && await groupStopped(pid);
+      if (!confirmed || !reaped) {
+        const state = [runnerEnd, reply === undefined && "no reply", !reaped && "process group still running"].filter(Boolean).join(", ");
+        throw new Error("SDK process stopped without a confirmed result (" + state + ")");
+      }
+      const {ownerId,conversationId,requestId,token} = launch;
+      const childKey = launch.childId ? {ownerId,conversationId,requestId,memberId:member.conversation.memberId,childId:launch.childId} : undefined;
+      if (z.strictObject({error:z.literal("Native SDK turn failed")}).safeParse(reply).success) {
+        if (!childKey) throw new Error("Native runner reported a failed turn");
+        await children.finish(childKey,token,null);
+        return {kind:"childDone"};
+      }
+      const result = runnerResultSchema.parse(reply);
+      // Before the outcome commits: the model work happened even if that commit then fails.
+      if (engineTraits[member.conversation.engine].meteredUsage) await recordSegmentUsage(pool, launch, result.usage, prices);
+      if (result.kind === "delegated") {
+        if (childKey || continuation || member.childResults || member.conversation.engine !== "pi") throw new Error("Unexpected delegation");
+        return {kind:"delegated",children:await children.delegate(member.conversation,requestId,token,result.proposals,result.checkpoint)};
+      }
+      if (result.kind === "pending") {
+        if (continuation || member.childResults || result.checkpoint.engine !== member.conversation.engine) throw new Error("Invalid protected call");
+        const { name: toolName, nativeCallId, arguments: args } = result.proposal;
+        const approval = await ledger.propose({ ownerId, conversationId, requestId, token, memberId: member.conversation.memberId,
+          invocationId: childKey?.childId ?? requestId, toolName, nativeCallId, arguments: args }, result.checkpoint, childKey ? {childGeneration:token} : undefined);
+        return { kind: "pending", approval };
+      }
+      if (childKey) {
+        await children.finish(childKey,token,result);
+        return {kind:"childDone"};
+      }
+      const text = await store.commitTurn({ ownerId, conversationId, requestId, token,
+        reply: result.text, checkpoint: result.checkpoint });
+      return { kind: "complete", text };
+    } finally {
+      const runner = active.get(launch.token);
+      if (runner && !reaped) killNativeGroup(runner);
+      active.delete(launch.token);
+      if (!runner || reaped || (runner.pid && await groupStopped(runner.pid))) {
+        await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND request_id=$2 AND token=$3", args);
+        writersStopped = Boolean(runner && writerInventoryComplete && (await Promise.all([...writerGroups].map(groupStopped))).every(Boolean));
+        if (location && writersStopped) {
+          await pool.query("UPDATE birbcrew_ts.text_runtime_cleanup_proofs SET confirmed_at=clock_timestamp() WHERE conversation_id=$1 AND request_id=$2 AND token=$3 AND location_id=$4 AND confirmed_at IS NULL", [...args,location.locationId]);
+        }
+      }
     }
-    const result = runnerResultSchema.parse(reply);
-    // Before the outcome commits: the model work happened even if that commit then fails.
-    if (engineTraits[member.conversation.engine].meteredUsage) await recordSegmentUsage(pool, launch, result.usage, prices);
-    if (result.kind === "delegated") {
-      if (childKey || continuation || member.childResults || member.conversation.engine !== "pi") throw new Error("Unexpected delegation");
-      return {kind:"delegated",children:await children.delegate(member.conversation,requestId,token,result.proposals,result.checkpoint)};
-    }
-    if (result.kind === "pending") {
-      if (continuation || member.childResults || result.checkpoint.engine !== member.conversation.engine) throw new Error("Invalid protected call");
-      const { name: toolName, nativeCallId, arguments: args } = result.proposal;
-      const approval = await ledger.propose({ ownerId, conversationId, requestId, token, memberId: member.conversation.memberId,
-        invocationId: childKey?.childId ?? requestId, toolName, nativeCallId, arguments: args }, result.checkpoint, childKey ? {childGeneration:token} : undefined);
-      return { kind: "pending", approval };
-    }
-    if (childKey) {
-      await children.finish(childKey,token,result);
-      return {kind:"childDone"};
-    }
-    const text = await store.commitTurn({ ownerId, conversationId, requestId, token,
-      reply: result.text, checkpoint: result.checkpoint });
-    return { kind: "complete", text };
   } finally {
-    const runner = active.get(launch.token);
-    if (runner && !reaped) killNativeGroup(runner);
-    active.delete(launch.token);
-    if (!runner || reaped || (runner.pid && await groupStopped(runner.pid))) {
-      await pool.query("UPDATE birbcrew_ts.native_launches SET stopped=true WHERE conversation_id=$1 AND request_id=$2 AND token=$3", args);
-    }
+    if (location && published && !writersStopped) unconfirmedVolumes.set(launch.token, location);
+    else await location?.close();
   }
 }
 

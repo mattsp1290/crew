@@ -1,3 +1,5 @@
+import type { TextStateRoot } from "./text-state-location.ts";
+import { registerTextWriterGroup, completeTextWriterInventory } from "./text-runtime-inventory.ts";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
@@ -19,6 +21,8 @@ export interface OpenCodeSpawned {
     endInput(): void;
   };
   readonly processExit: PromiseLike<unknown>;
+  /** Trusted adapter attestation. Unknown descendants require location-wide quiesce. */
+  writerGroups?(): readonly number[] | null;
 }
 export interface OpenCodeProfile {
   model: string;
@@ -49,6 +53,7 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
     cwd: request.cwd, env: { ...request.env, HOME: home, TMPDIR: tmp, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: tmp, XDG_DATA_HOME: home },
     detached: true, stdio: ["pipe", "pipe", "pipe"],
   });
+  if (child.pid) registerTextWriterGroup(child.pid);
   for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.on("error", () => undefined);
   child.stderr?.on("data", () => undefined);
   let settled = false;
@@ -115,7 +120,7 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
 }
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
-export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string): Promise<DriverResult> {
+export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: TextStateRoot): Promise<DriverResult> {
   if (!promptAllowed(input.text)) throw textTurnFailed();
   const root = textTurnRoot(input, member, "opencode", stateDir);
   const home = join(root, "home");
@@ -124,6 +129,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   let local: { kill(): void; exit: Promise<unknown> } | undefined;
   const killGroup = () => local?.kill();
   let completed: DriverResult | undefined;
+  let inventory: (() => readonly number[] | null) | undefined;
   try {
     await preparePrivate(root, ["home", "tmp"]);
     const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
@@ -136,7 +142,10 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
           const args = [...request.args];
           if (args.length !== 2 || args[0] !== profile.executable || args[1] !== "acp" || request.cwd !== profile.cwd
             || !sameEnvironment(request.env, profile.env)) throw textTurnFailed();
-          if (profile.spawn) return profile.spawn(request, signal);
+          if (profile.spawn) return Promise.resolve(profile.spawn(request, signal)).then(spawned => {
+            inventory = spawned.writerGroups?.bind(spawned);
+            return spawned;
+          });
           const { kill, ...spawned } = spawnProcess(request, signal, home, tmp);
           local = { kill, exit: Promise.resolve(spawned.processExit) };
           return spawned;
@@ -177,6 +186,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
     // A process still alive after the bound can write under HOME after the removal; sweep again,
     // best-effort, if it exits while this runner is still alive.
     if (!exited) sweepWhenSettled(processExit, root);
+    if (exited && !input.signal.aborted) completeTextWriterInventory(inventory?.());
   }
   return textTurnResult(input.signal, completed);
 }

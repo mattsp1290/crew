@@ -17,7 +17,7 @@ on:
       - 'scripts/verify-client-package.mjs'
       - 'tests/**'
       - 'package*.json'
-      - 'docs/integration-api-v1.md'
+      - 'docs/**'
       - '.github/workflows/integration-api.yml'
   workflow_dispatch:
 permissions:
@@ -71,6 +71,7 @@ jobs:
       - run: npm run test:client
       - run: npm run check:openapi
       - run: npm run test:api
+      - run: npm run test:trusted
       - run: npm run test:observers
       - run: npm run test:audit
       - run: npm run test:routines
@@ -84,7 +85,7 @@ jobs:
       - run: npm run test:usage
       - run: npm run test:usage:capture
       - run: npm run test:webhooks
-      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts
+      - run: node --test tests/service/store.test.ts tests/service/rollover-client.test.ts tests/service/content-erasure.test.ts
       - run: node --test tests/service/approvals.test.ts tests/service/codex-calls.test.ts tests/service/codex-registration.test.ts
       - name: Turn failure diagnostics
         run: node --test tests/service/native-diagnostics.test.ts
@@ -173,6 +174,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - suite: text-member-erasure
+            entry: tests/proof/text-member-erasure.mts
           - suite: api
             entry: tests/proof/integration-api.mts
           - suite: tls

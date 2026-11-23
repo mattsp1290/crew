@@ -86,7 +86,7 @@ confirm a guess of the deleted text. Instruction pack rows carry only pack IDs, 
 same reason: a pack no member has can be deleted. Member instructions are never erased, so their row
 carries the SHA-256 of the text, never the text. `src/service/audit.ts` validates each payload against a strict schema
 before insert, so extra fields are refused. The prompt digest is the hex SHA-256 of
-the exact UTF-8 text, the same digest that admission already stores. A handoff's
+the exact UTF-8 text, the same digest that admission already stores. This audit `promptDigest` and the admission digest remain permanently after conversation content erasure, so erasure does not prevent offline guesses against an exported trail. A handoff's
 transcript digest is the hex SHA-256 of the transcript it quoted, which is also the
 prompt digest of the target's first request. The argument
 digest is the one shown on the public approval card: a SHA-256 over the tool name,
@@ -104,13 +104,14 @@ audit version may switch to a keyed per-owner digest.
 
 The registry is the `auditEvents` object in `src/service/audit.ts`.
 `audit_events_type_check` in `src/service/sql/021-audit.sql`, widened by
-`024-standing-grants.sql`, `025-routines.sql`, `026-memories.sql`, `027-handoffs.sql`, `028-approval-expiry.sql`, `029-member-instructions.sql`, `031-usage.sql`, `032-webhooks.sql`, `033-instruction-packs.sql` and `036-delegation-audit.sql`, lists the same types.
-Each widening replaces the whole constraint, so the last widening lists every type.
+`024-standing-grants.sql`, `025-routines.sql`, `026-memories.sql`, `027-handoffs.sql`, `028-approval-expiry.sql`, `029-member-instructions.sql`, `031-usage.sql`, `032-webhooks.sql`, `033-instruction-packs.sql` `036-delegation-audit.sql` and `044-conversation-content-erasure.sql`, lists the same types.
+Released widenings through 036 restate the vocabulary. Migration 044 preserves the catalog expression and adds the erasure alternative.
 A test checks that the two lists match. `GET /v1/capabilities` lists them under
 `audit.eventTypes`.
 
 | Type | Actor | Recorded when | One row per | Payload |
 | --- | --- | --- | --- | --- |
+| `conversation.content_erased` | owner | final content scrub commits | conversation | `erasureId` |
 | `member.spawned` | owner | `spawn` inserts a member | member | `spawnRequestId`, `engine`, `profile`; `capabilityDigest` when the member has [capabilities](member-capabilities.md) |
 | `conversation.opened` | owner | `openConversation` inserts a conversation | conversation | `{}`, or `routineId` when a routine firing opened it |
 | `request.accepted` | owner | `recordAcceptance` commits the durable admission | conversation + request | `promptDigest` |
@@ -251,6 +252,9 @@ admission keeps a transaction open for a whole native turn by design, and the ti
 would end it.
 
 ## Retention, upgrade and recovery
+
+Eligible Cursor/OpenCode conversations support [owner content erasure](integration-api-v1.md#erase-text-conversation-content).
+The completed erasure leaves one content-free owner audit fact and preserves receipt identities and digest fences.
 
 Rows are retained with the database. There is no TTL and no deletion API.
 Trusted-context erasure removes content but leaves audit rows, which hold none.
@@ -640,3 +644,7 @@ not assert audit rows. Codex live answers and dispatch share the audited
 or `settleLive` and then reads the trail. A trusted effect whose conversation has
 vanished fails rather than commit without its row, but the foreign key from
 trusted sessions makes that unreachable, so no test drives it.
+
+## Text conversation erasure
+
+`conversation.content_erased` is one owner-authorized fact per conversation, appended in the same transaction as the final database scrub and immutable erased timestamp. Its strict payload contains only `{erasureId}`. A pending operation emits no completed audit fact. Repeated DELETEs and cleanup retries append nothing. Request outcome audit facts and request/admission identities remain unchanged. The SQL vocabulary and partial unique index are added by migration 044.

@@ -1,5 +1,9 @@
-import { promptBytes } from "@birbcrew/client/contract";
-import { storedRequestTextBytes } from "./text-profile-validation.ts";
+import { assertContentWritable, contentErasureState, receiptContentState } from "./content-erasure-store.ts";
+import { eraseConversationContent, type TextErasureLifecycle } from "./content-erasure.ts";
+import { isTerminalRequestStatus, requestStatusFromRow } from "./request-status.ts";
+import { contentErasureCapabilityV1Schema, contentErasureCapabilityV1 } from "@birbcrew/client/contract";
+
+import { effectiveRequestTextBytes } from "./text-profile-validation.ts";
 import { memberSubagents } from "./child-target.ts";
 import { z } from "zod";
 import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type DecisionReceiptsCapabilityV1,
@@ -29,7 +33,8 @@ export const integrationCapabilities = {
   requestContract: "sql-admission-temporal-queue-v1",
   identity: "owner/conversation/request UUID; exact UTF-8 text equivalence",
   cancellation: "durable-intent-v1",
-  retention: "receipts-and-results-retained-with-database; no-automatic-TTL",
+  retention: "receipts-and-native-results-retained; text-content-owner-erasable; digest-fences-permanent; no-automatic-TTL",
+  contentErasure: contentErasureCapabilityV1Schema.parse(contentErasureCapabilityV1),
   rollover: { version: 1, maximumTurns: conversationTurnLimit, generationTurns: workflowGenerationTurnLimit },
   proxy: { version: 1, protocols: ["anthropic-messages", "openai-responses", "openai-chat-completions"] },
   trustedContext: { version: 1, transport: "operator-configured-local-runtime", httpSubmission: false },
@@ -98,20 +103,36 @@ export type { ServerRequestReceipt } from "@birbcrew/client/contract";
 export class ReceiptContractError extends Error {
   constructor() { super("Request receipt violates the public contract"); this.name = "ReceiptContractError"; }
 }
-type Status = ServerRequestReceipt["status"];
 
 /** Public contract adapter; no SDK or Temporal internals are exposed to HTTP consumers. */
 export class IntegrationApi {
   readonly store: MemberStore;
-  readonly members: Pick<MemberClient, "accept" | "cancelPending" | "requestStatus">;
+  readonly members: Pick<MemberClient, "accept" | "cancelPending" | "requestStatus"> & TextErasureLifecycle;
   private readonly delivering = new Set<string>();
   private scanning = false;
 
-  constructor(store: MemberStore, members: Pick<MemberClient, "accept" | "cancelPending" | "requestStatus">) {
+  constructor(store: MemberStore, members: Pick<MemberClient, "accept" | "cancelPending" | "requestStatus"> & TextErasureLifecycle) {
     this.store = store;
     this.members = members;
   }
 
+  eraseConversationContent(input: unknown) {
+    const key = keySchema.omit({requestId:true}).parse(input);
+    return eraseConversationContent({store:this.store,lifecycle:this.members,key});
+  }
+  closeTextConversation(input: unknown) {
+    return this.members.closeTextConversation(keySchema.omit({requestId:true}).parse(input));
+  }
+  private async commandStatus(key: z.infer<typeof keySchema>): Promise<ServerRequestReceipt> {
+    try {
+      const receipt=await this.status(key);
+      if(receipt.erased) throw new MemberStoreError("conversation_erased");
+      return receipt;
+    } catch(error) {
+      if(error instanceof MemberStoreError && error.code==="content_erasure_pending") throw new MemberStoreError("conversation_erased");
+      throw error;
+    }
+  }
   async submit(input: unknown): Promise<ServerRequestReceipt> {
     const request = memberSubmitEnvelopeSchema.parse(input);
     const conversation = await this.store.getConversation({ ownerId: request.ownerId, conversationId: request.conversationId });
@@ -119,19 +140,20 @@ export class IntegrationApi {
     // Unlike the legacy ACCEPTED stage, acceptTurn waits for SQL admission.
     // On lost acknowledgement the caller must reconcile, never choose a new UUID.
     await this.members.accept(request);
-    return this.status({ ownerId: request.ownerId, conversationId: request.conversationId, requestId: request.requestId });
+    return this.commandStatus({ ownerId: request.ownerId, conversationId: request.conversationId, requestId: request.requestId });
   }
 
   async status(input: unknown): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
     // Reconcile an accepted/no-turn receipt against a terminal logical workflow.
     // This observes Temporal only: it never starts a workflow or dispatches inference.
-    await this.members.requestStatus(key);
+    const before = await contentErasureState(this.store.pool,key);
+    if (!before.content_erasure_id) await this.members.requestStatus(key);
     const { rows: [row] } = await this.store.pool.query<{
-      admission: string | null; reason: string | null; initiator_kind: string | null; initiator_id: string | null;
+      content_erasure_id: string | null; erased_at: Date | null; admission: string | null; reason: string | null; initiator_kind: string | null; initiator_id: string | null;
       phase: string | null; reply: string | null; receipt_id: string | null; delivered_at: Date | null; stopped: boolean; waiting: boolean;
       approval_deadline_seconds: number | null; expired_id: string | null; expires_at: Date | null; expired_at: Date | null;
-    }>(`SELECT a.phase AS admission,a.reason,a.initiator_kind,a.initiator_id,t.phase,t.reply,x.receipt_id,x.delivered_at,
+    }>(`SELECT c.content_erasure_id,ce.erased_at,a.phase AS admission,a.reason,a.initiator_kind,a.initiator_id,t.phase,t.reply,x.receipt_id,x.delivered_at,
        a.approval_deadline_seconds,e.approval_id AS expired_id,e.expires_at,e.expired_at,
        EXISTS(SELECT 1 FROM birbcrew_ts.deferred_calls d WHERE d.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND d.request_id=COALESCE(a.request_id,t.request_id) AND d.decision IS NULL AND d.expired_at IS NULL) AS waiting,
        (EXISTS(SELECT 1 FROM birbcrew_ts.tool_cancellations tc WHERE tc.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND tc.request_id=COALESCE(a.request_id,t.request_id))
@@ -139,6 +161,7 @@ export class IntegrationApi {
         AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.native_launches n WHERE n.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND n.request_id=COALESCE(a.request_id,t.request_id) AND NOT n.stopped)) AS stopped
        FROM birbcrew_ts.request_admissions a FULL JOIN birbcrew_ts.turns t USING(conversation_id,request_id)
        JOIN birbcrew_ts.conversations c ON c.conversation_id=COALESCE(a.conversation_id,t.conversation_id)
+       LEFT JOIN birbcrew_ts.conversation_content_erasures ce ON ce.conversation_id=c.conversation_id
        LEFT JOIN birbcrew_ts.integration_cancellations x ON x.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND x.request_id=COALESCE(a.request_id,t.request_id)
        LEFT JOIN LATERAL (SELECT d.approval_id,d.expires_at,d.expired_at FROM birbcrew_ts.deferred_calls d
          WHERE d.conversation_id=COALESCE(a.conversation_id,t.conversation_id) AND d.request_id=COALESCE(a.request_id,t.request_id)
@@ -147,16 +170,14 @@ export class IntegrationApi {
       [key.ownerId,key.conversationId,key.requestId]);
     if (!row) throw new MemberStoreError("not_found");
     // A cancellation intent never overwrites the committed winner or claims rollback.
-    const status: Status = row.phase === "committed" ? "completed"
-      : row.admission === "rejected" ? (row.reason === "predecessor_cancelled" ? "cancelled" : "failed")
-      : row.phase === "uncertain" ? "uncertain"
-      : row.receipt_id ? "cancellation_requested"
-      : row.waiting ? "waiting" : row.phase === "started" ? "running" : "accepted";
+    const content = receiptContentState(row);
+    const status = requestStatusFromRow(row);
     const receipt = serverRequestReceiptSchema.safeParse({
       apiVersion: "1", conversationId: key.conversationId, requestId: key.requestId,
       acceptance: { boundary: "sql_admission_and_temporal_queue" }, status,
       ...(row.initiator_kind ? { initiator: initiatorFromColumns(row.initiator_kind, row.initiator_id) } : {}),
-      ...(row.phase === "committed" ? { result: { text: row.reply! } } : {}),
+      ...(content === "erased" ? {erased:true} : {}),
+      ...(row.phase === "committed" && content === "retained" ? { result: { text: row.reply! } } : {}),
       ...(row.reason ? { reason: row.reason } : {}),
       ...(row.receipt_id ? { cancellation: {
         receiptId: row.receipt_id, delivery: row.delivered_at ? "delivered" as const : "pending" as const,
@@ -173,16 +194,16 @@ export class IntegrationApi {
   /** `policy` marks an intent a routine's fail_closed policy requested rather than the owner. */
   async cancel(input: unknown, policy?: "fail_closed"): Promise<ServerRequestReceipt> {
     const key = keySchema.parse(input);
-    // Backfill active legacy turns created after migration17, without inventing an
-    // admission for an unknown UUID or accepting a new payload. Such turns come from
-    // workflow histories older than durable admission, which only the owner could start.
-    await this.store.pool.query(`INSERT INTO birbcrew_ts.request_admissions(conversation_id,request_id,prompt_digest,initiator_kind,initiator_id)
-      SELECT t.conversation_id,t.request_id,t.prompt_digest,$4,$5 FROM birbcrew_ts.turns t
-      JOIN birbcrew_ts.conversations c USING(conversation_id)
-      WHERE c.owner_id=$1 AND t.conversation_id=$2 AND t.request_id=$3
-      ON CONFLICT(conversation_id,request_id) DO NOTHING`, [key.ownerId,key.conversationId,key.requestId,...initiatorColumns(ownerInitiator)]);
-    // Atomic ownership check and FK admission requirement. Repeated intent has one receipt.
+    // Backfill only missing legacy identity within the cancellation transaction.
+    const member=await this.store.getConversation({ownerId:key.ownerId,conversationId:key.conversationId});
     await this.store.transaction(async db => {
+      if(isTextEngine(member.engine))await assertContentWritable(db,key);
+      await db.query(`INSERT INTO birbcrew_ts.request_admissions(conversation_id,request_id,prompt_digest,initiator_kind,initiator_id)
+        SELECT t.conversation_id,t.request_id,t.prompt_digest,$4,$5 FROM birbcrew_ts.turns t
+        JOIN birbcrew_ts.conversations c USING(conversation_id)
+        WHERE c.owner_id=$1 AND t.conversation_id=$2 AND t.request_id=$3
+          AND NOT EXISTS(SELECT 1 FROM birbcrew_ts.request_admissions a WHERE a.conversation_id=t.conversation_id AND a.request_id=t.request_id)
+        ON CONFLICT(conversation_id,request_id) DO NOTHING`, [key.ownerId,key.conversationId,key.requestId,...initiatorColumns(ownerInitiator)]);
       // Lock the conversation first, like every workflow-side canceller; inserting the
       // shared audit key before this lock can deadlock against them.
       const { rows: [conversation] } = await db.query<{ member_id: string }>(
@@ -197,7 +218,7 @@ export class IntegrationApi {
       if (intent) await appendAudit(db, { type: "request.cancellation_requested", ownerId: key.ownerId, memberId: conversation.member_id,
         conversationId: key.conversationId, requestId: key.requestId, payload: { receiptId: intent.receipt_id, ...(policy && { policy }) } });
     });
-    return this.status(key);
+    return this.commandStatus(key);
   }
 
   /** Owner-scoped keyset page in identifier order; backed by members UNIQUE (owner_id, member_id). */
@@ -220,7 +241,7 @@ export class IntegrationApi {
     // `capabilities` only for a member that has some, so a member without any reads as before.
     const members = items.map(({ instructions, instructionPacks, consent, seal, active, stored, policyProfile, policyBytes, ...member }) => {
       const capabilities = storedCapabilities(stored);
-      return { ...member, ...(isTextEngine(member.engine) ? { requestTextBytes: policyProfile === null ? promptBytes : storedRequestTextBytes(policyBytes) } : {}), subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
+      return { ...member, ...(isTextEngine(member.engine) ? { requestTextBytes: effectiveRequestTextBytes(policyProfile === null ? undefined : {request_text_bytes: policyBytes}) } : {}), subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
         ...(instructionPacks ? { instructionPacks } : {}), ...(capabilities ? { capabilities } : {}) };
     });
     return { apiVersion: "1" as const, members, next };
@@ -233,16 +254,19 @@ export class IntegrationApi {
   async listConversations(ownerId: string, query: unknown) {
     const { limit, after, memberId } = conversationListQuery.parse(query);
     // Keep unnamed (no `name:`): PostgreSQL plans unnamed statements with the actual values, so the 022 indexes seek on memberId and the cursor; a generic plan seeks on owner_id alone.
-    const { rows } = await this.store.pool.query<{ conversationId: string; memberId: string; engine: Engine; profile: string; phase: string | null }>(
+    const { rows } = await this.store.pool.query<{ conversationId: string; memberId: string; engine: Engine; profile: string; phase: string | null; erased?:true; contentState?:"erasing" }>(
       `SELECT c.conversation_id AS "conversationId",c.member_id AS "memberId",m.engine,m.profile,
-         CASE WHEN s.conversation_id IS NULL THEN 'idle' WHEN s.history_complete THEN s.state->>'phase' END AS phase
+         CASE WHEN ce.erased_at IS NOT NULL THEN true END AS erased,
+         CASE WHEN c.content_erasure_id IS NOT NULL AND ce.erased_at IS NULL THEN 'erasing' END AS "contentState",
+         CASE WHEN ce.erased_at IS NOT NULL THEN ce.terminal_phase WHEN s.conversation_id IS NULL THEN 'idle' WHEN s.history_complete THEN s.state->>'phase' END AS phase
        FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING (owner_id,member_id)
        LEFT JOIN birbcrew_ts.public_snapshots s USING (conversation_id)
+       LEFT JOIN birbcrew_ts.conversation_content_erasures ce USING (conversation_id)
        WHERE c.owner_id=$1 AND ($2::uuid IS NULL OR c.member_id=$2) AND ($3::uuid IS NULL OR c.conversation_id>$3)
        ORDER BY c.conversation_id LIMIT $4`,
       [ownerId, memberId ?? null, after ?? null, limit + 1]);
     const { items, next } = page("conversation", rows, limit, row => row.conversationId);
-    return { apiVersion: "1" as const, conversations: items, next };
+    return { apiVersion: "1" as const, conversations: items.map(({erased,contentState,...item})=>({...item,...(erased?{erased}:{}),...(contentState?{contentState}:{})})), next };
   }
 
   /** Restart-safe delivery outbox. Reads never call this; gateway invokes it on a timer. */
@@ -261,7 +285,7 @@ export class IntegrationApi {
           await this.store.pool.query(`UPDATE birbcrew_ts.integration_cancellations SET last_attempt_at=clock_timestamp()
             WHERE conversation_id=$1 AND request_id=$2`, [key.conversationId,key.requestId]);
           const receipt = await this.status(key);
-          if (!["completed", "failed", "cancelled"].includes(receipt.status)) await this.members.cancelPending(key, Date.now() + 10_000);
+          if (!isTerminalRequestStatus(receipt.status)) await this.members.cancelPending(key, Date.now() + 10_000);
           await this.store.pool.query(`UPDATE birbcrew_ts.integration_cancellations SET delivered_at=COALESCE(delivered_at,clock_timestamp())
             WHERE conversation_id=$1 AND request_id=$2`, [key.conversationId,key.requestId]);
         } catch {

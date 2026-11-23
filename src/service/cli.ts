@@ -1,5 +1,8 @@
+import { once } from "node:events";
+import { ConversationContentOutput } from "./content-output.ts";
+import { isTextEngine, memberSubmitEnvelopeSchema, MemberStoreError } from "./domain.ts";
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { json } from "node:stream/consumers";
@@ -13,8 +16,9 @@ import { temporalConnectionOptions, temporalSettings } from "./temporal-config.t
 
 async function main() {
   const [operation, configPath] = process.argv.slice(2);
-  if (!["spawn", "open", "turn", "pending", "decide", "cancel-pending", "worker"].includes(operation)) {
-    throw new Error("Use spawn, open, turn, pending, decide, cancel-pending, or worker <trusted-profile-module>");
+  const operations = ["spawn", "open", "turn", "pending", "decide", "cancel-pending", "worker", "erasure-inventory"];
+  if (!operations.includes(operation)) {
+    throw new Error("Use " + operations.join(", ") + ". Worker takes a trusted profile module. Erasure inventory requires --manifest, --quiesce-module, and --confirm-complete.");
   }
   const url = process.env.BIRBCREW_DATABASE_URL;
   if (!url) throw new Error("Set BIRBCREW_DATABASE_URL to the private TypeScript application database");
@@ -24,7 +28,8 @@ async function main() {
   try {
     await store.migrate();
     if (operation === "worker") {
-      const stateDir = process.env.BIRBCREW_STATE_DIR, heartbeat = process.env.BIRBCREW_WORKER_HEARTBEAT_FILE;
+      let stateDir = process.env.BIRBCREW_STATE_DIR;
+      const heartbeat = process.env.BIRBCREW_WORKER_HEARTBEAT_FILE;
       if (!stateDir || !configPath) throw new Error("Supply BIRBCREW_STATE_DIR and the trusted provider module path");
       if (heartbeat !== undefined) {
         if (!isAbsolute(heartbeat)) throw new Error("BIRBCREW_WORKER_HEARTBEAT_FILE must be an absolute path");
@@ -40,6 +45,8 @@ async function main() {
       const { profiles, close } = await import(pathToFileURL(resolve(configPath)).href);
       const controlPool = new Pool({ connectionString: url, max: 2, ...controlPoolBounds });
       try {
+        await mkdir(stateDir, { recursive: true, mode: 0o700 });
+        stateDir = await realpath(stateDir);
         await registerProfiles(pool, profiles, stateDir);
         await runMemberWorker({ store, temporal, profiles, configPath: resolve(configPath), stateDir, heartbeat, controlPool });
       } finally {
@@ -50,7 +57,7 @@ async function main() {
       }
       return;
     }
-    const input: unknown = await json(process.stdin);
+    const input: unknown = operation==="erasure-inventory" ? undefined : await json(process.stdin);
     if (operation === "spawn") {
       const spawn = spawnRequestSchema.parse(input);
       const registered = await pool.query("SELECT 1 FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2",
@@ -62,6 +69,11 @@ async function main() {
     const connection = await Connection.connect(await temporalConnectionOptions(temporal));
     try {
       const members = new MemberClient(store, new Client({ connection, namespace: temporal.namespace }));
+      if(operation==="erasure-inventory"){
+        const {runErasureInventoryCommand}=await import("./erasure-inventory.ts");
+        console.log(JSON.stringify(await runErasureInventoryCommand(store,new Client({connection,namespace:temporal.namespace}),process.argv.slice(3))));
+        return;
+      }
       let result;
       switch (operation) {
         case "open": result = await members.open(input); break;
@@ -71,7 +83,22 @@ async function main() {
           await members.cancelPending(input);
           result = { cancelled: true };
           break;
-        default: result = { text: await members.submit(input) };
+        default: {
+          result = { text: await members.submit(input) };
+          const request = memberSubmitEnvelopeSchema.parse(input);
+          const key = { ownerId: request.ownerId, conversationId: request.conversationId };
+          const conversation = await store.getConversation(key);
+          if (isTextEngine(conversation.engine)) {
+            const output = new ConversationContentOutput(pool);
+            try {
+              const frame = JSON.stringify(result) + "\n";
+              const sent = await output.enqueue(key, () => ({ backpressure: !process.stdout.write(frame) }));
+              if (sent.kind !== "retained") throw new MemberStoreError("conversation_erased");
+              if (sent.backpressure && process.stdout.writableNeedDrain) await once(process.stdout, "drain");
+            } finally { await output.stop(); }
+            return;
+          }
+        }
       }
       console.log(JSON.stringify(result));
     } finally {

@@ -1,3 +1,4 @@
+import type { TextVolumeLocation } from "./text-state-location.ts";
 import { codexItemWriter } from "./codex-items.ts";
 import { nativeCallIds } from "./text-stream.ts";
 import { MemberStore } from "./store.ts";
@@ -23,6 +24,7 @@ const telemetryProvider: Partial<Record<Engine, string>> = {
 };
 
 interface AdmittedTurn {
+  textVolume?: TextVolumeLocation;
   launch: Launch;
   conversation: Conversation;
   runId: string;
@@ -50,9 +52,10 @@ process.once("message", async (command: AdmittedTurn) => {
     const temporal = temporalSettings(process.env);
     const { profiles, close } = await import(pathToFileURL(configPath).href);
     try {
-      await registerProfiles(pool, profiles, stateDir);
       const member = command.conversation;
-      const driver = memberProfiles(profiles, stateDir, process.pid).get(member.profile)?.[member.engine];
+      if (isTextEngine(member.engine) && command.textVolume?.engine !== member.engine) throw new Error("Missing pinned text volume");
+      await registerProfiles(pool, profiles, stateDir, command.textVolume);
+      const driver = memberProfiles(profiles, stateDir, process.pid, command.textVolume).get(member.profile)?.[member.engine];
       if (!driver) throw new Error("Unsupported member profile");
       // Read at every launch, outside workflow code. Claude and Codex reuse what their native session recorded on its first turn.
       const projectContext = command.launch.childId ? undefined : await conversationContext(pool, member);

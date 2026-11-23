@@ -36,6 +36,7 @@ type Projection = {
   grantedCalls?: GrantedCall[];
   expiredCalls?: ExpiredCall[];
   liveOperations?: (Omit<ClosedCall,"effect"> & {effect:"pending" | ClosedCall["effect"]})[];
+  erased?: true;
   conversationId: string;
   memberId: string;
   engine: Conversation["engine"];
@@ -66,14 +67,24 @@ type Change = ChildChange
 
 type OpenText = { id: string; prefix: string; count: number };
 
-export interface PublicSnapshot {
+type SnapshotContent = {
   cursor: number;
   state: Projection;
   messages: Message[];
   openTools: Record<string, OpenTool>;
   openText: OpenText | null;
   childText: Record<string, OpenText>;
-}
+};
+type ErasedProjection = Projection & {
+  erased: true; phase: "complete" | "failed" | "cancelled";
+  openStep: null; pendingApprovals: [];
+  children?: never; pendingQuestions?: never; interruptedCalls?: never;
+  grantedCalls?: never; expiredCalls?: never; liveOperations?: never;
+};
+export type PublicSnapshot =
+  | (SnapshotContent & { erased?: never })
+  | { erased: true; cursor: number; state: ErasedProjection;
+      messages: []; openText: null; openTools: Record<string, never>; childText: Record<string, never> };
 
 type OpenTool = { preamble?: Pick<OpenText,"id"|"prefix">; subagentRunId?:string; invocationId: string; publicId: string; prefix: string };
 
@@ -91,9 +102,9 @@ export function toolBootstrap(tool: OpenTool, includePreamble = true): Event[] {
   ];
 }
 
-type StoredSnapshot = PublicSnapshot & { complete: boolean; turnLimit: number };
+type StoredSnapshot = SnapshotContent & { content_erasure_id: string | null; complete: boolean; turnLimit: number };
 
-const selection = `SELECT c.turn_limit AS "turnLimit", COALESCE(s.open_tools,'{}'::jsonb) AS "openTools", COALESCE(s.child_open_text,'{}'::jsonb) AS "childText", s.open_text AS "openText", COALESCE(s.history_complete, true) AS complete, COALESCE(s.cursor, 0) AS cursor, COALESCE(s.messages, '[]'::jsonb) AS messages,
+const selection = `SELECT to_jsonb(c)->>'content_erasure_id' AS content_erasure_id,c.turn_limit AS "turnLimit", COALESCE(s.open_tools,'{}'::jsonb) AS "openTools", COALESCE(s.child_open_text,'{}'::jsonb) AS "childText", s.open_text AS "openText", COALESCE(s.history_complete, true) AS complete, COALESCE(s.cursor, 0) AS cursor, COALESCE(s.messages, '[]'::jsonb) AS messages,
   COALESCE(s.state, jsonb_build_object('conversationId', c.conversation_id, 'memberId', m.member_id,
   'engine', m.engine, 'profile', m.profile, 'phase', 'idle', 'openStep', NULL, 'pendingApprovals', '[]'::jsonb)) AS state
   FROM birbcrew_ts.conversations c JOIN birbcrew_ts.members m USING (owner_id, member_id)
@@ -102,6 +113,11 @@ const selection = `SELECT c.turn_limit AS "turnLimit", COALESCE(s.open_tools,'{}
 export async function readSnapshot(db: Pool, owner: string, id: string): Promise<PublicSnapshot> {
   const { rows: [snapshot] } = await db.query<StoredSnapshot>(selection + " WHERE c.owner_id=$1 AND c.conversation_id=$2", [owner, id]);
   if (!snapshot) throw new MemberStoreError("not_found");
+  if (snapshot.content_erasure_id) {
+    const {rows:[erasure]}=await db.query<{erased_at:Date|null;state:ErasedProjection}>("SELECT erased_at,birbcrew_ts.erased_projection(conversation_id) AS state FROM birbcrew_ts.conversation_content_erasures WHERE conversation_id=$1",[id]);
+    if(!erasure?.erased_at)throw new MemberStoreError("content_erasure_pending");
+    return {erased:true,state:erasure.state,cursor:snapshot.cursor,messages:[],openText:null,openTools:{},childText:{}};
+  }
   if (!snapshot.complete) throw new MemberStoreError("history_unavailable");
   return { state: snapshot.state, cursor: snapshot.cursor, messages: snapshot.messages, openText: snapshot.openText, openTools: snapshot.openTools, childText:snapshot.childText };
 }
@@ -387,6 +403,7 @@ function apply(snapshot: StoredSnapshot, change: Change): Event[] {
 export async function publishObservation(db: PoolClient, id: string, change: Change) {
   const { rows: [snapshot] } = await db.query<StoredSnapshot>(selection + " WHERE c.conversation_id=$1 FOR UPDATE OF c", [id]);
   if (!snapshot) throw new MemberStoreError("not_found");
+  if (snapshot.content_erasure_id) throw new MemberStoreError("conversation_erased");
   if (!snapshot.complete || snapshot.state.phase === "failed" || snapshot.state.phase === "cancelled") return;
   await db.query(`INSERT INTO birbcrew_ts.public_snapshots (conversation_id,state) VALUES ($1,$2)
     ON CONFLICT DO NOTHING`, [id, JSON.stringify(snapshot.state)]);
@@ -439,15 +456,18 @@ export async function readEvents(db: Pool, owner: string, id: string, cursor: nu
     const setup = { text: `BEGIN READ ONLY; SET LOCAL statement_timeout = '${eventStatementTimeoutMs}ms'`, query_timeout: eventReplyTimeoutMs };
     await client.query(setup);
     const query = {
-      text: `SELECT e.cursor,e.event FROM birbcrew_ts.public_events e JOIN birbcrew_ts.conversations c USING (conversation_id)
-     WHERE c.owner_id=$1 AND e.conversation_id=$2 AND e.cursor>$3 ORDER BY e.cursor LIMIT $4`,
+      text: `SELECT e.cursor,e.event,to_jsonb(c)->>'content_erasure_id' AS content_erasure_id
+       FROM birbcrew_ts.conversations c LEFT JOIN birbcrew_ts.public_events e
+         ON e.conversation_id=c.conversation_id AND e.cursor>$3
+       WHERE c.owner_id=$1 AND c.conversation_id=$2 ORDER BY e.cursor LIMIT $4`,
       values: [owner, id, cursor, readEventsLimit], query_timeout: eventReplyTimeoutMs,
     };
-    const { rows } = await client.query<ObservedRow>(query);
+    const { rows } = await client.query<{cursor:number|null;event:Event|null;content_erasure_id:string|null}>(query);
+    if(rows.some(row=>row.content_erasure_id))throw new MemberStoreError("conversation_erased");
     const commit = { text: "COMMIT", query_timeout: eventReplyTimeoutMs };
     await client.query(commit);
     committed = true;
-    return rows;
+    return rows.flatMap(row=>row.cursor!==null && row.event!==null ? [{cursor:row.cursor,event:row.event}] : []);
   } finally {
     client.release(!committed);
     client.off("error", connectionError);

@@ -1,4 +1,5 @@
 import { fork } from "node:child_process";
+import { mkdir, realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { z } from "zod";
@@ -41,6 +42,8 @@ const responseSchema = z.discriminatedUnion("ok", [
 ]);
 
 export async function startSupervisor(configPath: string, stateDir: string) {
+  await mkdir(stateDir,{recursive:true,mode:0o700});
+  stateDir=await realpath(stateDir);
   const child = fork(new URL("./supervisor-host.ts", import.meta.url), [configPath, stateDir], {
     stdio: ["ignore", "ignore", "inherit", "ipc"], execArgv: [],
   });

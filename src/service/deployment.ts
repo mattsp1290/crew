@@ -1,3 +1,4 @@
+import { textStateLocation, type TextVolumeLocation } from "./text-state-location.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -67,7 +68,7 @@ function assertTextProfile(name: string, entry: MemberProfile) {
   }
 }
 
-export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string) {
+export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string, textVolume?: TextVolumeLocation) {
   for (const [name, entry] of config) assertTextProfile(name, entry);
   const ceilings = new Map([...config].map(([name, entry]) => [name, profileCeiling(name, entry)]));
   const declarations = new Map<string, ProfileTargetSeal>();
@@ -93,6 +94,12 @@ export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, M
       }
       declarations.set(JSON.stringify([engine, name]), resolved);
     }
+  }
+  for (const engine of textEngines) {
+    if (textVolume && textVolume.engine !== engine) continue;
+    if (![...config.values()].some(entry => entry[engine])) continue;
+    const { locationId } = textVolume?.engine === engine ? textVolume : await textStateLocation(directory, engine);
+    await pool.query("INSERT INTO birbcrew_ts.text_state_locations(location_id,engine) VALUES($1,$2) ON CONFLICT DO NOTHING", [locationId,engine]);
   }
   const profiles = [...config.values()];
   const volumes: Record<Engine, string | null> = {

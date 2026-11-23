@@ -154,7 +154,7 @@ the gateway, worker and CLI, and a plaintext connection was refused.
 
 | Path | Mount | Requirements |
 | --- | --- | --- |
-| `/var/lib/birbcrew/native` | Persistent volume, worker only | Writable by uid 10001. The worker creates `.birbcrew-volume` identity files, at the root for Claude and under `codex/` for Codex. Those profiles are registered to that identity, so a replacement worker must mount the same volume. Pi context lives in PostgreSQL. |
+| `/var/lib/birbcrew/native` | Persistent volume, worker only | Writable by uid 10001. The worker creates `.birbcrew-volume` identity files, at the root for Claude and under `codex/` for Codex. Cursor and OpenCode use `.birbcrew-text-volume` under their engine directories. Those profiles are registered to that identity, so a replacement worker must mount the same volume. Pi context lives in PostgreSQL. |
 | `/tmp` | tmpfs | Writable, exec allowed, mode `1777`. |
 | `BIRBCREW_CODEX_AUTH_HOME` | Codex sign-in, worker only | Read-only is enough. `auth.json` must be readable by uid 10001. The worker never writes this directory, so the Codex CLI that owns the login stays its only writer. |
 | `/etc/crew/...` | Read-only secrets | Gateway configuration and Temporal TLS files, readable by uid 10001. |
@@ -200,6 +200,13 @@ the schema exists, so a role with only `CONNECT` cannot start. The current code
 therefore cannot run with separate migration and runtime roles.
 
 ## Upgrades
+
+Migration 044 requires a coordinated outage and refuses busy primary tables immediately
+with NOWAIT. Secondary DDL has a bounded lock timeout. The older retry durations below
+do not apply to 044. Complete [text-erasure enrollment](#coordinated-text-erasure-upgrade-schema-044)
+before starting engine pollers. Private databases made from the unreleased branch's
+old erasure migration 043 are disposable. Released schema 042 and profile-policy 043
+upgrade to 044.
 
 Stop every gateway, worker and CLI process of the previous release, including
 scheduled CLI jobs, before the first process of the new release starts. That
@@ -491,3 +498,70 @@ development server, not in the hardened image:
   gateway and checks that the worker's heartbeat advances.
 
 **Unverified:** these probes have not been run under kubelet.
+
+## Coordinated text erasure upgrade (schema 044)
+
+Stop all old gateways, workers, CLI senders and detached descendants before applying 044. Back up according to policy, recognizing that backups contain content. Fence/drain the Temporal service after stopping old RPC senders, then restart Temporal for observation while engine pollers remain stopped. Migration lock acquisition is bounded, including secondary-table DDL; on failure nothing applies. The new audit uniqueness index scans the existing audit table under the coordinated outage, so allow maintenance time proportional to its size. The replacement turn CHECK is NOT VALID for old rows and still enforces every new write. Retained text content reads return 503 during a recovery hold because output reservations require an active installation. Finalized content-free snapshots and receipts remain readable from SQL. Deploy the schema, matching workers, gateway and client together, with no feature flag.
+
+Every text engine root has an opaque `.birbcrew-text-volume` marker. Workers enroll locations and associate a conversation before its runner can create files. Only workers holding that exact marker poll its cleanup queue. A gateway never deletes from its own state directory. Cloned/restored writable copies require fresh marker IDs and separate inventory entries; do not serve two independent copies under one ID.
+
+Legacy conversations start with incomplete inventory. Enumerate **all** historical volumes, including unavailable and cloned copies; restore access to each before declaring completeness. Enroll roots by starting the matching registration against the stopped installation (or registering profiles in trusted operator code). Then run:
+
+```
+npm run members -- erasure-inventory --manifest /absolute/inventory.json --quiesce-module /absolute/quiesce.mjs --confirm-complete
+```
+
+The manifest is `{"version":1,"conversations":[{"ownerId":"owner","conversationId":"UUID","inventory":{"kind":"locations","locations":[{"locationId":"UUID","engine":"cursor","profile":"profile-name"}]}}]}`. A provably never-launched conversation uses `{"kind":"no_launch"}` instead of a locations list. Empty locations lists are invalid. No paths or content enter cleanup workflow arguments. Keep the manifest private.
+
+The trusted module exports `async function quiesce()`. It must stop and await **all** old senders, engine pollers, runner groups, detached helpers and descendants across the complete enrolled location set, fence/drain outstanding Temporal start RPCs, and make Temporal available again for observation without restarting pollers. Throw if uncertain. This is the same trust contract as `RecoveryHooks.quiesce`, without snapshot/restore. A thrown hook or invalid manifest commits no inventory/proof changes. Resume pollers only after the command commits. Its returned drain ID identifies the durable teardown proof; it never changes receipt outcomes.
+
+The installed opaque SDKs can create detached helpers. If an adapter cannot attest the complete writer inventory, runner exit alone does not qualify: `content_runtime_unconfirmed` requires the trusted drain above, even for a completed receipt. A trusted runtime adapter may expose `writerGroups()` only when it can enumerate every writer group after close; absent/null means unknown. An empty process scan, missing PID, elapsed lease, failed close or Temporal cancellation is not proof. Never signal saved numeric process IDs after restart. A supervisor keeps each published volume descriptor open while its writer inventory remains unconfirmed, so later launches cannot recycle that reference onto another volume. The trusted drain stops all those writers before the supervisor exits; restarting only the supervisor is not a drain. Plan such drains before unknown-writer launches exhaust the process file-descriptor limit.
+
+The command reconciles ambiguous/legacy start records against current retained Temporal identities after the trusted drain. A negative observation records `absent_after_trusted_drain`, never a fabricated closed history. An unobserved history that expired stays ineligible. Closure reconciliation runs every 30 seconds in batches of 64 with a durable cursor; hints older than five minutes emit a closure-lag warning without stopping worker heartbeats. Recommend at least one day of namespace retention and monitor backlog/health so observation lag remains below retention. An outage longer than retention cannot be repaired by inferring closure from age.
+
+Register each retained volume with its trusted text-profile module while engine pollers
+remain stopped. Run this from the Crew checkout with the deployment's database setting.
+The state directory must already resolve to the retained volume. This command registers
+profile definitions and volume identities without starting a worker or a Temporal poller.
+
+```sh
+BIRBCREW_PROFILE_MODULE=/etc/birbcrew/text-profiles.mjs node --input-type=module -e '
+	import { Pool } from "pg";
+	import { realpath } from "node:fs/promises";
+	import { pathToFileURL } from "node:url";
+	import { registerProfiles } from "./src/service/deployment.ts";
+	const config = await import(pathToFileURL(process.env.BIRBCREW_PROFILE_MODULE).href);
+	const pool = new Pool({ connectionString: process.env.BIRBCREW_DATABASE_URL });
+	try {
+		await registerProfiles(pool, config.profiles, await realpath(process.env.BIRBCREW_STATE_DIR));
+	} finally {
+		try { await pool.end(); } finally { await config.close?.(); }
+	}
+'
+```
+
+Use a module containing the text profiles associated with that volume. Register every
+retained volume, commit the trusted inventory below, and only then start the normal worker.
+Registration alone does not prove that writers stopped or that an old workflow closed.
+
+Start matching location workers and the gateway, then qualify a synthetic erase before serving requests. Missing volumes/cleanup failures remain permanently fenced and retryable; restart reconciliation reuses the original erasure identity. No old binary may serve after the first fence. The rollback floor is the qualified deployment commit recorded in the upgrade manifest, including the durable output reservation protocol and pinned cleanup checks: retain schema/tombstones and recover forward, or stop service. Serving a restored pre-erasure backup is unsupported until separate recovery tooling restores every retained fence/tombstone and clears the restored content. Keep service stopped until that has been verified. The inventory command records location and drain evidence; it does not restore erasure decisions.
+
+See [trusted-context erasure](trusted-application-context.md#retention-and-deletion-contract) for WAL/backups and Temporal residuals. Provider-held copies, logs and previously delivered client data follow their own policies.
+
+Content output uses durable `content_output_reservations`, because a backend disconnect can release a SQL lock while a paused gateway still holds old data. Each text enqueue first commits a reservation under the conversation lock; the reservation's insert advances `content_output_epoch` so stale REPEATABLE READ fence attempts abort. Erasure refuses active reservations. The gateway releases its reservation after synchronous enqueue, before socket drain. A live gateway retries a failed acknowledgement on a new connection. If a gateway disappears before releasing its ticket, erasure remains `503 content_output_busy` before fencing. Do not expire such reservations or delete them by age: a paused gateway could resume. The trusted inventory command above requires every serving gateway/sender to be stopped; after its successful `quiesce()` it records a `content_output_drains` fact and clears reservations for the manifest's conversations in the same SQL transaction. Start replacement gateways only after this transaction commits. Native outputs do not use this protocol.
+
+A recovery freeze can also interrupt the output acknowledgement after enqueue. Freeze/resume and restore do not establish positive output-drain evidence or automatically remove these tickets. After activation, use the same trusted inventory/drain procedure if `content_output_busy` persists; the gateway teardown must precede ticket removal.
+
+Workers and supervisors resolve the state directory once before starting their pollers and runners, so retargeting a configured symlink cannot move a running writer onto a different volume. Stop every writer before moving or replacing an active volume or its resolved parent directories.
+
+A text conversation binds its Temporal namespace when its first start is reserved, or when trusted legacy observation records closure. Gateways sharing SQL must use that namespace; a different namespace returns `content_namespace_mismatch` before a start RPC. Cleanup synchronizes the surviving parent directory after removing the session root and before committing its SQL acknowledgement. Storage must honor directory fsync; unsupported synchronization fails cleanup without acknowledging it.
+
+Workers synchronize the volume marker and its containing directories on that filesystem before publishing its UUID to SQL or polling a cleanup queue. Concurrent initializers perform the same sync. Live gateways also retry release of an irrevocably abandoned output after an ambiguous COMMIT, taking the parent lock first so the retry cannot miss an in-flight ticket.
+
+The unreleased erasure branch originally used migration 043 before integration with
+profile request limits. Disposable databases created from that branch snapshot must
+be recreated: that private 043 is not the released profile-policy migration. Deployed
+schema 042 or released 043 databases upgrade to erasure migration 044. Migration 044
+refuses busy primary tables immediately so pending migration 043 cannot hold profile
+readers behind an erasure lock retry; stop the remaining writers/readers and retry
+startup. Secondary DDL retains its bounded lock timeout.

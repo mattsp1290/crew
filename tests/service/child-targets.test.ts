@@ -70,7 +70,7 @@ test("named registration captures full consent and resolves fixed roles to the t
   assert.deepEqual((await row(key.childId)).role_profile, { ...proposal().profile, model: "child-model", target: { version: 1, ...identity } });
   assert.deepEqual(await children.target({ ...key, target: { engine: "codex", profile: "forged" } }), c.route);
   assert.equal(childTargetSchema.safeParse((await row(key.childId)).role_profile.target).success, false, "old strict reader refuses full identity even on the correct queue");
-  const api = new IntegrationApi(store, { accept: async () => { throw Error("unused"); }, cancelPending: async () => { throw Error("unused"); }, requestStatus: async () => { throw Error("unused"); } });
+  const api = new IntegrationApi(store, { describeClosure:async()=>{throw Error("unused");},ensureCleanupWorkflow:async()=>{throw Error("unused");},closeTextConversation:async()=>{throw Error("unused");}, accept: async () => { throw Error("unused"); }, cancelPending: async () => { throw Error("unused"); }, requestStatus: async () => { throw Error("unused"); } });
   const page = await api.listMembers(p.member.ownerId, {});
   assert.deepEqual(page.members[0].subagents, p.member.subagents);
   assert.equal((await api.listMembers("other-owner", {})).members.length, 0);

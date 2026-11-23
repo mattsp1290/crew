@@ -1,10 +1,12 @@
+export { conversationContentErasure } from "./content-erasure-workflow.ts";
+import type { contentErasureActivities } from "./content-erasure-activities.ts";
 import {
   allHandlersFinished, ApplicationFailure, CancellationScope, workflowInfo, condition, continueAsNew, patched, defineSignal, defineUpdate,
   executeChild, getExternalWorkflowHandle, isCancellation, proxyActivities, setHandler
 } from "@temporalio/workflow";
 import { workflowGenerationTurnLimit, historyRequiresRollover } from "./limits.ts";
 import { acceptsChoice } from "./deferral.ts";
-import { isTextEngine, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
+import { conversationKey, isTextEngine, turnRequestSchema, type Conversation, type TurnRequest } from "./domain.ts";
 import type { Approval, Decision, Choice } from "./approvals.ts";
 import type { ChildKey, ChildStore } from "./children.ts";
 import { childTarget } from "./child-target.ts";
@@ -12,7 +14,7 @@ import type { expiryActivity, MemberActivities, Resume } from "./activities.ts";
 
 import type { MemberStore, ownerAdmissionActivity } from "./store.ts";
 import { activityQueue, memberTaskQueue } from "./queues.ts";
-import { textAdmissionFailure } from "./failure-type.ts";
+import { hasFailureType, textAdmissionFailure } from "./failure-type.ts";
 
 export const submitTurn = defineUpdate<string, [TurnRequest]>("submitTurn");
 export const acceptTurn = defineUpdate<string, [TurnRequest]>("acceptTurn");
@@ -61,6 +63,7 @@ export async function piChildWorkflow(key: ChildKey, profile: string): Promise<v
 export async function memberConversation(conversation: Conversation): Promise<void> {
   // Preserve pre-rollover histories: existing proof workflows still close after four turns.
   const rollover = patched("bounded-conversations-v1");
+  const closeTextNaturally = isTextEngine(conversation.engine) && patched("text-conversation-close-v1");
   const generationLimit = rollover ? workflowGenerationTurnLimit : 4;
   const historyBoundary = () => rollover && historyRequiresRollover(workflowInfo());
   const { conversationProgress, recordAcceptance, rejectAccepted, rejectUnstartedAdmission } = proxyActivities<Pick<MemberStore, "conversationProgress" | "rejectAccepted" | "rejectUnstartedAdmission">
@@ -97,6 +100,20 @@ export async function memberConversation(conversation: Conversation): Promise<vo
   let failed = false;
   let cancelled = false;
   let inFlight = 0;
+  let closingText = false;
+  let checkingClose = false;
+  const textLifecycle = proxyActivities<Pick<ReturnType<typeof contentErasureActivities>, "canCloseTextConversation" | "textClosingHint" | "confirmTerminalTextRequests">>({
+    taskQueue:memberTaskQueue,startToCloseTimeout:"20 seconds",scheduleToCloseTimeout:"60 seconds",
+  });
+  setHandler(defineUpdate<void,[{ownerId:string;conversationId:string}]>("closeTextConversation"), async key => {
+    if (!conversationKey.safeParse(key).success || !isTextEngine(conversation.engine) || key.ownerId !== conversation.ownerId || key.conversationId !== conversation.conversationId || inFlight !== 0 || checkingClose) {
+      throw ApplicationFailure.nonRetryable("conversation_open","conversation_open");
+    }
+    if (closingText) return;
+    checkingClose = true;
+    try { await textLifecycle.canCloseTextConversation(key); closingText = true; }
+    finally { checkingClose = false; }
+  });
 
   const liveCalls = new Map<string,string>();
   const commands = proxyActivities<{
@@ -189,6 +206,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     try {
       return await executeTurn(request, resume);
     } catch (error) {
+      if (hasFailureType(error,"conversation_erased")) throw error;
       const run = workflowInfo().runId;
       const result = await CancellationScope.nonCancellable(() => reconcileTurn(request, run, Boolean(resume)));
       if (result?.kind === "recover") {
@@ -284,6 +302,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     if (request.ownerId !== conversation.ownerId || request.conversationId !== conversation.conversationId) {
       throw ApplicationFailure.nonRetryable("Conversation not found");
     }
+    if (closingText || checkingClose) throw ApplicationFailure.nonRetryable("Conversation closing", "conversation_open");
     // Do not keep admitting duplicate update handlers into an already-full history.
     // Decisions/cancellations stay available so pending work can drain safely.
     if (historyBoundary()) throw ApplicationFailure.nonRetryable("Conversation history is rolling over", "RolloverInProgress");
@@ -326,6 +345,7 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     const result = previous.then(async () => {
       try { await entry.admission; }
       catch (error) {
+        if (hasFailureType(error,"conversation_erased")) throw error;
         // A text-engine admission activity reports input_limit or prompt_rejected when the turn
         // did not start. Fail this update and leave the committed turn's workflow open.
         // Older histories stay on the retryable path.
@@ -363,9 +383,15 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     return value.requestId;
   }, { validator: validate });
 
-  await condition(() => (failed || cancelled || turns.size >= generationLimit || historyBoundary()) && inFlight === 0 && allHandlersFinished());
+  await condition(() => (closingText || (closeTextNaturally && turns.size > 0) || failed || cancelled || turns.size >= generationLimit || historyBoundary()) && inFlight === 0 && allHandlersFinished());
+  if (closeTextNaturally || closingText) {
+    closingText = true;
+    if (!failed && !cancelled) await textLifecycle.confirmTerminalTextRequests({ownerId:conversation.ownerId,conversationId:conversation.conversationId});
+    await textLifecycle.textClosingHint({ownerId:conversation.ownerId,conversationId:conversation.conversationId});
+    await condition(() => allHandlersFinished());
+  }
   if (failed) throw ApplicationFailure.nonRetryable("Member conversation failed");
-  if (rollover && !cancelled) {
+  if (rollover && !cancelled && !closeTextNaturally && !closingText) {
     // Keep the recorded full-record command on replay of an affected history.
     // The activity adapter handles that exact legacy DTO while the store stays strict.
     const progressKey = patched("narrow-progress-key-v1")
@@ -375,6 +401,6 @@ export async function memberConversation(conversation: Conversation): Promise<vo
     // Updates/signals can arrive while the progress activity runs. Never abandon a handler,
     // pending approval, child batch or cancellation acknowledgement at the run boundary.
     await condition(() => allHandlersFinished());
-    if (!cancelled && !failed && !progress.terminal) await continueAsNew<typeof memberConversation>(conversation);
+    if (!cancelled && !failed && !closingText && !progress.terminal) await continueAsNew<typeof memberConversation>(conversation);
   }
 }

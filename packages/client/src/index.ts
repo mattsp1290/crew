@@ -48,6 +48,10 @@ export type {
   ObservedRequestReceipt,
   RequestReceipt,
   ServerRequestReceipt,
+  ContentErasureCapability,
+  ContentErasureCapabilityV1,
+  ConversationContentTombstone,
+  ConversationClosure,
   InstructionsSummary,
   Member,
   MemberPage,
@@ -79,6 +83,8 @@ export type CommandIdentity =
   | HandoffCommandIdentity
   | { readonly kind: "member"; readonly requestId: string }
   | { readonly kind: "conversation"; readonly conversationId: string }
+  | { readonly kind: "content_erasure"; readonly conversationId: string }
+  | { readonly kind: "conversation_close"; readonly conversationId: string }
   | {
       readonly kind: "request";
       readonly conversationId: string;
@@ -168,6 +174,7 @@ export class CrewClient {
       method: string;
       path: string;
       response: z.ZodType<T>;
+      responses?: Readonly<Record<number, z.ZodType<T>>>;
       statuses: readonly number[];
       unknownOutcomeErrors?: readonly { readonly status: number; readonly code: string }[];
     },
@@ -222,7 +229,7 @@ export class CrewClient {
         documented ? 8 * 1024 * 1024 : 16_384,
       ).catch(() => undefined);
       if (documented) {
-        const parsed = route.response.safeParse(value);
+        const parsed = (route.responses?.[response.status] ?? route.response).safeParse(value);
         if (parsed.success) {
           if (input.expect && !input.expect(parsed.data))
             throw new CrewProtocolError();
@@ -348,6 +355,16 @@ export class CrewClient {
       }),
     );
   }
+  async eraseConversationContent(input: { readonly conversationId: string }, options: CallOptions = {}) {
+    const params = conversationIdentitySchema.parse(input);
+    return this.#call(routes.eraseConversationContent, { ...options, params,
+      command: { kind: "content_erasure", ...params }, expect: value => value.conversationId === params.conversationId });
+  }
+  async closeConversation(input: { readonly conversationId: string }, options: CallOptions = {}) {
+    const params = conversationIdentitySchema.parse(input);
+    return this.#call(routes.closeConversation, { ...options, params, body: {},
+      command: { kind: "conversation_close", ...params }, expect: value => value.conversationId === params.conversationId });
+  }
   async conversation(
     input: { readonly conversationId: string },
     options: CallOptions = {},
@@ -383,11 +400,15 @@ export class CrewClient {
       expect: (chain) => chain.conversationId === params.conversationId,
     });
   }
-  async #receipt(
-    route:
-      | typeof routes.submit
-      | typeof routes.cancel
-      | typeof routes.requestStatus,
+  async #receipt<T extends { conversationId: string; requestId: string }>(
+    route: {
+      method: string;
+      path: string;
+      response: z.ZodType<T>;
+      responses?: Readonly<Record<number, z.ZodType<T>>>;
+      statuses: readonly number[];
+      command: boolean;
+    },
     key: RequestIdentity,
     options: CallOptions,
     body?: unknown,

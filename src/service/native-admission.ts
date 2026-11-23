@@ -1,3 +1,4 @@
+import { assertContentWritable, contentErasureState } from "./content-erasure-store.ts";
 import {acquireRecoveryNativeLease,requireRecoveryActive} from "./recovery-admission.ts";
 import { admitChild } from "./supervisor-child.ts";
 import { createHash } from "node:crypto";
@@ -66,6 +67,10 @@ export async function withNativeAdmission<T>(
     const engine = launch.childId ? "pi" : (await db.query<{engine:string}>(`SELECT m.engine FROM birbcrew_ts.conversations c
       JOIN birbcrew_ts.members m USING(owner_id,member_id) WHERE c.owner_id=$1 AND c.conversation_id=$2`,
       [launch.ownerId,conversationId])).rows[0]?.engine;
+    if (engine === "cursor" || engine === "opencode") {
+      await assertContentWritable(db, launch, false);
+      if ((await contentErasureState(db,launch)).text_lifecycle === "sealed_closed") throw new Error("Text lifecycle closed");
+    }
     const lease = engine === "codex" ? "n" : "t";
     const admitted = launch.childId ? await admitChild(db, launch) : Boolean((await db.query(`SELECT 1 FROM birbcrew_ts.turns t
       JOIN birbcrew_ts.conversations c USING (conversation_id)

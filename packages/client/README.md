@@ -10,7 +10,7 @@ const snapshot = await crew.conversation({ conversationId });
 const command = { conversationId, requestId, text };
 try {
   const receipt = await crew.submit(command);
-  if (receipt.status === "completed") console.log(receipt.result.text);
+  if (receipt.status === "completed" && !receipt.erased) console.log(receipt.result.text);
 } catch (error) {
   if (!(error instanceof CrewUnknownOutcomeError)) throw error;
   // Persist the command identity and exact text before dispatch. The host decides when to reconcile.
@@ -28,7 +28,7 @@ Every method makes one HTTP attempt. There is no polling, retry, provisioning or
 
 `RequestReceipt` has the same observed response type at the root and `/contract` entry points. `ServerRequestReceipt` and `serverRequestReceiptSchema` enforce the server's accepted initiator kinds. Observed initiators accept additive fields and future kinds advertised by capabilities; known routine and handoff ids remain UUIDs. Observed initiators do not authorize work.
 
-Receipt status, cancellation delivery, native termination and effects are independent facts. Only `completed` requires `result.text`. Historical noncompleted receipts may carry a result. `uncertain` is a server receipt state, distinct from an unknown HTTP command outcome.
+Receipt status, cancellation delivery, native termination and effects are independent facts. `completed` requires `result.text` unless `erased: true`, in which case `result` is absent. Historical noncompleted receipts may carry a result. `uncertain` is a server receipt state, distinct from an unknown HTTP command outcome.
 
 Member creation accepts optional instructions and ordered instruction-pack UUIDs, matching the server's eight-pack limit and duplicate rejection. Member creation and listing retain the attached pack IDs.
 
@@ -147,9 +147,15 @@ The handoff command's `requestId` and the reserved target's `firstRequestId` ide
 
 `capabilities().handoffs` is optional. Use `/contract`'s `handoffsCapabilityV1Schema.safeParse(metadata)` to recognize supported version 1 routes, delivery and transcript limits. Absent metadata or an unknown positive version leaves handoffs unsupported for feature discovery. Unknown versions remain opaque metadata. Malformed advertised version 1 metadata fails validation. Capability discovery is an explicit application call.
 
+Owners can close eligible text conversations with `closeConversation({conversationId})`, then erase their content with `eraseConversationContent({conversationId})`. Erased receipts preserve their terminal status and carry `erased: true` without a result. Pending cleanup returns HTTP 503, exposed by the SDK as `CrewUnknownOutcomeError`; repeat its `content_erasure` command with the same conversation ID. See the integration API retention and operator inventory requirements.
+
 Text-member listings optionally carry `requestTextBytes`. Assume 16,384 bytes
 when absent (including old servers and spawn responses). Submit validation
 preserves exact well-formed text; the server enforces each immutable profile
 limit, up to 65,536 UTF-8 bytes, and the independent 128 KiB raw JSON cap.
 See [request text limits](../../docs/request-text-limits.md) for error precedence
 and the new-profile/new-member adoption procedure.
+
+Gate erasure support with `contentErasureCapabilityV1Schema.safeParse(capabilities.contentErasure)`.
+An absent value or an unsupported version does not enable erasure.
+The root package exports `ContentErasureCapability` and `ContentErasureCapabilityV1` for discovery metadata.

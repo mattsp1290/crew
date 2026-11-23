@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { isAbsolute, join } from "node:path";
+import { textTurnRootPath, textVolumeRootPath, type TextStateRoot } from "./text-state-location.ts";
+import { isAbsolute } from "node:path";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import type { Conversation, TextEngine } from "./domain.ts";
 
@@ -31,10 +31,10 @@ export const textTurnFailed = () => new TextTurnFailed();
 /** Refuses what every one-turn text member cannot run, before any filesystem work, and names its
  * private root: <stateDir>/<engine>/<sha256(ownerId)>/<memberId>/<conversationId>. An engine may refuse
  * more before calling it (OpenCode checks its prompt first); this is not the whole pre-filesystem gate. */
-export function textTurnRoot(input: DriverInput, member: Conversation, engine: TextEngine, stateDir: string) {
+export function textTurnRoot(input: DriverInput, member: Conversation, engine: TextEngine, stateDir: TextStateRoot) {
   if (input.checkpoint !== null || input.projectContext !== undefined || input.childProfile || input.childResults || input.continuation
-    || !isAbsolute(stateDir)) throw textTurnFailed();
-  return join(stateDir, engine, createHash("sha256").update(member.ownerId).digest("hex"), member.memberId, member.conversationId);
+    || (typeof stateDir === "string" ? !isAbsolute(stateDir) : stateDir.engine !== engine)) throw textTurnFailed();
+  return typeof stateDir === "string" ? textTurnRootPath(stateDir, member, engine) : textVolumeRootPath(stateDir.directory, member, engine);
 }
 
 /** Rejects with TextTurnFailed after `ms`. `onFailure` runs when the work rejects or the bound wins. */

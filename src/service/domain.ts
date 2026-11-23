@@ -5,13 +5,14 @@ import { z } from "zod";
 import type { TextAdmissionFailureType } from "./failure-type.ts";
 
 import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
-  createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema, memberSubmitEnvelopeSchema as publicMemberSubmitEnvelopeSchema,
+  requestTextCeilingBytes, createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema, memberSubmitEnvelopeSchema as publicMemberSubmitEnvelopeSchema,
   requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
 export { engineSchema, childEngineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
 export type ChildEngine = z.infer<typeof childEngineSchema>;
-/** The one-turn text members. Adding an engine here classifies it everywhere: the text protocol
- * (isTextEngine), every capability gate (engineTraits), and the turn limit a conversation opens with. */
+/** The one-turn text members. Adding an engine here classifies it in the text protocol
+ * (isTextEngine), every capability gate (engineTraits), and the turn limit a conversation opens with.
+ * Adding an engine also requires migrations for the profile and content-fence SQL constraints. */
 export const textEngines = ["cursor", "opencode"] as const;
 export type TextEngine = (typeof textEngines)[number];
 export function isTextEngine(engine: Engine): engine is TextEngine {
@@ -59,7 +60,7 @@ export const turnKey = requestIdentitySchema.extend({ ownerId });
 export const memberSubmitEnvelopeSchema = publicMemberSubmitEnvelopeSchema.extend({ ownerId });
 export const submitSchema = submitRequestSchema.extend({ ownerId });
 /** Text profiles and reserved native handoffs may exceed promptBytes. Admission checks the reservation. */
-export const turnTextBytes = 65_536;
+export const turnTextBytes = requestTextCeilingBytes;
 export const turnRequestSchema = submitSchema.extend({ text: boundedText(turnTextBytes) });
 export const executionSchema = z.strictObject({
   workflowRunId: boundedText(256),
@@ -107,7 +108,7 @@ export type BeginTurn =
   | { kind: "uncertain" };
 
 export class MemberStoreError extends Error {
-  readonly code: "not_found" | "conflict" | "busy" | "stale" | "input_limit" | "history_unavailable" | "request_rejected"
+  readonly code: "content_namespace_mismatch" | "content_output_busy" | "conversation_erased" | "content_erasure_pending" | "content_erasure_unsupported" | "conversation_open" | "conversation_closed" | "content_location_unknown" | "content_runtime_unconfirmed" | "content_requests_unresolved" | "content_start_unresolved" | "not_found" | "conflict" | "busy" | "stale" | "input_limit" | "history_unavailable" | "request_rejected"
     | "routine_limit" | "routine_deleted" | "memory_limit" | "memory_deleted" | "instructions_limit"
     | "handed_off" | "handoff_pending" | "handoff_empty" | "handoff_too_large" | "trusted_conversation"
     | "usage_limit" | "usage_limit_closed" | "webhook_limit" | "webhook_deleted" | "pack_limit" | "pack_deleted" | "pack_in_use" | "decision_conflict" | "decision_unverifiable";

@@ -12,6 +12,67 @@
   ],
   "components": {
     "schemas": {
+      "ConversationContentTombstone": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "type": "string",
+            "const": "1"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "memberId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "engine": {
+            "type": "string",
+            "minLength": 1
+          },
+          "erasureId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "erased": {
+            "type": "boolean",
+            "const": true
+          },
+          "erasedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+          }
+        },
+        "required": [
+          "apiVersion",
+          "conversationId",
+          "memberId",
+          "engine",
+          "erasureId",
+          "erased",
+          "erasedAt"
+        ]
+      },
+      "ConversationClosure": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ConversationClosed"
+          },
+          {
+            "$ref": "#/components/schemas/ConversationCloseRequested"
+          }
+        ]
+      },
+      "CloseConversation": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
       "JsonValue": {
         "anyOf": [
           {
@@ -241,6 +302,12 @@
               "cancelled",
               "failed"
             ]
+          },
+          "erased": {
+            "not": {}
+          },
+          "contentState": {
+            "not": {}
           }
         },
         "required": [
@@ -250,6 +317,198 @@
           "profile",
           "phase"
         ]
+      },
+      "RetainedConversationSnapshot": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "state": {
+            "$ref": "#/components/schemas/ConversationState"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          },
+          "openTools": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          },
+          "openText": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "childText": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          },
+          "erased": {
+            "not": {}
+          }
+        },
+        "required": [
+          "cursor",
+          "state",
+          "messages",
+          "openTools",
+          "openText",
+          "childText"
+        ]
+      },
+      "ConversationClosed": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "type": "string",
+            "const": "1"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "closure": {
+            "type": "string",
+            "const": "closed"
+          }
+        },
+        "required": [
+          "apiVersion",
+          "conversationId",
+          "closure"
+        ]
+      },
+      "ConversationCloseRequested": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "type": "string",
+            "const": "1"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "closure": {
+            "type": "string",
+            "const": "requested"
+          }
+        },
+        "required": [
+          "apiVersion",
+          "conversationId",
+          "closure"
+        ]
+      },
+      "ContentErasureCapability": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ContentErasureCapabilityV1"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "not": {
+                  "const": 1
+                }
+              }
+            },
+            "required": [
+              "version"
+            ],
+            "additionalProperties": {}
+          }
+        ]
+      },
+      "ContentErasureCapabilityV1": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 1
+          },
+          "route": {
+            "type": "string",
+            "const": "/v1/conversations/{conversationId}/content"
+          },
+          "closeRoute": {
+            "type": "string",
+            "const": "/v1/conversations/{conversationId}/close"
+          },
+          "engines": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string",
+                "const": "cursor"
+              },
+              {
+                "type": "string",
+                "const": "opencode"
+              }
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 2
+          },
+          "preconditions": {
+            "type": "string",
+            "const": "closed-workflow; terminal-requests; stopped-writers; complete-location-inventory"
+          },
+          "retry": {
+            "type": "string",
+            "const": "same-conversation-until-200"
+          },
+          "residuals": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string",
+                "const": "Temporal-history-until-retention"
+              },
+              {
+                "type": "string",
+                "const": "WAL-backups-provider-copies-and-logs"
+              }
+            ],
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 2
+          }
+        },
+        "required": [
+          "version",
+          "route",
+          "closeRoute",
+          "engines",
+          "preconditions",
+          "retry",
+          "residuals"
+        ],
+        "additionalProperties": {}
       },
       "Capabilities": {
         "type": "object",
@@ -405,6 +664,9 @@
           },
           "decisionReceipts": {
             "$ref": "#/components/schemas/DecisionReceiptsCapability"
+          },
+          "contentErasure": {
+            "$ref": "#/components/schemas/ContentErasureCapability"
           }
         },
         "required": [
@@ -1488,54 +1750,322 @@
         "additionalProperties": {}
       },
       "ConversationSnapshot": {
-        "type": "object",
-        "properties": {
-          "cursor": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/RetainedConversationSnapshot"
           },
-          "state": {
-            "$ref": "#/components/schemas/ConversationState"
-          },
-          "messages": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/JsonValue"
-            }
-          },
-          "openTools": {
+          {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
+            "properties": {
+              "cursor": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "state": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "memberId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "engine": {
+                    "type": "string",
+                    "enum": [
+                      "pi",
+                      "claude",
+                      "codex",
+                      "cursor",
+                      "opencode"
+                    ]
+                  },
+                  "profile": {
+                    "type": "string"
+                  },
+                  "phase": {
+                    "type": "string",
+                    "enum": [
+                      "complete",
+                      "failed",
+                      "cancelled"
+                    ]
+                  },
+                  "erased": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "contentState": {
+                    "not": {}
+                  }
+                },
+                "required": [
+                  "conversationId",
+                  "memberId",
+                  "engine",
+                  "profile",
+                  "phase",
+                  "erased"
+                ]
+              },
+              "messages": {
+                "minItems": 0,
+                "maxItems": 0,
+                "type": "array",
+                "items": {
+                  "not": {}
+                }
+              },
+              "openTools": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "not": {}
+                }
+              },
+              "openText": {
+                "type": "null"
+              },
+              "childText": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "not": {}
+                }
+              },
+              "erased": {
+                "type": "boolean",
+                "const": true
+              }
             },
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JsonValue"
-            }
-          },
-          "openText": {
-            "$ref": "#/components/schemas/JsonValue"
-          },
-          "childText": {
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JsonValue"
-            }
+            "required": [
+              "cursor",
+              "state",
+              "messages",
+              "openTools",
+              "openText",
+              "childText",
+              "erased"
+            ]
           }
-        },
-        "required": [
-          "cursor",
-          "state",
-          "messages",
-          "openTools",
-          "openText",
-          "childText"
         ]
       },
       "RequestReceipt": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/RetainedRequestReceipt"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "apiVersion": {
+                "type": "string",
+                "const": "1"
+              },
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "acceptance": {
+                "type": "object",
+                "properties": {
+                  "boundary": {
+                    "type": "string",
+                    "const": "sql_admission_and_temporal_queue"
+                  }
+                },
+                "required": [
+                  "boundary"
+                ]
+              },
+              "result": {
+                "not": {}
+              },
+              "reason": {
+                "type": "string"
+              },
+              "cancellation": {
+                "type": "object",
+                "properties": {
+                  "receiptId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "delivery": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "delivered"
+                    ]
+                  },
+                  "nativeTermination": {
+                    "type": "string",
+                    "enum": [
+                      "confirmed",
+                      "unconfirmed"
+                    ]
+                  },
+                  "effects": {
+                    "type": "string",
+                    "const": "not_assessed"
+                  }
+                },
+                "required": [
+                  "receiptId",
+                  "delivery",
+                  "nativeTermination",
+                  "effects"
+                ]
+              },
+              "approvalDeadlineSeconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 604800
+              },
+              "expiredApproval": {
+                "type": "object",
+                "properties": {
+                  "approvalId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "expiresAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                  },
+                  "expiredAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "approvalId",
+                  "expiresAt",
+                  "expiredAt"
+                ]
+              },
+              "initiator": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "owner"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "routine"
+                      },
+                      "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "handoff"
+                      },
+                      "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": {}
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "minLength": 1,
+                        "not": {
+                          "enum": [
+                            "owner",
+                            "routine",
+                            "handoff"
+                          ]
+                        }
+                      },
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": {}
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "erased": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "apiVersion",
+              "conversationId",
+              "requestId",
+              "acceptance",
+              "status",
+              "erased"
+            ]
+          }
+        ]
+      },
+      "RetainedRequestReceipt": {
         "oneOf": [
           {
             "type": "object",
@@ -1721,6 +2251,10 @@
                     "additionalProperties": {}
                   }
                 ]
+              },
+              "erased": {
+                "type": "boolean",
+                "const": false
               },
               "status": {
                 "type": "string",
@@ -1920,6 +2454,10 @@
                     "additionalProperties": {}
                   }
                 ]
+              },
+              "erased": {
+                "type": "boolean",
+                "const": false
               },
               "status": {
                 "type": "string",
@@ -3071,7 +3609,134 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConversationSnapshot"
+                  "$ref": "#/components/schemas/RetainedConversationSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/CommandUnavailable"
+          },
+          "503": {
+            "$ref": "#/components/responses/CommandUnavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenConversation"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversationId}/content": {
+      "delete": {
+        "operationId": "eraseConversationContent",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationContentTombstone"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/CommandUnavailable"
+          },
+          "503": {
+            "$ref": "#/components/responses/CommandUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversationId}/close": {
+      "post": {
+        "operationId": "closeConversation",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationClosed"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationCloseRequested"
                 }
               }
             }
@@ -3106,7 +3771,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OpenConversation"
+                "$ref": "#/components/schemas/CloseConversation"
               }
             }
           }
@@ -3314,7 +3979,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RequestReceipt"
+                  "$ref": "#/components/schemas/RetainedRequestReceipt"
                 }
               }
             }
@@ -3332,6 +3997,9 @@
             "$ref": "#/components/responses/Error"
           },
           "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
             "$ref": "#/components/responses/Error"
           },
           "413": {
@@ -3447,7 +4115,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RequestReceipt"
+                  "$ref": "#/components/schemas/RetainedRequestReceipt"
                 }
               }
             }
@@ -3465,6 +4133,9 @@
             "$ref": "#/components/responses/Error"
           },
           "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
             "$ref": "#/components/responses/Error"
           },
           "413": {
