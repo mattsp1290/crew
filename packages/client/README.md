@@ -155,3 +155,7 @@ preserves exact well-formed text; the server enforces each immutable profile
 limit, up to 65,536 UTF-8 bytes, and the independent 128 KiB raw JSON cap.
 See [request text limits](../../docs/request-text-limits.md) for error precedence
 and the new-profile/new-member adoption procedure.
+
+Gate erasure support with `contentErasureCapabilityV1Schema.safeParse(capabilities.contentErasure)`.
+An absent value or an unsupported version does not enable erasure.
+The root package exports `ContentErasureCapability` and `ContentErasureCapabilityV1` for discovery metadata.

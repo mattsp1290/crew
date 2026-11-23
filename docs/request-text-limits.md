@@ -121,6 +121,11 @@ profiles requires passing qualification against the deployment's effective
 Temporal payload/message limits; local fixture headroom does not configure a
 production installation.
 
+This rollback procedure permits a pre-erasure gateway only before any conversation
+has an erasure fence. After a fence exists, every gateway and submitter must support
+erasure, regardless of profile size. Recover forward if the rollback revision predates
+migration 044 support. See [the deployment rollback floor](persistent-deployment.md#coordinated-text-erasure-upgrade-schema-044).
+
 For rollback, stop **all** submissions to larger-profile members, including
 small requests, from gateways, routines and CLI submitters. Keep new workers
 serving until accepted-but-unadmitted and in-flight work is drained. Enumerate

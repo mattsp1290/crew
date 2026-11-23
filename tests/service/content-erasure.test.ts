@@ -238,6 +238,9 @@ test("closure generation invalidates an older terminal describe, and ambiguous s
     "default",
   );
   assert.ok(attempt);
+  // Both reservations must be in flight before either acknowledgement commits.
+  const next = await reserveTextWorkflowStart(store, key, workflowId, "default");
+  assert.ok(next);
   await settleTextWorkflowStart(store, key, attempt, randomUUID());
   await assert.rejects(
     sealTextClosure(store, key, {
@@ -249,13 +252,6 @@ test("closure generation invalidates an older terminal describe, and ambiguous s
     }),
     { code: "content_start_unresolved" },
   );
-  const next = await reserveTextWorkflowStart(
-    store,
-    key,
-    workflowId,
-    "default",
-  );
-  assert.ok(next);
   await settleTextWorkflowStart(store, key, next);
   await assert.rejects(preflightContentErasure(store, key), {
     code: "content_start_unresolved",
@@ -406,11 +402,12 @@ test("pending fence, finalization rollback, immutable tombstone and SQL resurrec
     { code: "23514" },
   );
 });
-test("output prepared before a fence is discarded; backpressure returns without holding the SQL lock", async () => {
+test("output prepared before a fence is discarded; backpressure returns without holding the SQL lock", async (t) => {
   const { key } = await fixture();
   await seal(key);
   const first = new ConversationContentOutput(pool),
     second = new ConversationContentOutput(pool);
+  t.after(() => Promise.all([first.stop(), second.stop()]));
   let emitted = 0;
   assert.deepEqual(
     await first.enqueue(key, () => {
@@ -1227,31 +1224,8 @@ test("one blocked conversation does not block another conversation's output", as
 });
 
 test("a live gateway retries its own failed output acknowledgement without failing the delivered frame", async () => {
-  const { key } = await fixture(),
-    transient = new Pool({ connectionString: database });
-  let fail = true;
-  transient.on("connect", (db) => {
-    const original = db.query.bind(db);
-    db.query = ((...args: unknown[]) => {
-      const statement = args[0];
-      const text =
-        typeof statement === "string"
-          ? statement
-          : statement && typeof statement === "object" && "text" in statement
-            ? statement.text
-            : undefined;
-      if (
-        fail &&
-        typeof text === "string" &&
-        text.startsWith("DELETE FROM birbcrew_ts.content_output_reservations")
-      ) {
-        fail = false;
-        return Promise.reject(Error("injected acknowledgement failure"));
-      }
-      return Reflect.apply(original, db, args);
-    }) as typeof db.query;
-  });
-  const output = new ConversationContentOutput(transient);
+  const { key } = await fixture(), transient = failedAcknowledgements(1);
+  const output = new ConversationContentOutput(transient, () => transient);
   try {
     assert.deepEqual(
       await output.enqueue(key, () => ({ backpressure: false })),
@@ -1286,7 +1260,6 @@ test("a live gateway retries its own failed output acknowledgement without faili
     assert.ok(await finishContentErasure(store, key));
   } finally {
     await output.stop();
-    await transient.end();
   }
 });
 
@@ -1358,29 +1331,24 @@ for (const fanout of [true, false])
           ),
         ],
       );
-      let release!: () => void, reached!: () => void, bootstrapped!: () => void;
+      let release!: () => void, reached!: () => void;
       const pause = new Promise<void>((r) => {
           release = r;
         }),
         prepared = new Promise<void>((r) => {
           reached = r;
-        }),
-        bootstrap = new Promise<void>((r) => {
-          bootstrapped = r;
         });
+      let armed = stage === "bootstrap";
       class PausedOutput extends ConversationContentOutput {
-        calls = 0;
         override async enqueue(
           ...args: Parameters<ConversationContentOutput["enqueue"]>
         ) {
-          const call = ++this.calls;
-          if (call === (stage === "bootstrap" ? 1 : 5)) {
+          if (armed) {
+            armed = false;
             reached();
             await pause;
           }
-          const result = await super.enqueue(...args);
-          if (call === 3) bootstrapped();
-          return result;
+          return super.enqueue(...args);
         }
       }
       const token = randomUUID(),
@@ -1430,8 +1398,15 @@ for (const fanout of [true, false])
           }),
         },
       );
+      let prefix = "";
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       if (stage === "tail") {
-        await bootstrap;
+        reader = (await old).body!.getReader();
+        while (!prefix.includes("STATE_SNAPSHOT")) {
+          const frame = await reader.read(); assert.equal(frame.done, false);
+          prefix += new TextDecoder().decode(frame.value);
+        }
+        armed = true;
         await store.transaction(async (db) => {
           await db.query(
             "SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE",
@@ -1464,7 +1439,7 @@ for (const fanout of [true, false])
       assert.equal(erased.status, 200);
       release();
       const response = await old,
-        raw = await response.text();
+        raw = reader ? prefix + await new Response(new ReadableStream({ async pull(controller) { const frame = await reader!.read(); if (frame.done) controller.close(); else controller.enqueue(frame.value); } })).text() : await response.text();
       assert.equal(response.status, 200);
       assert.equal(raw.includes(request.text), false);
       assert.ok(raw.includes("CONVERSATION_ERASED"));
@@ -1699,7 +1674,7 @@ test("a lost COMMIT acknowledgement abandons its frame and releases the live own
       return result;
     }) as typeof db.query;
   });
-  const output = new ConversationContentOutput(transient);
+  const output = new ConversationContentOutput(transient, () => transient);
   try {
     await assert.rejects(output.enqueue(key, () => { emitted++; return { backpressure: false }; }), /lost COMMIT/);
     assert.equal(emitted, 0);
@@ -1713,7 +1688,7 @@ test("a lost COMMIT acknowledgement abandons its frame and releases the live own
     await beginContentErasure(store, key);
     assert.ok(await finishContentErasure(store, key));
     assert.equal(emitted, 0);
-  } finally { await output.stop(); await transient.end(); }
+  } finally { await output.stop(); }
 });
 
 test("SQL cannot commit completed erasure without its owner audit fact", async () => {
@@ -1784,6 +1759,16 @@ test("trusted enrollment preserves rejected-request proofs and cleans every inde
   assert.equal(await finishContentErasure(store, key), null);
   await assert.rejects(textLocationCleanupActivity(store, directories[1], locations[0].locationId, "cursor")(assignment), /content_cleanup_failed/);
   await access(join(textTurnRootPath(directories[1], conversation, "cursor"), "retained"));
+  const blocked = await pool.connect();
+  try {
+    await blocked.query("BEGIN");
+    await blocked.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE", [key.conversationId]);
+    await assert.rejects(Promise.race([
+      textLocationCleanupActivity(store, directories[1], locations[1].locationId, "cursor")(assignment),
+      new Promise<never>((_,reject) => { const timer=setTimeout(() => reject(Error("cleanup acknowledgement did not honor its SQL deadline")),3500); timer.unref(); }),
+    ]), /content_cleanup_failed/);
+    assert.equal((await pool.query("SELECT cleaned_at FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=$1 AND location_id=$2", [key.conversationId,locations[1].locationId])).rows[0].cleaned_at,null);
+  } finally { await blocked.query("ROLLBACK"); blocked.release(); }
   await textLocationCleanupActivity(store, directories[1], locations[1].locationId, "cursor")(assignment);
   const tombstone = await finishContentErasure(store, key);
   assert.ok(tombstone);
@@ -1844,7 +1829,7 @@ test("UUID case variants serialize before acquiring a second database connection
   const transient = new Pool({ connectionString: database });
   let acquired = 0;
   transient.on("acquire", () => { acquired++; });
-  const output = new ConversationContentOutput(transient);
+  const output = new ConversationContentOutput(transient, () => transient);
   let first: Promise<unknown> | undefined, second: Promise<unknown> | undefined;
   try {
     await db.query("BEGIN");
@@ -1859,7 +1844,7 @@ test("UUID case variants serialize before acquiring a second database connection
     assert.equal(acquired, 1, "case variant occupied a second pool slot behind the same row lock");
   } finally {
     await db.query("ROLLBACK"); db.release();
-    await Promise.all([first, second]); await output.stop(); await transient.end();
+    await Promise.all([first, second]); await output.stop();
   }
 });
 
@@ -1920,8 +1905,8 @@ test("a held scan cursor cannot indefinitely delay reconciler shutdown", async (
 });
 
 test("expired output checkouts leave no queued acquisitions or destroyed healthy clients", async () => {
-  const transient = new Pool({ connectionString: database, max: 1 }), held = await transient.connect();
-  const output = new ConversationContentOutput(transient);
+  const transient = new Pool({ connectionString: database, max: 1, connectionTimeoutMillis: 2000 }), held = await transient.connect();
+  const output = new ConversationContentOutput(transient, () => transient);
   let released = false;
   try {
     await Promise.all([0,1,2].map(async () => {
@@ -1932,7 +1917,7 @@ test("expired output checkouts leave no queued acquisitions or destroyed healthy
     held.release(); released = true;
     assert.equal((await transient.query("SELECT 1 AS value")).rows[0].value, 1);
     assert.equal(transient.totalCount, 1);
-  } finally { if (!released) held.release(); await output.stop(); await transient.end(); }
+  } finally { if (!released) held.release(); await output.stop(); }
 });
 
 function failedAcknowledgements(failures: number) {
@@ -1951,16 +1936,16 @@ function failedAcknowledgements(failures: number) {
   return transient;
 }
 test("graceful output shutdown makes a final acknowledgement attempt", async () => {
-  const { key } = await fixture(), transient = failedAcknowledgements(1), output = new ConversationContentOutput(transient);
+  const { key } = await fixture(), transient = failedAcknowledgements(1), output = new ConversationContentOutput(transient, () => transient);
   try {
     await output.enqueue(key, () => ({ backpressure: false }));
     await output.stop();
     assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [key.conversationId])).rowCount, 0);
     await seal(key); await beginContentErasure(store, key); assert.ok(await finishContentErasure(store, key));
-  } finally { await output.stop(); await transient.end(); }
+  } finally { await output.stop(); }
 });
 test("a blocked acknowledgement does not starve another conversation's ticket", async () => {
-  const first = await fixture(), second = await fixture(), transient = failedAcknowledgements(2), output = new ConversationContentOutput(transient), lock = await pool.connect();
+  const first = await fixture(), second = await fixture(), transient = failedAcknowledgements(2), output = new ConversationContentOutput(transient, () => transient), lock = await pool.connect();
   try {
     await output.enqueue(first.key, () => ({ backpressure: false }));
     await output.enqueue(second.key, () => ({ backpressure: false }));
@@ -1971,7 +1956,7 @@ test("a blocked acknowledgement does not starve another conversation's ticket", 
       assert.ok(Date.now() < deadline, "unrelated acknowledgement starved behind a held row"); await new Promise(r => setTimeout(r, 20));
     }
     assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [first.key.conversationId])).rowCount, 1);
-  } finally { await lock.query("ROLLBACK"); lock.release(); await output.stop(); await transient.end(); }
+  } finally { await lock.query("ROLLBACK"); lock.release(); await output.stop(); }
 });
 
 test("legacy cancellation crossing a fence refuses pending and finalized content", async () => {
@@ -2001,4 +1986,110 @@ test("HTTP open replay crossing a pending fence reports 410 rather than a read e
   const response = fetch(`http://127.0.0.1:${addr.port}/v1/conversations`, { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: key.conversationId, memberId: member.memberId }) });
   try { await ready; await beginContentErasure(store, key); } finally { release(); }
   const result = await response; assert.equal(result.status, 410); assert.deepEqual(await result.json(), { error: "conversation_erased" });
+});
+
+test("output reservations use their own bounded pool and leave application checkout unchanged", async () => {
+  const { key } = await fixture(), application = new Pool({ connectionString: database, max: 1 });
+  const held = await application.connect(), output = new ConversationContentOutput(application);
+  let released = false;
+  try {
+    assert.deepEqual(await output.enqueue(key, () => ({ backpressure: false })), { kind: "retained", backpressure: false });
+    assert.equal(application.waitingCount, 0);
+    assert.equal(application.options.connectionTimeoutMillis, undefined);
+    await output.stop();
+    held.release(); released = true;
+    assert.equal((await application.query("SELECT 1 AS value")).rows[0].value, 1);
+  } finally { if (!released) held.release(); await output.stop(); await application.end(); }
+});
+
+test("output shutdown drains a late failed acknowledgement before ending its pool", async () => {
+  const { key } = await fixture(), transient = failedAcknowledgements(1);
+  let reached!: () => void, release!: () => void;
+  const ready = new Promise<void>(r => { reached = r; }), resume = new Promise<void>(r => { release = r; });
+  transient.on("connect", db => {
+    const query = db.query.bind(db);
+    db.query = ((...args: unknown[]) => {
+      const statement = args[0];
+      const text = typeof statement === "string" ? statement : statement && typeof statement === "object" && "text" in statement ? statement.text : undefined;
+      const work = Reflect.apply(query, db, args);
+      return text === "COMMIT" ? Promise.resolve(work).then(async value => { reached(); await resume; return value; }) : work;
+    }) as typeof db.query;
+  });
+  const output = new ConversationContentOutput(transient, () => transient);
+  const frame = output.enqueue(key, () => ({ backpressure: false }));
+  await ready;
+  let stopped = false;
+  const stop = output.stop().then(() => { stopped = true; });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(stopped, false);
+    await assert.rejects(output.enqueue(key, () => ({ backpressure: false })), /stopped/);
+  } finally { release(); }
+  await frame; await stop;
+  assert.equal((await pool.query("SELECT 1 FROM birbcrew_ts.content_output_reservations WHERE conversation_id=$1", [key.conversationId])).rowCount, 0);
+});
+
+test("an acknowledged start cannot acquire a redundant later send reservation", async () => {
+  const { key, member } = await fixture(), workflowId = `birbcrew-ts/member/${member.memberId}/conversation/${key.conversationId}`;
+  const first = await reserveTextWorkflowStart(store, key, workflowId, "default"); assert.ok(first);
+  await settleTextWorkflowStart(store, key, first, randomUUID());
+  const generation = (await contentErasureState(pool, key)).text_start_generation;
+  assert.equal(await reserveTextWorkflowStart(store, key, workflowId, "default"), null);
+  assert.equal((await contentErasureState(pool, key)).text_start_generation, generation);
+});
+
+test("reconciliation handles an idle pool error without terminating the worker", async () => {
+  const { startContentErasureReconciliation } = await import("../../src/service/content-erasure-reconciliation.ts");
+  const transient = new Pool({ connectionString: database });
+  const temporal = { options: { namespace: "default" }, connection: { withDeadline: async (_:number, action:()=>Promise<unknown>) => action() }, workflow: {
+    getHandle: () => ({ describe: async () => { throw Error("offline"); } }), start: async () => { throw Error("offline"); },
+  } } as unknown as Client;
+  const loop = startContentErasureReconciliation(transient, temporal);
+  try { assert.doesNotThrow(() => transient.emit("error", Error("idle disconnect"))); assert.equal(loop.healthy(), false); }
+  finally { await loop.stop(); await transient.end(); }
+});
+
+test("cleanup pins its parent before validation and refuses a replaced binding", async () => {
+  const fs=await import("node:fs/promises"), path=await import("node:path"), os=await import("node:os");
+  const {textStateLocation,pinTextStateLocation,pinTextCleanupRoot,textTurnRootPath}=await import("../../src/service/text-state-location.ts");
+  const {removePrivateDurably}=await import("../../src/service/private-directory.ts");
+  const {member,key}=await fixture(), conversation={...member,...key};
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),"erasure-parent-"));
+  let volume: Awaited<ReturnType<typeof pinTextStateLocation>>|undefined, pinned: Awaited<ReturnType<typeof pinTextCleanupRoot>>|undefined;
+  try {
+    await textStateLocation(directory,"cursor");
+    volume=await pinTextStateLocation(directory,"cursor");
+    const absent=await pinTextCleanupRoot(volume.directory,conversation,"cursor");
+    try { await removePrivateDurably(absent.root); await absent.verify(); } finally { await absent.close(); }
+    const root=textTurnRootPath(directory,conversation,"cursor"), parent=path.dirname(root), moved=parent+"-moved";
+    await fs.mkdir(root,{recursive:true});await fs.writeFile(path.join(root,"private"),"synthetic");
+    pinned=await pinTextCleanupRoot(volume.directory,conversation,"cursor");
+    await fs.rename(parent,moved);await fs.mkdir(parent);await fs.writeFile(path.join(parent,"unrelated"),"preserved");
+    await assert.rejects(pinned.verify(),{code:"content_location_unknown"});
+    await removePrivateDurably(pinned.root);
+    await assert.rejects(fs.readFile(path.join(moved,path.basename(root),"private")),{code:"ENOENT"});
+    assert.equal(await fs.readFile(path.join(parent,"unrelated"),"utf8"),"preserved");
+  } finally {await pinned?.close();await volume?.close();await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test("gateway stopped waits for close and the final output shutdown", async () => {
+  let release!:()=>void,reached!:()=>void;
+  const resume=new Promise<void>(r=>{release=r;}),ready=new Promise<void>(r=>{reached=r;});
+  class PausedStop extends ConversationContentOutput {override async stop(){reached();await resume;await super.stop();}}
+  const server=createGateway(store,new MemberClient(store,new Client()),{}, {contentOutput:new PausedStop(pool)});
+  server.listen(0,"127.0.0.1");await once(server,"listening");server.close();
+  let stopped=false;const closing=server.stopped().then(()=>{stopped=true;});
+  try {await ready;await new Promise<void>(r=>setImmediate(r));assert.equal(stopped,false);}
+  finally {release();await closing;}
+});
+
+test("an active transaction survives backend loss and preserves the original failure", async () => {
+  const transient=new Pool({connectionString:database}), affected=new MemberStore(transient);
+  let release!:()=>void,reached!:(pid:number)=>void;
+  const resume=new Promise<void>(r=>{release=r;}),ready=new Promise<number>(r=>{reached=r;});
+  const original=Error("original transaction failure");
+  const operation=affected.transaction(async db=>{const {rows:[row]}=await db.query<{pid:number}>("SELECT pg_backend_pid() AS pid");reached(row.pid);await resume;throw original;});
+  const rejected=assert.rejects(operation,error=>error===original);
+  try {const pid=await ready;await pool.query("SELECT pg_terminate_backend($1)",[pid]);await new Promise(r=>setTimeout(r,50));release();await rejected;assert.equal((await transient.query("SELECT 1 AS value")).rows[0].value,1);}
+  finally {release();await rejected;await transient.end();}
 });

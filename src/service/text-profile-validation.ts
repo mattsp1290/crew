@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
-import { requestTextBytesSchema } from "@birbcrew/client/contract";
+import { promptBytes, requestTextBytesSchema } from "@birbcrew/client/contract";
 import { hasControlCharacter } from "./domain.ts";
 
 export const textModelSchema = z.string().refine(value => value.trim() === value && value.length > 0
@@ -28,4 +28,9 @@ export function storedRequestTextBytes(value: unknown): number {
   const parsed = requestTextBytesSchema.safeParse(value);
   if (!parsed.success) throw new Error("Invalid stored request-text policy");
   return parsed.data;
+}
+
+/** A missing profile keeps the historical default; a registered invalid value is a fault. */
+export function effectiveRequestTextBytes(profile: { request_text_bytes: unknown } | undefined) {
+  return profile ? storedRequestTextBytes(profile.request_text_bytes) : promptBytes;
 }

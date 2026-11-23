@@ -200,7 +200,7 @@ async function observe(
       stop.abort(); hubs?.invalidate(owner,threadId);
     }
     if (!stop.signal.aborted && !response.destroyed) {
-      await send({ type: E.RUN_ERROR, code: "OBSERVATION_FAILED", message: "Reconnect for the current conversation snapshot" }).catch(()=>undefined);
+      response.write(encoder.encode({ type: E.RUN_ERROR, code: "OBSERVATION_FAILED", message: "Reconnect for the current conversation snapshot" }));
     }
   } finally {
     response.end();
@@ -241,19 +241,23 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
   const dispatcher = new RoutineDispatcher({ store, members, integration, owners: accounts.map(({ actor }) => actor), clock });
   const webhooks = new WebhookApi(store, clock, webhookTargets);
   const deliveries = new WebhookDispatcher({ store, owners: accounts.map(({ actor }) => actor), clock, policy: webhookTargets });
-  async function contentJson(response:ServerResponse,key:{ownerId:string;conversationId:string},status:number,data:unknown,read?:()=>Promise<unknown>) {
-    const conversation=await store.getConversation({ownerId:key.ownerId,conversationId:key.conversationId});
-    if (!isTextEngine(conversation.engine)) return json(response,status,data);
-    const abort=new AbortController();
-    const onClose=()=>abort.abort(); response.once("close",onClose);
+  async function contentResponse(
+    response: ServerResponse, key: { ownerId: string; conversationId: string }, status: number,
+    content: { kind: "query"; read: () => Promise<unknown> } | { kind: "command"; data: unknown },
+  ) {
+    const conversation = await store.getConversation({ownerId:key.ownerId, conversationId:key.conversationId});
+    const data = content.kind === "query" ? await content.read() : content.data;
+    if (!isTextEngine(conversation.engine)) return json(response, status, data);
+    const abort = new AbortController(), onClose = () => abort.abort();
+    response.once("close", onClose);
     try {
-      const result=await output.enqueue(key,()=>{json(response,status,data);return {backpressure:false};},abort.signal);
+      const result = await output.enqueue(key, () => { json(response,status,data); return {backpressure:false}; }, abort.signal);
       if (result.kind === "retained") return;
       hubs?.invalidate(key.ownerId,key.conversationId);
-      if (!read) throw new MemberStoreError("conversation_erased");
+      if (content.kind === "command") throw new MemberStoreError("conversation_erased");
       if (result.kind === "erasing") throw new MemberStoreError("content_erasure_pending");
-      return json(response,status,await read());
-    } finally {response.off("close",onClose);}
+      return json(response,status,await content.read());
+    } finally { response.off("close",onClose); }
   }
   async function route(request: IncomingMessage, response: ServerResponse) {
     const auth = request.headers.authorization;
@@ -421,14 +425,14 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       const conversationId = z.uuid().parse(requestRoute[1]);
       if (!requestRoute[2] && request.method === "POST") {
         const prompt = routes.submit.body.parse(await body(request));
-        return contentJson(response,{ownerId,conversationId},202,await integration.submit({ ...prompt, ownerId, conversationId }));
+        return contentResponse(response,{ownerId,conversationId},202,{kind:"command",data:await integration.submit({ ...prompt, ownerId, conversationId })});
       }
       if (requestRoute[2]) {
         const requestId = z.uuid().parse(requestRoute[2]);
-        if (!requestRoute[3] && request.method === "GET") return contentJson(response,{ownerId,conversationId},200,await integration.status({ ownerId, conversationId, requestId }),()=>integration.status({ownerId,conversationId,requestId}));
+        if (!requestRoute[3] && request.method === "GET") return contentResponse(response,{ownerId,conversationId},200,{kind:"query",read:()=>integration.status({ownerId,conversationId,requestId})});
         if (requestRoute[3] && request.method === "POST") {
           routes.cancel.body.parse(await body(request));
-          return contentJson(response,{ownerId,conversationId},202,await integration.cancel({ ownerId, conversationId, requestId }));
+          return contentResponse(response,{ownerId,conversationId},202,{kind:"command",data:await integration.cancel({ ownerId, conversationId, requestId })});
         }
       }
       throw new HttpError(405, "method_not_allowed");
@@ -449,23 +453,23 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
         if(error instanceof MemberStoreError && error.code === "content_erasure_pending") throw new MemberStoreError("conversation_erased");
         throw error;
       }
-      return contentJson(response,{ownerId,conversationId:input.conversationId},201,snapshot);
+      return contentResponse(response,{ownerId,conversationId:input.conversationId},201,{kind:"command",data:snapshot});
     }
     const statusPath = /^\/conversations\/([^/]+)\/requests\/([^/]+)$/.exec(path);
     if (statusPath && request.method === "GET") {
       const key={ownerId,conversationId:z.uuid().parse(statusPath[1]),requestId:z.uuid().parse(statusPath[2])};
-      return contentJson(response,key,200,await members.requestStatus(key),()=>members.requestStatus(key));
+      return contentResponse(response,key,200,{kind:"query",read:()=>members.requestStatus(key)});
     }
     const parts = /^\/conversations\/([^/]+)(?:\/(events|inputs|human|cancel))?$/.exec(path);
     if (!parts) throw new HttpError(404, "not_found");
     const conversationId = z.uuid().parse(parts[1]);
-    if (!parts[2] && request.method === "GET") return contentJson(response,{ownerId,conversationId},200,await readSnapshot(store.pool,ownerId,conversationId),()=>readSnapshot(store.pool,ownerId,conversationId));
+    if (!parts[2] && request.method === "GET") return contentResponse(response,{ownerId,conversationId},200,{kind:"query",read:()=>readSnapshot(store.pool,ownerId,conversationId)});
     if (parts[2] === "inputs" && request.method === "POST") {
       const prompt = routes.submit.body.parse(await body(request));
       const conversation = await store.getConversation({ ownerId, conversationId });
       const input = { ...prompt, ownerId, conversationId };
       if (!isTextEngine(conversation.engine)) submitSchema.parse(input);
-      return contentJson(response,{ownerId,conversationId},202,await members.accept(input));
+      return contentResponse(response,{ownerId,conversationId},202,{kind:"command",data:await members.accept(input)});
     }
     await store.getConversation({ ownerId, conversationId });
     if (request.method !== "POST") throw new HttpError(405, "method_not_allowed");
@@ -527,12 +531,14 @@ export function createGateway(store: MemberStore, members: MemberClient, owners:
       loop();
     }
   });
-  let stopping = Promise.resolve();
-  server.once("close", () => {
-    for (const timer of timers) clearInterval(timer);
-    hubs?.close();
-    stopping = Promise.all([dispatcher.stop(), deliveries.stop(), output.stop()]).then(() => {});
+  const stopping = new Promise<void>((resolve, reject) => {
+    server.once("close", () => {
+      for (const timer of timers) clearInterval(timer);
+      hubs?.close();
+      Promise.all([dispatcher.stop(), deliveries.stop(), output.stop()]).then(() => resolve(), reject);
+    });
   });
+  void stopping.catch(() => {});
   // Settles once the close has ended both dispatchers' passes; await it before closing the pool.
   // `observerStats` reports the observer hubs, or undefined when every observer polls on its own.
   return Object.assign(server, { stopped: () => stopping, observerStats: () => hubs?.stats() });

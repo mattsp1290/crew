@@ -87,7 +87,7 @@ CREATE TABLE birbcrew_ts.conversation_content_erasures (
   conversation_id uuid PRIMARY KEY REFERENCES birbcrew_ts.conversations, erasure_id uuid NOT NULL UNIQUE,
   requested_at timestamptz NOT NULL DEFAULT clock_timestamp(), erased_at timestamptz,
   terminal_phase text NOT NULL CHECK(terminal_phase IN ('complete','failed','cancelled')),
-  inventory_id uuid NOT NULL DEFAULT gen_random_uuid(), UNIQUE(conversation_id,erasure_id)
+  UNIQUE(conversation_id,erasure_id)
 );
 ALTER TABLE birbcrew_ts.conversations ADD FOREIGN KEY (content_erasure_id) REFERENCES birbcrew_ts.conversation_content_erasures(erasure_id) DEFERRABLE INITIALLY DEFERRED;
 CREATE TABLE birbcrew_ts.conversation_content_cleanup (

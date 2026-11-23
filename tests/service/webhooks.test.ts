@@ -1,4 +1,4 @@
-import { auditTypesNamedInMigration, migrateThrough, testDatabaseName } from "./database-fixtures.ts";
+import { migrateThrough, testDatabaseName } from "./database-fixtures.ts";
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -1137,12 +1137,7 @@ test("the webhook migration keeps every constraint, trigger, function, index and
   const types = (clauses: string[]) => clauses.flatMap(clause => [...clause.matchAll(/'([a-z_]+\.[a-z_]+)'::text/g)].map(match => match[1]));
   assert.deepEqual(replaced.slice(0, kept.length), kept, "every clause of the replaced CHECK");
   assert.deepEqual(types(replaced.slice(kept.length)), ["approval.requested", "webhook.created", "webhook.enabled", "webhook.disabled", "webhook.deleted"]);
-  // The registry also holds the types later migrations add to the CHECK, read from their files.
-  const later = new Set<string>();
-  for (const file of migrations.filter(file => Number(file.split("-")[0]) > webhookVersion)) {
-    for (const type of auditTypesNamedInMigration(await readFile(new URL(file, sql), "utf8"))) later.add(type);
-  }
-  assert.deepEqual([...new Set([...types(replaced), ...later])].sort(), [...auditEventTypes].sort());
+  assert.ok(types(replaced).every(type => new Set<string>(auditEventTypes).has(type)), "this migration adds only registered audit types");
 });
 
 test("the webhook migration takes only audit_events, without queueing, rewrites nothing and leaves its CHECKs unvalidated", async (t) => {

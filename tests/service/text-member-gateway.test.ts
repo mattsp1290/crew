@@ -10,7 +10,7 @@ import sizingFixture from "../fixtures/request-text-sizing.json" with { type: "j
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,7 @@ function encodedPayloadSizes(value: unknown): number[] {
 const reply = "cedar remembered";
 
 function profileModule(log: string, cwd: string, writerGroup: number) {
-  return `import { appendFileSync } from "node:fs";
+  return `import { appendFileSync, existsSync } from "node:fs";
 const log = ${JSON.stringify(log)};
 const cwd = ${JSON.stringify(cwd)};
 const executable = ${JSON.stringify(join(cwd, "opencode"))};
@@ -55,8 +55,8 @@ function acp() {
   const processExit = new Promise((resolve) => { resolveExit = resolve; });
   function respond(message) {
     if (message.method === "initialize") send(sink, { jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1 } });
-    else if (message.method === "session/new") send(sink, { jsonrpc: "2.0", id: message.id, result: {
-      sessionId: "session-1", configOptions: [{ id: "model", type: "select", currentValue: "default", options: [] }] } });
+    else if (message.method === "session/new") { if (existsSync(cwd+"/hold-opencode")) { setTimeout(()=>{ send(sink, { jsonrpc:"2.0",id:message.id,result:{sessionId:"session-1",configOptions:[{id:"model",type:"select",currentValue:"default",options:[]}]}}); },500); return; } send(sink, { jsonrpc: "2.0", id: message.id, result: {
+      sessionId: "session-1", configOptions: [{ id: "model", type: "select", currentValue: "default", options: [] }] } }); }
     else if (message.method === "session/set_config_option") send(sink, { jsonrpc: "2.0", id: message.id, result: {
       configOptions: [{ id: "model", currentValue: message.params.value }] } });
     else if (message.method === "session/prompt") {
@@ -81,6 +81,14 @@ export const profiles = new Map([
       let stubborn=false;
       appendFileSync(log, "start\\n");
       return { async start({ text, onEvent }) {
+        if(text==="volume-swap-fixture") {
+          const fs=await import("node:fs/promises");
+          await fs.writeFile(${JSON.stringify(join(cwd,"swap-ready"))},options.sessionDirectory);
+          while(true){try{await fs.access(${JSON.stringify(join(cwd,"swap-go"))});break;}catch{await new Promise(r=>setTimeout(r,10));}}
+          await fs.writeFile(options.sessionDirectory+"/private-swap-marker","synthetic-private-volume-swap");
+          await fs.writeFile(${JSON.stringify(join(cwd,"swap-written"))},"written");
+          while(true){try{await fs.access(${JSON.stringify(join(cwd,"swap-restored"))});break;}catch{await new Promise(r=>setTimeout(r,10));}}
+        }
         stubborn=text==="unconfirmed-writer-fixture";
         if(stubborn) appendFileSync(${JSON.stringify(join(cwd,"writer-target"))},options.sessionDirectory);
         onEvent({ kind: "text", text: text.startsWith("ESCAPED_REPLY") ? ${JSON.stringify("\u0001")} : text.startsWith("MAX_REPLY") || text.startsWith("OVERFLOW") ? "r" : "cedar " });
@@ -151,13 +159,17 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
   const members = new MemberClient(store, temporal);
   const server = createGateway(store, members, { [createHash("sha256").update(token).digest("hex")]: ownerId });
   const stderr: Buffer[] = [];
-  let worker = spawn(process.execPath, ["src/service/cli.ts", "worker", config], {
-    cwd: fileURLToPath(new URL("../..", import.meta.url)),
-    env: { ...process.env, BIRBCREW_DATABASE_URL: database, BIRBCREW_STATE_DIR: alias+"/", BIRBCREW_TEXT_ENGINE_LOG: log,
-      BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  worker.stderr?.on("data", (chunk) => stderr.push(chunk));
+  const startWorker = (stateDir: string) => {
+    const child = spawn(process.execPath, ["src/service/cli.ts", "worker", config], {
+      cwd: fileURLToPath(new URL("../..", import.meta.url)),
+      env: { ...process.env, BIRBCREW_DATABASE_URL: database, BIRBCREW_STATE_DIR: stateDir,
+        BIRBCREW_TEXT_ENGINE_LOG: log, BIRBCREW_WORKER_HEARTBEAT_FILE: heartbeat },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    child.stderr?.on("data", chunk => stderr.push(chunk));
+    return child;
+  };
+  let worker = startWorker(alias + "/");
   t.after(async () => {
     if (worker.exitCode === null && !worker.signalCode) worker.kill("SIGKILL");
     await stopWriter();
@@ -165,6 +177,7 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
     await server.stopped();
     await connection.close();
     await pool.end();
+    if (process.env.BIRBCREW_PROOF_LOG_DIR) await writeFile(join(process.env.BIRBCREW_PROOF_LOG_DIR, "text-worker.log"), Buffer.concat(stderr));
     await rm(root, { recursive: true, force: true });
   });
   server.listen(0, "127.0.0.1");
@@ -303,10 +316,18 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
     const held = await pool.connect();
     try {
       await held.query("BEGIN");
+      const blocker=(await held.query<{pid:number}>("SELECT pg_backend_pid() AS pid")).rows[0].pid;
       await held.query("SELECT 1 FROM birbcrew_ts.conversations WHERE conversation_id=$1 FOR UPDATE", [interruptedId]);
       await members.ensureCleanupWorkflow(assignment);
       const cleanup = temporal.workflow.getHandle(`birbcrew-ts/content-erasure/${interruptedId}`);
       await until("unlink before acknowledgement", () => rootAbsent(interruptedRoot));
+      let acknowledgementPid: number | undefined;
+      await until("cleanup acknowledgement blocked",async()=> {
+        acknowledgementPid=(await pool.query<{pid:number}>("SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'",[blocker])).rows[0]?.pid;
+        return acknowledgementPid!==undefined;
+      });
+      const originalExited = once(worker,"close");
+      worker.kill("SIGKILL"); await originalExited;
       const firstCleanup = await cleanup.describe();
       assert.equal(firstCleanup.status.name, "RUNNING");
       assert.equal((await pool.query("SELECT cleaned_at FROM birbcrew_ts.conversation_content_cleanup WHERE conversation_id=$1", [interruptedId])).rows[0].cleaned_at, null);
@@ -314,6 +335,9 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
       await members.ensureCleanupWorkflow(assignment);
       await until("replacement cleanup execution", async () => (await cleanup.describe()).runId !== firstCleanup.runId);
     } finally { await held.query("ROLLBACK"); held.release(); }
+    await rm(heartbeat,{force:true});
+    worker = startWorker(join(root,"state"));
+    await until("cleanup replacement worker ready",async()=>{try{await readFile(heartbeat);return true;}catch{return false;}});
     const repaired = await eraseConversationContent({store, lifecycle:members, key:interruptedKey});
     assert.equal(repaired.erasureId, erasureId);
     assert.equal(await rootAbsent(interruptedRoot), true);
@@ -527,7 +551,7 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
         assert.ok(encodedHistory < sizingFixture.budgets.wholeHistoryBytes, "whole history conservatively bounds each contained transaction");
         const measurement = { engine, n, versioned, promptDigest: createHash("sha256").update(text).digest("hex"),
           replyDigest: createHash("sha256").update(expectedReply).digest("hex"),
-          replyBytes: Buffer.byteLength(expectedReply), converterBytes, encodedHistory, events };
+          replyBytes: Buffer.byteLength(expectedReply), converterBytes, encodedHistory, finalEvent: events.at(-1)?.attributes, events };
         const sample = sizingFixture.runs.find(run => run.engine === engine && run.n === n && run.versioned === versioned);
         assert.ok(sample);
         for (const key of ["promptDigest", "replyDigest", "replyBytes", "converterBytes"] as const) {
@@ -561,6 +585,8 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
     const sdk = z.object({ version: z.string() }).parse(JSON.parse(await readFile(new URL("../../node_modules/@temporalio/worker/package.json", import.meta.url), "utf8")));
     await writeFile(join(process.env.BIRBCREW_TEXT_EVIDENCE_DIR, "sizing.json"), JSON.stringify({
       ...sizingFixture,
+      measurementNotes: [...sizingFixture.measurementNotes.filter(note => !note.startsWith("Histories are complete recorded prefixes")),
+        "Current captures record each observed finalEvent; settled prefixes and natural terminal completion are distinguished per run."],
       environment: { ...sizingFixture.environment, node: process.versions.node, postgres: postgres.rows[0].server_version,
         temporalSDK: sdk.version, temporalServer: server.serverVersion ?? "unreported",
         temporalCLI: process.env.BIRBCREW_TEXT_TEMPORAL_CLI_VERSION ?? "unverified" },
@@ -568,9 +594,39 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
         : { verification: "unverified", source: "No fixture launcher settings supplied; remote limits are not exposed by the runtime API." },
       runs: measurements, fixtureSource: {
         gatewayTestSha256: createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex"),
-        capture: "Idle recorded history; admission/turn inputs and exact reply checked. Runtime versions queried; CLI and limit declarations are labeled separately.",
+        capture: "Recorded history after admission and turn completion; each run names its observed finalEvent. Exact inputs and reply checked. Runtime versions queried; CLI and limits labeled separately.",
       },
     }, null, 2) + "\n");
+  }
+
+  // A registered volume cannot be rebound while its SDK call and teardown are in flight.
+  {
+    const member=await store.spawn({ownerId,requestId:randomUUID(),engine:"cursor",profile:"text-cursor.v1"});
+    const key={ownerId,conversationId:randomUUID()},requestId=randomUUID();
+    await members.open({...key,memberId:member.memberId});
+    await members.accept({...key,requestId,text:"volume-swap-fixture"});
+    await until("SDK volume barrier",async()=>{try{await readFile(join(root,"swap-ready"));return true;}catch{return false;}});
+    const conversation=await store.getConversation(key), state=join(root,"state");
+    const original=join(state,"cursor"), parked=join(state,"cursor-parked"), replacement=join(state,"cursor-replacement");
+    const relative=textTurnRootPath(state,conversation,"cursor").slice(original.length+1);
+    await rename(original,parked);
+    await mkdir(join(original,relative),{recursive:true});
+    await writeFile(join(original,".birbcrew-text-volume"),randomUUID());
+    let wrote=false;
+    try {
+      await writeFile(join(root,"swap-go"),"go");
+      await until("SDK wrote session artifact",async()=>{try{await readFile(join(root,"swap-written"));return true;}catch{return false;}});
+      wrote=true;
+    } finally {
+      await rename(original,replacement); await rename(parked,original);
+      await writeFile(join(root,"swap-restored"),"restored");
+    }
+    assert.equal(wrote,true);
+    await until("volume-swap request committed",async()=> (await store.requestStatus({...key,requestId})).phase==="committed");
+    await until("volume-swap workflow closed",async()=> (await temporal.workflow.getHandle(`birbcrew-ts/member/${member.memberId}/conversation/${key.conversationId}`).describe()).status.name==="COMPLETED");
+    assert.equal((await eraseConversationContent({store,lifecycle:members,key})).erased,true);
+    await assert.rejects(readFile(join(replacement,relative,"private-swap-marker")),{code:"ENOENT"});
+    assert.equal(await rootAbsent(textTurnRootPath(state,conversation,"cursor")),true);
   }
 
   const member=await store.spawn({ownerId,requestId:randomUUID(),engine:"cursor",profile:"text-cursor.v1"});
@@ -581,6 +637,18 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
   await until("detached writer workflow closed",async()=> (await temporal.workflow.getHandle(`birbcrew-ts/member/${member.memberId}/conversation/${key.conversationId}`).describe()).status.name==="COMPLETED");
   const conversation=await store.getConversation(key),sessionRoot=textTurnRootPath(join(root,"state"),conversation,"cursor");
   await until("detached writer outlives runner",async()=>{try{await readFile(join(sessionRoot,"stubborn-writer"));return true;}catch{return false;}});
+  // A published proc-FD path must stay on Cursor while its detached writer lives.
+  await writeFile(join(root,"hold-opencode"),"hold");
+  const leaked = join(root,"state","opencode",sessionRoot.slice(join(root,"state","cursor").length+1),"stubborn-writer");
+  for (let i=0;i<3;i++) {
+    const next=await store.spawn({ownerId,requestId:randomUUID(),engine:"opencode",profile:"text-opencode.v1"});
+    const nextKey={ownerId,conversationId:randomUUID()}, nextRequest=randomUUID();
+    await members.open({...nextKey,memberId:next.memberId});
+    await members.accept({...nextKey,requestId:nextRequest,text:"descriptor-reuse-fixture"});
+    await until("later OpenCode turn committed",async()=> (await store.requestStatus({...nextKey,requestId:nextRequest})).phase==="committed");
+    await assert.rejects(readFile(leaked),{code:"ENOENT"});
+  }
+  await rm(join(root,"hold-opencode"));
   const before=JSON.stringify((await pool.query("SELECT messages,state FROM birbcrew_ts.public_snapshots WHERE conversation_id=$1",[key.conversationId])).rows);
   const denied=await call("DELETE",`/v1/conversations/${key.conversationId}/content`);
   assert.deepEqual(denied,{status:409,payload:{error:"content_runtime_unconfirmed"}});
@@ -596,11 +664,10 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
     },
   });
   await rm(heartbeat,{force:true});
-  worker=spawn(process.execPath,["src/service/cli.ts","worker",config],{cwd:fileURLToPath(new URL("../..",import.meta.url)),
-    env:{...process.env,BIRBCREW_DATABASE_URL:database,BIRBCREW_STATE_DIR:join(root,"state"),BIRBCREW_WORKER_HEARTBEAT_FILE:heartbeat},stdio:["ignore","ignore","pipe"]});
-  worker.stderr?.on("data",chunk=>stderr.push(chunk));
+  worker=startWorker(join(root,"state"));
   await until("replacement worker",async()=>{try{await readFile(heartbeat);return true;}catch{return false;}});
   assert.equal((await eraseConversationContent({store,lifecycle:members,key})).erased,true);
   assert.equal(await rootAbsent(sessionRoot),true);
+  await assert.rejects(readFile(leaked),{code:"ENOENT"});
 
 });

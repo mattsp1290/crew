@@ -1,3 +1,4 @@
+import type { TextStateRoot } from "./text-state-location.ts";
 import { completeTextWriterInventory } from "./text-runtime-inventory.ts";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
@@ -109,7 +110,7 @@ async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signa
 }
 
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
-export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: string): Promise<DriverResult> {
+export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: TextStateRoot): Promise<DriverResult> {
   const sessionDirectory = textTurnRoot(input, member, "cursor", stateDir);
   const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;

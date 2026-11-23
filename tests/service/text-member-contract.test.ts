@@ -35,6 +35,24 @@ async function spawned(engine: Engine, extra: { instructions?: string; instructi
   return store.spawn({ ownerId: randomUUID(), requestId: randomUUID(), engine, profile: `${engine}.v1`, ...extra });
 }
 
+
+function pauseAfterRead(matches: (row: Record<string, unknown>) => boolean) {
+  let resume!: () => void, reached!: () => void, armed = true;
+  const resumed = new Promise<void>(r => { resume = r; });
+  const paused = new Promise<void>(r => { reached = r; });
+  const reader = new MemberStore(new Proxy(pool, {
+    get(target, property, receiver) {
+      if (property !== "query") return Reflect.get(target, property, receiver);
+      return async (...args: unknown[]) => {
+        const result: {rows: Record<string, unknown>[]} = await Reflect.apply(target.query, target, args);
+        if (armed && result.rows[0] && matches(result.rows[0])) { armed = false; reached(); await resumed; }
+        return result;
+      };
+    },
+  }));
+  return {reader, resume, wait: () => Promise.race([paused, delay(2_000).then(() => { throw new Error("Expected admission read barrier was not reached"); })])};
+}
+
 test("migration 042 applies once", async () => {
   await store.migrate();
   const { rows } = await pool.query("SELECT version FROM birbcrew_ts.schema_versions WHERE version = 42");
@@ -392,26 +410,11 @@ test("a concurrent admission does not make an exact preflight retry exhaust its 
         (routine_id,scheduled_for,status,conversation_id,request_id,recorded_at,lease_until)
         VALUES($1,'2031-01-06T10:15Z','claimed',$2,$3,now(),now()+interval '1 minute')`, [routineId, conversationId, request.requestId]);
     }
-    let resume = () => {}, pause = () => {}, intercept = true;
-    const resumed = new Promise<void>(resolve => { resume = resolve; });
-    const paused = new Promise<void>(resolve => { pause = resolve; });
-    const concurrent = new MemberStore(new Proxy(pool, {
-      get(target, property, receiver) {
-        if (property !== "query") return Reflect.get(target, property, receiver);
-        return async (...args: unknown[]) => {
-          const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
-          if (intercept && typeof args[0] === "string" && args[0].includes("a.phase") && args[0].includes("request_admissions a")) {
-            intercept = false;
-            pause();
-            await resumed;
-          }
-          return result;
-        };
-      },
-    }));
+    const barrier = pauseAfterRead(row => row.admissionPhase === null && row.turnPhase === null);
+    const concurrent = barrier.reader, resume = barrier.resume;
     const retry = concurrent.checkAdmission({ ...request, text: retryText });
     const expected = retryText !== request.text ? assert.rejects(retry, { code: "conflict" }) : retry;
-    await paused;
+    await barrier.wait();
     try {
       await store.recordAcceptance(request, ownerInitiator);
       if (routineId) await pool.query("UPDATE birbcrew_ts.routine_firings SET status='admitted',lease_until=NULL WHERE routine_id=$1", [routineId]);
@@ -428,24 +431,17 @@ test("a concurrent committed reply cannot bypass a different approval deadline",
   const conversationId = randomUUID();
   await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
   const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original", approvalDeadlineSeconds: 60 };
-  let resume = () => {}, pause = () => {}, reads = 0;
-  const resumed = new Promise<void>(resolve => { resume = resolve; });
-  const paused = new Promise<void>(resolve => { pause = resolve; });
-  const reader = new MemberStore(new Proxy(pool, {
-    get(target, property, receiver) {
-      if (property !== "query") return Reflect.get(target, property, receiver);
-      return async (...args: unknown[]) => {
-        const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
-        if (typeof args[0] === "string" && args[0].includes("a.phase") && args[0].includes("request_admissions a") && ++reads === 3) {
-          pause();
-          await resumed;
-        }
-        return result;
-      };
-    },
-  }));
+  let resume!: () => void, pause!: () => void;
+  const resumed = new Promise<void>(r => { resume = r; }), paused = new Promise<void>(r => { pause = r; });
+  class PausedReplyStore extends MemberStore {
+    override async committedReply(...args: Parameters<MemberStore["committedReply"]>) {
+      const reply = await super.committedReply(...args);
+      assert.equal(reply, undefined); pause(); await resumed; return reply;
+    }
+  }
+  const reader = new PausedReplyStore(pool);
   const expected = assert.rejects(new MemberClient(reader, new Client()).submit({ ...request, approvalDeadlineSeconds: 120 }), { code: "conflict" });
-  await paused;
+  await Promise.race([paused, delay(2_000).then(() => { throw new Error("Expected admission race barrier was not reached"); })]);
   try {
     await store.recordAcceptance(request, ownerInitiator);
     const turn = await store.beginTurn(request);
@@ -467,29 +463,24 @@ test("a budget preflight verifies concurrent admission terms before a workflow c
   const conversationId = randomUUID();
   await store.openConversation({ ownerId: member.ownerId, memberId: member.memberId, conversationId });
   const request = { ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original", approvalDeadlineSeconds: 60 };
-  let resume = () => {}, pause = () => {}, counts = 0;
-  const resumed = new Promise<void>(resolve => { resume = resolve; });
-  const paused = new Promise<void>(resolve => { pause = resolve; });
-  const reader = new MemberStore(new Proxy(pool, {
-    get(target, property, receiver) {
-      if (property !== "query") return Reflect.get(target, property, receiver);
-      return async (...args: unknown[]) => {
-        const result: { rows: unknown[] } = await Reflect.apply(target.query, target, args);
-        if (typeof args[0] === "string" && args[0].includes("UNION SELECT request_id") && ++counts === 2) {
-          pause();
-          await resumed;
-        }
-        return result;
-      };
-    },
-  }));
+  const barrier = pauseAfterRead(row => row.used === 0 && row.limit === 1);
+  const reader = barrier.reader, resume = barrier.resume;
   const temporal = new Client();
   const starts = t.mock.method(temporal.workflow, "start", async () => { throw new Error("Unexpected workflow call"); });
   const handles = t.mock.method(temporal.workflow, "getHandle", () => { throw new Error("Unexpected workflow call"); });
   const expected = assert.rejects(new MemberClient(reader, temporal).submit({ ...request, approvalDeadlineSeconds: 120 }), { code: "conflict" });
-  await paused;
+  await barrier.wait();
   try { await store.recordAcceptance(request, ownerInitiator); }
   finally { resume(); }
   await expected;
   assert.equal(starts.mock.callCount() + handles.mock.callCount(), 0);
+});
+
+test("a new oversized text request keeps the same refusal after the only slot is admitted", async () => {
+  const member = await spawned("cursor"), conversationId = randomUUID();
+  await store.openConversation({ownerId: member.ownerId, memberId: member.memberId, conversationId});
+  await store.recordAcceptance({ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "original"}, ownerInitiator);
+  const request = {ownerId: member.ownerId, conversationId, requestId: randomUUID(), text: "x".repeat(16_385)};
+  await assert.rejects(store.checkAdmission(request), {name: "ZodError"});
+  await assert.rejects(store.recordAcceptance(request, ownerInitiator), {name: "ZodError"});
 });

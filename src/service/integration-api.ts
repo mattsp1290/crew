@@ -1,10 +1,9 @@
-import { assertContentWritable, contentErasureState } from "./content-erasure-store.ts";
+import { assertContentWritable, contentErasureState, receiptContentState } from "./content-erasure-store.ts";
 import { eraseConversationContent, type TextErasureLifecycle } from "./content-erasure.ts";
-import { requestStatusFromRow } from "./request-status.ts";
-import { contentErasureCapabilityV1Schema } from "@birbcrew/client/contract";
+import { isTerminalRequestStatus, requestStatusFromRow } from "./request-status.ts";
+import { contentErasureCapabilityV1Schema, contentErasureCapabilityV1 } from "@birbcrew/client/contract";
 
-import { promptBytes } from "@birbcrew/client/contract";
-import { storedRequestTextBytes } from "./text-profile-validation.ts";
+import { effectiveRequestTextBytes } from "./text-profile-validation.ts";
 import { memberSubagents } from "./child-target.ts";
 import { z } from "zod";
 import { decisionReceiptsCapabilityV1Schema, serverRequestReceiptSchema, type DecisionReceiptsCapabilityV1,
@@ -35,10 +34,7 @@ export const integrationCapabilities = {
   identity: "owner/conversation/request UUID; exact UTF-8 text equivalence",
   cancellation: "durable-intent-v1",
   retention: "receipts-and-native-results-retained; text-content-owner-erasable; digest-fences-permanent; no-automatic-TTL",
-  contentErasure: contentErasureCapabilityV1Schema.parse({version:1,route:"/v1/conversations/{conversationId}/content",
-    closeRoute:"/v1/conversations/{conversationId}/close",engines:["cursor","opencode"],
-    preconditions:"closed-workflow; terminal-requests; stopped-writers; complete-location-inventory",retry:"same-conversation-until-200",
-    residuals:["Temporal-history-until-retention","WAL-backups-provider-copies-and-logs"]}),
+  contentErasure: contentErasureCapabilityV1Schema.parse(contentErasureCapabilityV1),
   rollover: { version: 1, maximumTurns: conversationTurnLimit, generationTurns: workflowGenerationTurnLimit },
   proxy: { version: 1, protocols: ["anthropic-messages", "openai-responses", "openai-chat-completions"] },
   trustedContext: { version: 1, transport: "operator-configured-local-runtime", httpSubmission: false },
@@ -174,14 +170,14 @@ export class IntegrationApi {
       [key.ownerId,key.conversationId,key.requestId]);
     if (!row) throw new MemberStoreError("not_found");
     // A cancellation intent never overwrites the committed winner or claims rollback.
-    if (row.content_erasure_id && !row.erased_at) throw new MemberStoreError("content_erasure_pending");
+    const content = receiptContentState(row);
     const status = requestStatusFromRow(row);
     const receipt = serverRequestReceiptSchema.safeParse({
       apiVersion: "1", conversationId: key.conversationId, requestId: key.requestId,
       acceptance: { boundary: "sql_admission_and_temporal_queue" }, status,
       ...(row.initiator_kind ? { initiator: initiatorFromColumns(row.initiator_kind, row.initiator_id) } : {}),
-      ...(row.erased_at ? {erased:true} : {}),
-      ...(row.phase === "committed" && !row.content_erasure_id ? { result: { text: row.reply! } } : {}),
+      ...(content === "erased" ? {erased:true} : {}),
+      ...(row.phase === "committed" && content === "retained" ? { result: { text: row.reply! } } : {}),
       ...(row.reason ? { reason: row.reason } : {}),
       ...(row.receipt_id ? { cancellation: {
         receiptId: row.receipt_id, delivery: row.delivered_at ? "delivered" as const : "pending" as const,
@@ -245,7 +241,7 @@ export class IntegrationApi {
     // `capabilities` only for a member that has some, so a member without any reads as before.
     const members = items.map(({ instructions, instructionPacks, consent, seal, active, stored, policyProfile, policyBytes, ...member }) => {
       const capabilities = storedCapabilities(stored);
-      return { ...member, ...(isTextEngine(member.engine) ? { requestTextBytes: policyProfile === null ? promptBytes : storedRequestTextBytes(policyBytes) } : {}), subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
+      return { ...member, ...(isTextEngine(member.engine) ? { requestTextBytes: effectiveRequestTextBytes(policyProfile === null ? undefined : {request_text_bytes: policyBytes}) } : {}), subagents: memberSubagents(member.engine, consent, seal, active), ...(instructions ? { instructions } : {}),
         ...(instructionPacks ? { instructionPacks } : {}), ...(capabilities ? { capabilities } : {}) };
     });
     return { apiVersion: "1" as const, members, next };
@@ -289,7 +285,7 @@ export class IntegrationApi {
           await this.store.pool.query(`UPDATE birbcrew_ts.integration_cancellations SET last_attempt_at=clock_timestamp()
             WHERE conversation_id=$1 AND request_id=$2`, [key.conversationId,key.requestId]);
           const receipt = await this.status(key);
-          if (!["completed", "failed", "cancelled"].includes(receipt.status)) await this.members.cancelPending(key, Date.now() + 10_000);
+          if (!isTerminalRequestStatus(receipt.status)) await this.members.cancelPending(key, Date.now() + 10_000);
           await this.store.pool.query(`UPDATE birbcrew_ts.integration_cancellations SET delivered_at=COALESCE(delivered_at,clock_timestamp())
             WHERE conversation_id=$1 AND request_id=$2`, [key.conversationId,key.requestId]);
         } catch {

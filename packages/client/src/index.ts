@@ -48,6 +48,8 @@ export type {
   ObservedRequestReceipt,
   RequestReceipt,
   ServerRequestReceipt,
+  ContentErasureCapability,
+  ContentErasureCapabilityV1,
   ConversationContentTombstone,
   ConversationClosure,
   InstructionsSummary,
@@ -172,6 +174,7 @@ export class CrewClient {
       method: string;
       path: string;
       response: z.ZodType<T>;
+      responses?: Readonly<Record<number, z.ZodType<T>>>;
       statuses: readonly number[];
       unknownOutcomeErrors?: readonly { readonly status: number; readonly code: string }[];
     },
@@ -181,7 +184,7 @@ export class CrewClient {
       query?: string;
       command?: CommandIdentity;
       signal?: AbortSignal;
-      expect?: (value: T, status: number) => boolean;
+      expect?: (value: T) => boolean;
     } = {},
   ): Promise<T> {
     input.signal?.throwIfAborted();
@@ -226,9 +229,9 @@ export class CrewClient {
         documented ? 8 * 1024 * 1024 : 16_384,
       ).catch(() => undefined);
       if (documented) {
-        const parsed = route.response.safeParse(value);
+        const parsed = (route.responses?.[response.status] ?? route.response).safeParse(value);
         if (parsed.success) {
-          if (input.expect && !input.expect(parsed.data, response.status))
+          if (input.expect && !input.expect(parsed.data))
             throw new CrewProtocolError();
           return parsed.data;
         }
@@ -360,7 +363,7 @@ export class CrewClient {
   async closeConversation(input: { readonly conversationId: string }, options: CallOptions = {}) {
     const params = conversationIdentitySchema.parse(input);
     return this.#call(routes.closeConversation, { ...options, params, body: {},
-      command: { kind: "conversation_close", ...params }, expect: (value, status) => value.conversationId === params.conversationId && value.closure === (status === 200 ? "closed" : "requested") });
+      command: { kind: "conversation_close", ...params }, expect: value => value.conversationId === params.conversationId });
   }
   async conversation(
     input: { readonly conversationId: string },
@@ -402,6 +405,7 @@ export class CrewClient {
       method: string;
       path: string;
       response: z.ZodType<T>;
+      responses?: Readonly<Record<number, z.ZodType<T>>>;
       statuses: readonly number[];
       command: boolean;
     },

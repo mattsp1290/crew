@@ -1,3 +1,4 @@
+import type { TextVolumeLocation } from "./text-state-location.ts";
 import { runCodexTurn } from "./codex.ts";
 import { runPiTurn, runPiSegment, runPiDelegatingSegment } from "./pi.ts";
 import { runClaudeTurn, runClaudeSegment } from "./claude.ts";
@@ -28,7 +29,7 @@ export interface MemberProfile {
   opencode?: Parameters<typeof runOpenCodeTurn>[2];
 }
 
-export function memberProfiles(config: ReadonlyMap<string, MemberProfile>, stateDir: string, invocationGroup?: number): MemberProfiles {
+export function memberProfiles(config: ReadonlyMap<string, MemberProfile>, stateDir: string, invocationGroup?: number, textVolume?: TextVolumeLocation): MemberProfiles {
   const profiles = new Map<string, Partial<Record<Engine, TurnDriver>>>();
   for (const [name, { pi, claude, codex, cursor, opencode, protectedTool, delegateTask, humanTool }] of config) {
     const tool = protectedTool ?? humanTool;
@@ -53,8 +54,14 @@ export function memberProfiles(config: ReadonlyMap<string, MemberProfile>, state
       const options = { ...claude, ownerId, memberId, stateDir, invocationGroup };
       return tool ? runClaudeSegment(input, options, tool) : { kind: "complete", ...await runClaudeTurn(input, options) };
     };
-    if (cursor) drivers.cursor = (input, member) => runCursorTurn(input, member, cursor, stateDir);
-    if (opencode) drivers.opencode = (input, member) => runOpenCodeTurn(input, member, opencode, stateDir);
+    if (cursor) drivers.cursor = (input, member) => {
+      if (textVolume?.engine !== "cursor") throw new Error("Missing pinned text volume");
+      return runCursorTurn(input, member, cursor, textVolume);
+    };
+    if (opencode) drivers.opencode = (input, member) => {
+      if (textVolume?.engine !== "opencode") throw new Error("Missing pinned text volume");
+      return runOpenCodeTurn(input, member, opencode, textVolume);
+    };
     if (codex) drivers.codex = async (input, { ownerId, memberId }) => {
       if (input.childProfile) throw new ChildTargetError("unsupported_engine");
       const turn: Parameters<typeof runCodexTurn>[0] = input;

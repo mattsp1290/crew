@@ -1,3 +1,7 @@
+import { terminalRequestStatuses } from "@birbcrew/client/contract";
+const terminal = new Set<string>(terminalRequestStatuses);
+export const isTerminalRequestStatus = (status: string): status is typeof terminalRequestStatuses[number] => terminal.has(status);
+
 /** The public receipt classifier. Raw uncertainty is checked independently for erasure. */
 export function requestStatusFromRow(row: {
   phase: string | null;

@@ -1,7 +1,8 @@
-import { assertContentWritable, contentErasureState, recordNoLaunchProof } from "./content-erasure-store.ts";
+import { storeActivityFailure } from "./failure-type.ts";
+import { assertContentWritable, contentErasureState, recordNoLaunchProof, receiptContentState } from "./content-erasure-store.ts";
 
 import { boundedText, promptBytes } from "@birbcrew/client/contract";
-import { storedRequestTextBytes } from "./text-profile-validation.ts";
+import { effectiveRequestTextBytes } from "./text-profile-validation.ts";
 import { warn } from "./diagnostics.ts";
 import { matchesNativeReply, type ItemReceipt } from "./codex-items.ts";
 import { interruptLiveLocked } from "./codex-calls.ts";
@@ -103,7 +104,7 @@ async function requestTextPolicy(db: Pool | PoolClient, conversation: Conversati
   const { rows: [row] } = await db.query<{ request_text_bytes: unknown }>(
     "SELECT request_text_bytes FROM birbcrew_ts.profiles WHERE engine=$1 AND name=$2",
     [conversation.engine, conversation.profile]);
-  return row ? storedRequestTextBytes(row.request_text_bytes) : promptBytes;
+  return effectiveRequestTextBytes(row);
 }
 
 async function validateRequestTextPolicy(db: Pool | PoolClient, key: TurnRequest, conversation: Conversation, lane: RequestInitiator) {
@@ -123,18 +124,20 @@ async function validateRequestTextPolicy(db: Pool | PoolClient, key: TurnRequest
  * initiator an admission would record, and whether the request's turn already started. */
 async function admissionTerms(db: PoolClient, key: TurnRequest, conversation: Conversation, attested: RequestInitiator) {
   const digest=createHash("sha256").update(key.text).digest();
+  const textLane = isTextEngine(conversation.engine) ? await firingInitiator(db, key, conversation) ?? attested : undefined;
   const {rows:[existingTurn]}=await db.query<{prompt_digest:Buffer}>(
     "SELECT prompt_digest FROM birbcrew_ts.turns WHERE conversation_id=$1 AND request_id=$2",[key.conversationId,key.requestId]);
   if(existingTurn) {
     if(!existingTurn.prompt_digest.equals(digest))throw new MemberStoreError("conflict");
   } else {
+    if (textLane) await validateRequestTextPolicy(db, key, conversation, textLane);
     const budget = await turnBudget(db, key.conversationId);
     const refusal = turnRefusal(conversation.engine, key.text, budget.used >= budget.limit);
     if (refusal) throw refusal;
   }
   const handoff=existingTurn?null:await handoffAdmission(db,key);
-  const recorded=handoff??await firingInitiator(db,key,conversation)??attested;
-  if (!existingTurn) await validateRequestTextPolicy(db, key, conversation, recorded);
+  const recorded=handoff??textLane??await firingInitiator(db,key,conversation)??attested;
+  if (!existingTurn && !textLane) await validateRequestTextPolicy(db, key, conversation, recorded);
   return {recorded,started:Boolean(existingTurn)};
 }
 
@@ -172,7 +175,7 @@ export function ownerAdmissionActivity(store: MemberStore) {
       await store.recordAcceptance(request, ownerInitiator);
     } catch (error) {
       if (error instanceof MemberStoreError && (error.code === "handed_off" || error.code === "handoff_pending" || error.code === "conversation_erased" || error.code === "conversation_closed")) {
-        throw ApplicationFailure.nonRetryable(error.code,error.code === "conversation_erased" || error.code === "conversation_closed" ? error.code : undefined);
+        throw storeActivityFailure(error);
       }
       // Retrying cannot change a budget refusal within the activity's deadline. MemberClient
       // reads this failure type back as usage_limit_closed.
@@ -192,18 +195,22 @@ export class MemberStore {
   async transaction<T>(action: (db: PoolClient) => Promise<T>): Promise<T> {
     for (let attempt=0;;attempt++) {
       const db = await this.pool.connect();
+      let connectionFailure: Error | undefined;
+      const failed = (error: Error) => { connectionFailure = error; };
+      db.on("error", failed);
       try {
         await db.query("BEGIN");
         const result = await action(db);
+        if (connectionFailure) throw connectionFailure;
         await db.query("COMMIT");
         return result;
       } catch (error) {
-        await db.query("ROLLBACK");
+        await db.query("ROLLBACK").catch(() => { connectionFailure ??= new Error("Transaction connection lost"); });
         if (error instanceof Error && "code" in error && ["40001","40P01"].includes(String(error.code)) && attempt<2) continue;
         if(error instanceof Error && "code" in error && error.code==="23514" &&
-          (error.message==="conversation_erased" || error.message==="conversation_open" || error.message==="conversation_closed" || error.message==="content_output_busy")) throw new MemberStoreError(error.message);
+          (error.message==="conversation_erased" || error.message==="content_erasure_unsupported" || error.message==="conversation_closed" || error.message==="content_output_busy")) throw new MemberStoreError(error.message);
         throw error;
-      } finally { db.release(); }
+      } finally { db.release(Boolean(connectionFailure)); db.off("error", failed); }
     }
   }
 
@@ -510,10 +517,9 @@ export class MemberStore {
       LEFT JOIN birbcrew_ts.conversation_content_erasures e ON e.conversation_id=c.conversation_id
       WHERE COALESCE(a.conversation_id,t.conversation_id)=$1 AND COALESCE(a.request_id,t.request_id)=$2`,[key.conversationId,key.requestId]);
     if(!row)throw new MemberStoreError("not_found");
-    const erasure = row;
-    if(erasure.content_erasure_id && !erasure.erased_at)throw new MemberStoreError("content_erasure_pending");
-    return {requestId:key.requestId,...(erasure.erased_at ? {erased:true} : {}),phase:row.admission==="rejected"?"rejected":row.phase??"accepted",
-      ...(row.reason?{reason:row.reason}:{}),...(row.phase==="committed" && !erasure.content_erasure_id ? {reply:row.reply}:{})};
+    const content = receiptContentState(row);
+    return {requestId:key.requestId,...(content === "erased" ? {erased:true} : {}),phase:row.admission==="rejected"?"rejected":row.phase??"accepted",
+      ...(row.reason?{reason:row.reason}:{}),...(row.phase==="committed" && content === "retained" ? {reply:row.reply}:{})};
   }
 
   async conversationProgress(key: ConversationKey): Promise<{ turns: number; terminal: boolean; limit: number }> {

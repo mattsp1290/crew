@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, rm, open, realpath } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, mkdir, rm, open } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 // A worker can leave a directory its host cannot list (mode 0300) or a tree deeper than PATH_MAX, which
@@ -47,41 +47,42 @@ export function sweepWhenSettled(
 
 /** Persist directory entries on this volume before exposing a filesystem identity. */
 export async function syncDirectoryAncestors(directory: string) {
-  let current = await realpath(directory);
-  let device: number | undefined;
-  for (;;) {
-    const handle = await open(current, "r");
-    try {
-      const info = await handle.stat();
-      if (device !== undefined && info.dev !== device) return;
-      device = info.dev;
+  let handle = await open(directory, "r");
+  try {
+    const device = (await handle.stat({ bigint: true })).dev;
+    for (;;) {
+      const current = await handle.stat({ bigint: true });
       await handle.sync();
-    } finally {
-      await handle.close();
+      const parent = await open(`/proc/${process.pid}/fd/${handle.fd}/..`, "r");
+      let info;
+      try { info = await parent.stat({ bigint: true }); }
+      catch (error) { await parent.close(); throw error; }
+      if (info.dev !== device || info.ino === current.ino) {
+        await parent.close();
+        return;
+      }
+      const previous = handle;
+      handle = parent;
+      await previous.close();
     }
-    const parent = dirname(current);
-    if (parent === current) return;
-    current = parent;
-  }
+  } finally { await handle.close(); }
 }
-/** Persist the unlink before recording a durable cross-store cleanup acknowledgement. */
+/** Pin the deletion parent so unlink and fsync cannot target different directories. */
 export async function removePrivateDurably(directory: string) {
-  await removePrivate(directory);
   let parent = dirname(directory);
   for (;;) {
     try {
-      await syncDirectoryAncestors(parent);
-      return;
+      const handle = await open(parent, "r");
+      try {
+        const pinned = `/proc/${process.pid}/fd/${handle.fd}`;
+        if (parent === dirname(directory)) await removePrivate(join(pinned, basename(directory)));
+        // If a parent is already absent, persisting its surviving ancestor proves
+        // the old subtree cannot return after an unlink-before-ack interruption.
+        await syncDirectoryAncestors(pinned);
+        return;
+      } finally { await handle.close(); }
     } catch (error) {
-      if (
-        !(
-          error instanceof Error &&
-          "code" in error &&
-          error.code === "ENOENT"
-        ) ||
-        dirname(parent) === parent
-      )
-        throw error;
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT") || dirname(parent) === parent) throw error;
       parent = dirname(parent);
     }
   }

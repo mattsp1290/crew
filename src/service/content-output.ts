@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient, QueryConfig, QueryResultRow } from "pg";
+import { Pool, type PoolClient, type QueryConfig, type QueryResultRow } from "pg";
 import { warn } from "./diagnostics.ts";
 import { MemberStoreError } from "./domain.ts";
 
@@ -14,16 +14,25 @@ export class ConversationContentOutput {
   private retryTimer: ReturnType<typeof setInterval> | undefined;
   private retrying: Promise<void> | undefined;
   private stopped = false;
-  private readonly pool: Pool;
+  private pool: Pool | undefined;
+  private stopping: Promise<void> | undefined;
   private readonly gatewayId = randomUUID();
-  constructor(pool: Pool) {
-    this.pool = pool;
-  }
+  private readonly source: Pool;
+  private readonly createPool: (source: Pool) => Pool;
+  constructor(
+    source: Pool,
+    createPool: (source: Pool) => Pool = source => new Pool({
+      ...source.options, password: source.options.password, max: 2,
+      connectionTimeoutMillis: 2000, statement_timeout: 2000, query_timeout: 2000,
+    }),
+  ) { this.source = source; this.createPool = createPool; }
   private async connect(): Promise<PoolClient> {
-    // Configure checkout only after authorization, when output actually needs SQL.
-    // pg removes expired waiters; an external Promise race cannot.
-    const options = this.pool.options;
-    options.connectionTimeoutMillis = Math.min(options.connectionTimeoutMillis || 2000, 2000);
+    // A separate pool bounds output checkout without changing other gateway routes.
+    // Create it only after authorization, when a frame actually needs SQL.
+    if (!this.pool) {
+      this.pool = this.createPool(this.source);
+      this.pool.on("error", () => warn("content_output_connection_failed", { code: "pool_error" }));
+    }
     return this.pool.connect();
   }
   private async acknowledge(db: PoolClient, outputId: string) {
@@ -39,7 +48,7 @@ export class ConversationContentOutput {
     warn("content_output_acknowledgement_delayed", { code: "retrying" });
     if (this.stopped || this.retryTimer) return;
     this.retryTimer = setInterval(() => {
-      if (this.retrying) return;
+      if (this.stopped || this.retrying) return;
       this.retrying = this.flushAcknowledgements().finally(() => {
         this.retrying = undefined;
       });
@@ -84,17 +93,22 @@ export class ConversationContentOutput {
       this.retryTimer = undefined;
     }
   }
-  async stop() {
-    this.stopped = true;
-    clearInterval(this.retryTimer);
-    await this.retrying;
-    await this.flushAcknowledgements();
+  stop() {
+    return this.stopping ??= (async () => {
+      this.stopped = true;
+      clearInterval(this.retryTimer);
+      await Promise.all(this.tails.values());
+      await this.retrying;
+      await this.flushAcknowledgements();
+      await this.pool?.end();
+    })();
   }
   async enqueue(
     key: { ownerId: string; conversationId: string },
     emit: () => Enqueued,
     signal?: AbortSignal,
   ): Promise<Output> {
+    if (this.stopped) throw new Error("Content output stopped");
     const queueKey = key.conversationId.toLowerCase();
     let release!: () => void;
     const previous = this.tails.get(queueKey) ?? Promise.resolve();

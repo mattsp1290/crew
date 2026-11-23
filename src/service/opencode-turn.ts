@@ -1,3 +1,4 @@
+import type { TextStateRoot } from "./text-state-location.ts";
 import { registerTextWriterGroup, completeTextWriterInventory } from "./text-runtime-inventory.ts";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -119,7 +120,7 @@ function spawnProcess(request: OpenCodeSpawnRequest, signal: AbortSignal, home: 
 }
 
 /** One OpenCode ACP turn. The spawn environment is the profile map, and the argv is `[executable, "acp"]`. */
-export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: string): Promise<DriverResult> {
+export async function runOpenCodeTurn(input: DriverInput, member: Conversation, profile: OpenCodeProfile, stateDir: TextStateRoot): Promise<DriverResult> {
   if (!promptAllowed(input.text)) throw textTurnFailed();
   const root = textTurnRoot(input, member, "opencode", stateDir);
   const home = join(root, "home");

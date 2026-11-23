@@ -5,13 +5,14 @@ import { z } from "zod";
 import type { TextAdmissionFailureType } from "./failure-type.ts";
 
 import { engineSchema, childEngineSchema, boundedText, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds,
-  createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema, memberSubmitEnvelopeSchema as publicMemberSubmitEnvelopeSchema,
+  requestTextCeilingBytes, createMemberSchema, conversationIdentitySchema, openConversationSchema, requestIdentitySchema, submitRequestSchema, memberSubmitEnvelopeSchema as publicMemberSubmitEnvelopeSchema,
   requestInitiator, type RequestInitiator } from "@birbcrew/client/contract";
 export { engineSchema, childEngineSchema, ownerText, instructionsBytes, instructionPacksPerMember, promptBytes, approvalDeadline, approvalDeadlineSeconds, requestInitiator, type RequestInitiator };
 export type Engine = z.infer<typeof engineSchema>;
 export type ChildEngine = z.infer<typeof childEngineSchema>;
-/** The one-turn text members. Adding an engine here classifies it everywhere: the text protocol
- * (isTextEngine), every capability gate (engineTraits), and the turn limit a conversation opens with. */
+/** The one-turn text members. Adding an engine here classifies it in the text protocol
+ * (isTextEngine), every capability gate (engineTraits), and the turn limit a conversation opens with.
+ * Adding an engine also requires migrations for the profile and content-fence SQL constraints. */
 export const textEngines = ["cursor", "opencode"] as const;
 export type TextEngine = (typeof textEngines)[number];
 export function isTextEngine(engine: Engine): engine is TextEngine {
@@ -59,7 +60,7 @@ export const turnKey = requestIdentitySchema.extend({ ownerId });
 export const memberSubmitEnvelopeSchema = publicMemberSubmitEnvelopeSchema.extend({ ownerId });
 export const submitSchema = submitRequestSchema.extend({ ownerId });
 /** Text profiles and reserved native handoffs may exceed promptBytes. Admission checks the reservation. */
-export const turnTextBytes = 65_536;
+export const turnTextBytes = requestTextCeilingBytes;
 export const turnRequestSchema = submitSchema.extend({ text: boundedText(turnTextBytes) });
 export const executionSchema = z.strictObject({
   workflowRunId: boundedText(256),

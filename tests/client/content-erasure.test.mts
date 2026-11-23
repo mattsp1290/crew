@@ -239,3 +239,13 @@ test("close rejects a successful status paired with the wrong closure acknowledg
     await assert.rejects(client.closeConversation({ conversationId }), error => error instanceof CrewUnknownOutcomeError && error.command.kind === "conversation_close");
   }
 });
+
+ test("open cannot acknowledge an erased read snapshot as a new conversation", async () => {
+  const conversationId = randomUUID(), memberId = randomUUID();
+  const client = new CrewClient({ baseUrl: "http://127.0.0.1:34567", token: "fixture", fetch: async () => new Response(JSON.stringify({
+    apiVersion: "1", conversationId, erased: true, cursor: 0,
+    state: { conversationId, memberId, engine: "cursor", profile: "fixture", phase: "complete", erased: true },
+    messages: [], openText: null, openTools: {}, childText: {},
+  }), { status: 201, headers: { "Content-Type": "application/json" } }) });
+  await assert.rejects(client.openConversation({conversationId, memberId}), error => error instanceof CrewUnknownOutcomeError);
+});

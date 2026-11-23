@@ -1,5 +1,6 @@
 import { contentErasureActivities, textLocationCleanupActivity } from "./content-erasure-activities.ts";
-import { textStateLocation, textCleanupQueue } from "./text-state-location.ts";
+import { textStateLocation } from "./text-state-location.ts";
+import { textCleanupQueue } from "./queues.ts";
 import { startContentErasureReconciliation } from "./content-erasure-reconciliation.ts";
 import { Pool } from "pg";
 import { progressActivity } from "./progress-activity.ts";
@@ -13,11 +14,11 @@ import { startDelegationReconciliation } from "./delegation-reconciliation.ts";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { ChildStore } from "./children.ts";
 import { startSupervisor } from "./supervisor.ts";
-import { engineSchema } from "./domain.ts";
+import { engineSchema, textEngines } from "./domain.ts";
 import type { MemberProfile } from "./profiles.ts";
 import { expiryActivity, memberActivities } from "./activities.ts";
 import { memberTaskQueue, activityQueue } from "./queues.ts";
-import { ownerAdmissionActivity, type MemberStore } from "./store.ts";
+import { ownerAdmissionActivity, MemberStore } from "./store.ts";
 import { temporalConnectionOptions, type TemporalSettings } from "./temporal-config.ts";
 
 async function touch(path: string) {
@@ -26,9 +27,9 @@ async function touch(path: string) {
 }
 
 /** The activities the member task queue serves beside the conversation workflows. */
-export function memberQueueActivities(store: MemberStore) {
+export function memberQueueActivities(store: MemberStore, erasureStore: MemberStore = store) {
   const children = new ChildStore(store.pool);
-  return { ...contentErasureActivities(store), rejectUnstartedAdmission:store.rejectUnstartedAdmission.bind(store), recordAcceptance:ownerAdmissionActivity(store), rejectAccepted:store.rejectAccepted.bind(store), conversationProgress:progressActivity(store), cancelGenerating:store.cancelGenerating.bind(store), decideLive:decideLiveActivity.bind(null,store.pool), cancelLive:cancelLive.bind(null,store.pool),
+  return { ...contentErasureActivities(erasureStore), rejectUnstartedAdmission:store.rejectUnstartedAdmission.bind(store), recordAcceptance:ownerAdmissionActivity(store), rejectAccepted:store.rejectAccepted.bind(store), conversationProgress:progressActivity(store), cancelGenerating:store.cancelGenerating.bind(store), decideLive:decideLiveActivity.bind(null,store.pool), cancelLive:cancelLive.bind(null,store.pool),
     reconcileTurn: store.reconcileTurn.bind(store), reconcileChild:children.reconcile.bind(children),
     closeExitedChild: children.closeExitedChild.bind(children), quarantineDelegation: children.quarantineDelegation.bind(children),
     expireApproval: expiryActivity(store) };
@@ -42,6 +43,9 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
   stateDir=await realpath(stateDir);
   const { namespace } = temporal;
   const erasurePool = new Pool({ ...store.pool.options, password: store.pool.options.password, max: 2, connectionTimeoutMillis: 2000, statement_timeout: 5000, query_timeout: 7000 });
+  // The reconciler reports active pool failures. Keep shutdown errors handled too.
+  erasurePool.on("error", () => {});
+  const erasureStore = new MemberStore(erasurePool);
   const workers: Worker[] = [];
   const running: Promise<void>[] = [];
   let connection: NativeConnection | undefined;
@@ -62,14 +66,14 @@ export async function runMemberWorker({ store, temporal, profiles, configPath, s
     const control = new DelegationReconciler({ pool: controlPool, workflows: new TemporalDelegationWorkflows(
       new Client({ connection: clientConnection, namespace })) });
     serve(await Worker.create({
-      connection, namespace, taskQueue: memberTaskQueue, activities: memberQueueActivities(store),
+      connection, namespace, taskQueue: memberTaskQueue, activities: memberQueueActivities(store, erasureStore),
       workflowsPath: fileURLToPath(new URL("./workflow.ts", import.meta.url)),
     }));
-    for (const engine of ["cursor", "opencode"] as const) {
+    for (const engine of textEngines) {
       if (![...profiles.values()].some(entry=>entry[engine])) continue;
       const { locationId } = await textStateLocation(stateDir,engine);
       serve(await Worker.create({ connection, namespace, taskQueue:textCleanupQueue(locationId),
-        activities:{cleanTextLocation:textLocationCleanupActivity(store,stateDir,locationId,engine)} }));
+        activities:{cleanTextLocation:textLocationCleanupActivity(erasureStore,stateDir,locationId,engine)} }));
     }
     supervisor = await startSupervisor(configPath, stateDir);
     for (const [profile, engines] of profiles) {

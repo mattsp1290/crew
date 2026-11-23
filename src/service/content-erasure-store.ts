@@ -8,7 +8,7 @@ import {
   MemberStoreError,
   type Conversation,
 } from "./domain.ts";
-import { requestStatusFromRow } from "./request-status.ts";
+import { isTerminalRequestStatus, requestStatusFromRow } from "./request-status.ts";
 import type { MemberStore } from "./store.ts";
 
 type Key = Pick<Conversation, "ownerId" | "conversationId">;
@@ -19,7 +19,9 @@ export type ClosureEvidence = {
   namespace: string;
   generation: string;
 };
-async function erasureTransaction<T>(
+export type SealedClosureEvidence = ClosureEvidence & { observedAt: string; drainId?: string };
+
+export async function erasureTransaction<T>(
   store: MemberStore,
   action: (db: PoolClient) => Promise<T>,
 ) {
@@ -81,7 +83,7 @@ export async function contentErasureState(
       text_lifecycle: "startable" | "sealed_closed";
       text_start_generation: string;
       text_workflow_namespace: string | null;
-      text_closure: ClosureEvidence | null;
+      text_closure: SealedClosureEvidence | null;
     }
   >(
     `SELECT c.owner_id AS "ownerId",c.conversation_id AS "conversationId",c.member_id AS "memberId",m.engine,m.profile,
@@ -108,6 +110,13 @@ export async function contentTombstone(db: Pool | PoolClient, key: Key) {
   });
 }
 
+/** One receipt policy for legacy and versioned adapters. */
+export function receiptContentState(row: { content_erasure_id: string | null; erased_at: Date | null }) {
+  if (!row.content_erasure_id) return "retained";
+  if (!row.erased_at) throw new MemberStoreError("content_erasure_pending");
+  return "erased";
+}
+
 /** The same predicate drives natural completion, safe close and fence/finalization checks. */
 export async function terminalTextRequests(db: Pool | PoolClient, key: Key) {
   const row = await contentErasureState(db, key);
@@ -124,17 +133,13 @@ export async function terminalTextRequests(db: Pool | PoolClient, key: Key) {
     WHERE COALESCE(a.conversation_id,t.conversation_id)=$1`,
     [key.conversationId],
   );
-  if (
-    !rows.length ||
-    rows.some(
-      (r) =>
-        r.phase === "started" ||
-        r.phase === "uncertain" ||
-        !["completed", "failed", "cancelled"].includes(requestStatusFromRow(r)),
-    )
-  )
-    throw new MemberStoreError("content_requests_unresolved");
-  return rows;
+  if (!rows.length) throw new MemberStoreError("content_requests_unresolved");
+  return rows.map(row => {
+    const status = requestStatusFromRow(row);
+    if (row.phase === "started" || row.phase === "uncertain" || !isTerminalRequestStatus(status))
+      throw new MemberStoreError("content_requests_unresolved");
+    return status;
+  });
 }
 export async function textStopProofs(db: Pool | PoolClient, key: Key) {
   const {
@@ -173,7 +178,7 @@ export async function recordNoLaunchProof(
     [key.conversationId, key.requestId],
   );
 }
-async function resolvedStarts(db: Pool | PoolClient, key: Key) {
+export async function resolvedStarts(db: Pool | PoolClient, key: Key) {
   if (
     (
       await db.query(
@@ -213,7 +218,7 @@ export async function bindTextWorkflowNamespace(
       "UPDATE birbcrew_ts.conversations SET text_workflow_namespace=$2 WHERE conversation_id=$1",
       [key.conversationId, namespace],
     );
-  return row;
+  return { ...row, text_workflow_namespace: namespace };
 }
 export async function reserveTextWorkflowStart(
   store: MemberStore,
@@ -224,7 +229,9 @@ export async function reserveTextWorkflowStart(
   return erasureTransaction(store, async (db) => {
     await assertContentWritable(db, key);
     const row = await bindTextWorkflowNamespace(db, key, namespace);
-    if (row.text_lifecycle === "sealed_closed") return null;
+    if (row.text_lifecycle === "sealed_closed" || (await db.query(
+      "SELECT 1 FROM birbcrew_ts.conversation_workflow_starts WHERE conversation_id=$1 AND state IN ('acknowledged','absent_after_trusted_drain') LIMIT 1", [key.conversationId],
+    )).rowCount) return null;
     const attemptId = randomUUID();
     const {
       rows: [generation],
@@ -258,33 +265,27 @@ export async function settleTextWorkflowStart(
     );
   });
 }
-export async function sealTextClosure(
-  store: MemberStore,
-  key: Key,
-  evidence: ClosureEvidence,
-) {
-  if (!terminalWorkflowStatuses.includes(evidence.status))
-    throw new MemberStoreError("conversation_open");
-  return erasureTransaction(store, async (db) => {
-    const row = await bindTextWorkflowNamespace(db, key, evidence.namespace);
-    if (row.text_lifecycle === "sealed_closed") return row.text_closure!;
-    if (row.text_start_generation !== evidence.generation)
-      throw new MemberStoreError("content_start_unresolved");
-    await resolvedStarts(db, key);
-    await terminalTextRequests(db, key);
-    const {
-      rows: [sealed],
-    } = await db.query<{ text_closure: ClosureEvidence }>(
-      "UPDATE birbcrew_ts.conversations SET text_lifecycle='sealed_closed',text_closure=$2 WHERE conversation_id=$1 AND text_start_generation=$3 AND text_lifecycle='startable' RETURNING text_closure",
-      [
-        key.conversationId,
-        JSON.stringify({ ...evidence, observedAt: new Date().toISOString() }),
-        evidence.generation,
-      ],
-    );
-    if (!sealed) throw new MemberStoreError("content_start_unresolved");
-    return sealed.text_closure;
-  });
+export async function sealTextClosure(store: MemberStore, key: Key, evidence: ClosureEvidence) {
+  return erasureTransaction(store, async db => sealClosureLocked(db,
+    await bindTextWorkflowNamespace(db, key, evidence.namespace), evidence));
+}
+/** The caller holds the conversation lock and supplies its current generation. */
+export async function sealClosureLocked(
+  db: PoolClient, row: Awaited<ReturnType<typeof contentErasureState>>,
+  evidence: ClosureEvidence & { drainId?: string },
+): Promise<SealedClosureEvidence> {
+  if (!terminalWorkflowStatuses.includes(evidence.status)) throw new MemberStoreError("conversation_open");
+  if (row.text_workflow_namespace !== evidence.namespace) throw new MemberStoreError("content_namespace_mismatch");
+  if (row.text_lifecycle === "sealed_closed") return row.text_closure!;
+  if (row.text_start_generation !== evidence.generation) throw new MemberStoreError("content_start_unresolved");
+  await resolvedStarts(db, row);
+  await terminalTextRequests(db, row);
+  const { rows: [sealed] } = await db.query<{ text_closure: SealedClosureEvidence }>(
+    "UPDATE birbcrew_ts.conversations SET text_lifecycle='sealed_closed',text_closure=$2 WHERE conversation_id=$1 AND text_start_generation=$3 AND text_lifecycle='startable' RETURNING text_closure",
+    [row.conversationId, JSON.stringify({ ...evidence, observedAt: new Date().toISOString() }), evidence.generation],
+  );
+  if (!sealed) throw new MemberStoreError("content_start_unresolved");
+  return sealed.text_closure;
 }
 export async function beginContentErasure(store: MemberStore, key: Key) {
   return erasureTransaction(store, async (db) => {
@@ -315,9 +316,9 @@ export async function beginContentErasure(store: MemberStore, key: Key) {
     const phase =
       snapshot && ["complete", "failed", "cancelled"].includes(snapshot.phase)
         ? snapshot.phase
-        : receipts.some((r) => requestStatusFromRow(r) === "cancelled")
+        : receipts.includes("cancelled")
           ? "cancelled"
-          : receipts.some((r) => requestStatusFromRow(r) === "failed")
+          : receipts.includes("failed")
             ? "failed"
             : "complete";
     const erasureId = randomUUID();

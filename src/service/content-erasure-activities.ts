@@ -3,12 +3,13 @@ import { ApplicationFailure } from "@temporalio/activity";
 import { conversationKey, isTextEngine, MemberStoreError } from "./domain.ts";
 import {
   contentErasureState,
+  erasureTransaction,
   finishContentErasure,
   terminalTextRequests,
   textStopProofs,
 } from "./content-erasure-store.ts";
 import {
-  assertTextVolumeRoot,
+  pinTextCleanupRoot,
   rootAbsent,
   pinTextStateLocation,
 } from "./text-state-location.ts";
@@ -32,10 +33,7 @@ export function contentErasureActivities(store: MemberStore) {
     async canCloseTextConversation(input: unknown) {
       const key = conversationKey.parse(input);
       try {
-        await store.transaction(async (db) => {
-          await db.query(
-            "SET LOCAL lock_timeout='2000ms'; SET LOCAL statement_timeout='2000ms'",
-          );
+        await erasureTransaction(store, async (db) => {
           await contentErasureState(db, key, true);
           await terminalTextRequests(db, key);
           await textStopProofs(db, key);
@@ -103,21 +101,20 @@ export function textLocationCleanupActivity(
         if (!assignment) throw new Error("Invalid cleanup assignment");
         if (assignment.cleaned_at || row.erased_at) return;
         await textStopProofs(store.pool, key);
-        const root = await assertTextVolumeRoot(marker.directory, row, engine);
+        const pinned = await pinTextCleanupRoot(marker.directory, row, engine);
         try {
-          await removePrivateDurably(root);
-          if (!(await rootAbsent(root))) throw new Error();
-        } catch {
-          throw new Error("content_cleanup_failed");
-        }
-        await store.transaction(async (db) => {
-          await contentErasureState(db, key, true);
-          await textStopProofs(db, key);
-          await db.query(
-            "UPDATE birbcrew_ts.conversation_content_cleanup SET cleaned_at=clock_timestamp() WHERE conversation_id=$1 AND erasure_id=$2 AND location_id=$3 AND cleaned_at IS NULL",
-            [key.conversationId, key.erasureId, locationId],
-          );
-        });
+          await removePrivateDurably(pinned.root);
+          if (!(await rootAbsent(pinned.root)) || !(await rootAbsent(pinned.original))) throw new Error("content_cleanup_failed");
+          await erasureTransaction(store, async (db) => {
+            await contentErasureState(db, key, true);
+            await textStopProofs(db, key);
+            await pinned.verify();
+            await db.query(
+              "UPDATE birbcrew_ts.conversation_content_cleanup SET cleaned_at=clock_timestamp() WHERE conversation_id=$1 AND erasure_id=$2 AND location_id=$3 AND cleaned_at IS NULL",
+              [key.conversationId, key.erasureId, locationId],
+            );
+          });
+        } finally { await pinned.close(); }
       } finally { await marker.close(); }
     } catch {
       throw new Error("content_cleanup_failed");

@@ -1,3 +1,4 @@
+import { conversationWorkflowId } from "./queues.ts";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -10,6 +11,7 @@ import {
   contentErasureState,
   bindTextWorkflowNamespace,
   recordNoLaunchProof,
+  sealClosureLocked,
   terminalWorkflowStatuses,
   terminalTextRequests,
 } from "./content-erasure-store.ts";
@@ -86,7 +88,7 @@ export async function enrollErasureInventory(
     const row = await contentErasureState(store.pool, key);
     if (!isTextEngine(row.engine))
       throw new MemberStoreError("content_erasure_unsupported");
-    const workflowId = `birbcrew-ts/member/${row.memberId}/conversation/${row.conversationId}`;
+    const workflowId = conversationWorkflowId(row.memberId, row.conversationId);
     try {
       const execution = await temporal.connection.withDeadline(
         Date.now() + 5_000,
@@ -185,7 +187,7 @@ export async function enrollErasureInventory(
       const observed = observations.get(key.conversationId);
       const workflowId =
         observed?.workflowId ??
-        `birbcrew-ts/member/${row.memberId}/conversation/${key.conversationId}`;
+        conversationWorkflowId(row.memberId, key.conversationId);
       // After a trusted drain, a negative observation resolves only the send, never closure.
       const starts = await db.query(
         "SELECT 1 FROM birbcrew_ts.conversation_workflow_starts WHERE conversation_id=$1",
@@ -227,18 +229,11 @@ export async function enrollErasureInventory(
         terminalWorkflowStatuses.includes(observed.status) &&
         row.text_lifecycle !== "sealed_closed"
       ) {
-        await db.query(
-          `UPDATE birbcrew_ts.conversations SET text_lifecycle='sealed_closed',text_closure=jsonb_build_object(
-          'workflowId',$2::text,'runId',$3::text,'status',$4::text,'namespace',$5::text,'generation',text_start_generation::text,'drainId',$6::text,'observedAt',clock_timestamp()) WHERE conversation_id=$1`,
-          [
-            key.conversationId,
-            workflowId,
-            observed.runId,
-            observed.status,
-            temporal.options.namespace,
-            drainId,
-          ],
-        );
+        const current = await contentErasureState(db, key);
+        await sealClosureLocked(db, current, {
+          workflowId, runId: observed.runId, status: observed.status,
+          namespace: temporal.options.namespace, generation: current.text_start_generation, drainId,
+        });
       }
     }
   });

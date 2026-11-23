@@ -28,7 +28,7 @@ pool.on("connect", (client) => {
   };
 });
 try {
-  await new ConversationContentOutput(pool).enqueue(
+  await new ConversationContentOutput(pool, () => pool).enqueue(
     JSON.parse(encodedKey),
     () => {
       writeSync(1, "ENQUEUED\n");

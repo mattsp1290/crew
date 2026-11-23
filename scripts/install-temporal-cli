@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "$(uname -s)" != Linux ]; then
+  echo 'Temporal CLI installer supports Linux only' >&2
+  exit 1
+fi
 
 temporal_version=1.10.0
 artifact_dir=${1:-.proof/bin}

@@ -253,6 +253,9 @@ would end it.
 
 ## Retention, upgrade and recovery
 
+Eligible Cursor/OpenCode conversations support [owner content erasure](integration-api-v1.md#erase-text-conversation-content).
+The completed erasure leaves one content-free owner audit fact and preserves receipt identities and digest fences.
+
 Rows are retained with the database. There is no TTL and no deletion API.
 Trusted-context erasure removes content but leaves audit rows, which hold none.
 Migration 21 does not backfill history: members, admissions and decisions made

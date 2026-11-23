@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   link,
   lstat,
+  stat,
   mkdir,
   readFile,
   realpath,
@@ -11,7 +12,7 @@ import {
   access,
   open,
 } from "node:fs/promises";
-import { isAbsolute, join, sep } from "node:path";
+import { dirname, relative, isAbsolute, join, sep } from "node:path";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import {
@@ -29,16 +30,9 @@ export function textTurnRootPath(
   member: Conversation,
   engine: TextEngine,
 ) {
-  conversationKey.parse({
-    ownerId: member.ownerId,
-    conversationId: member.conversationId,
-  });
-  z.uuid().parse(member.memberId);
-  if (!isAbsolute(stateDir) || member.engine !== engine)
-    throw new MemberStoreError("conflict");
   return textVolumeRootPath(join(stateDir, engine), member, engine);
 }
-function textVolumeRootPath(directory: string, member: Conversation, engine: TextEngine) {
+export function textVolumeRootPath(directory: string, member: Conversation, engine: TextEngine) {
   conversationKey.parse({ ownerId: member.ownerId, conversationId: member.conversationId });
   z.uuid().parse(member.memberId);
   if (!isAbsolute(directory) || member.engine !== engine) throw new MemberStoreError("conflict");
@@ -58,6 +52,9 @@ export async function pinTextStateLocation(stateDir: string, engine: TextEngine)
     return { ...await readVolumeMarker(directory, engine), directory, close: () => handle.close() };
   } catch(error) { await handle.close(); throw error; }
 }
+
+export type TextVolumeLocation = Omit<Awaited<ReturnType<typeof pinTextStateLocation>>, "close">;
+export type TextStateRoot = string | Pick<TextVolumeLocation, "directory" | "engine">;
 
 export async function textStateLocation(stateDir: string, engine: TextEngine) {
   if (!isAbsolute(stateDir))
@@ -90,7 +87,6 @@ export async function textStateLocation(stateDir: string, engine: TextEngine) {
   // A concurrent initializer also syncs the winner's published entry.
   return readVolumeMarker(directory, engine);
 }
-export { textCleanupQueue } from "./queues.ts";
 export async function registerTextLaunch(
   db: PoolClient,
   member: Conversation,
@@ -118,13 +114,6 @@ export async function registerTextLaunch(
   );
 }
 /** Check every existing parent without following symlinks into an unrelated volume. */
-export async function assertTextRoot(
-  stateDir: string,
-  member: Conversation,
-  engine: TextEngine,
-) {
-  return assertTextVolumeRoot(join(stateDir, engine), member, engine);
-}
 export async function assertTextVolumeRoot(volume: string, member: Conversation, engine: TextEngine) {
   const root = textVolumeRootPath(volume, member, engine);
   const canonicalVolume = await realpath(volume);
@@ -153,6 +142,29 @@ export async function assertTextVolumeRoot(volume: string, member: Conversation,
     }
   }
   return root;
+}
+/** Pin before validation, then refuse a changed namespace binding before acknowledgement. */
+export async function pinTextCleanupRoot(volume: string, member: Conversation, engine: TextEngine) {
+  const original = textVolumeRootPath(volume, member, engine);
+  let parent = dirname(original);
+  let handle;
+  for (;;) {
+    try { handle = await open(parent, constants.O_RDONLY | constants.O_DIRECTORY | (parent === volume ? 0 : constants.O_NOFOLLOW)); break; }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT") || parent === volume) throw error;
+      parent = dirname(parent);
+    }
+  }
+  try {
+    const identity = await handle.stat({bigint:true});
+    const verify = async () => {
+      const current = await (parent === volume ? stat(parent, {bigint:true}) : lstat(parent, {bigint:true}));
+      if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino) throw new MemberStoreError("content_location_unknown");
+    };
+    await assertTextVolumeRoot(volume, member, engine);
+    await verify();
+    return {root: join(`/proc/${process.pid}/fd/${handle.fd}`, relative(parent, original)), original, verify, close: () => handle.close()};
+  } catch (error) { await handle.close(); throw error; }
 }
 export async function rootAbsent(root: string) {
   try {

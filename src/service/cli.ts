@@ -16,8 +16,9 @@ import { temporalConnectionOptions, temporalSettings } from "./temporal-config.t
 
 async function main() {
   const [operation, configPath] = process.argv.slice(2);
-  if (!["spawn", "open", "turn", "pending", "decide", "cancel-pending", "worker", "erasure-inventory"].includes(operation)) {
-    throw new Error("Use spawn, open, turn, pending, decide, cancel-pending, or worker <trusted-profile-module>");
+  const operations = ["spawn", "open", "turn", "pending", "decide", "cancel-pending", "worker", "erasure-inventory"];
+  if (!operations.includes(operation)) {
+    throw new Error("Use " + operations.join(", ") + ". Worker takes a trusted profile module. Erasure inventory requires --manifest, --quiesce-module, and --confirm-complete.");
   }
   const url = process.env.BIRBCREW_DATABASE_URL;
   if (!url) throw new Error("Set BIRBCREW_DATABASE_URL to the private TypeScript application database");

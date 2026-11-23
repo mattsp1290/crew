@@ -14,6 +14,11 @@ export function startContentErasureReconciliation(
   let stopped = false,
     running: Promise<void> | undefined,
     healthy = true;
+  const poolError = () => {
+    healthy = false;
+    warn("content_erasure_reconciliation_failed", { code: "pool_error" });
+  };
+  pool.on("error", poolError);
   let pendingAfter: string | null = null;
   async function scan() {
     const { rows } = await store.transaction(async (db) => {
@@ -106,7 +111,7 @@ export function startContentErasureReconciliation(
     async stop() {
       stopped = true;
       clearInterval(timer);
-      await running;
+      try { await running; } finally { pool.off("error", poolError); }
     },
   };
 }

@@ -632,7 +632,7 @@ commit and each command result. Live application/proxy-provider acceptance is se
 and requires existing authorized access and any required spend approval. Do not print
 real credentials, publish test tokens, or claim production identity-provider coverage.
 
-### Erase text conversation content
+## Erase text conversation content
 
 After durably storing a reply, an owner can call `DELETE /v1/conversations/{conversationId}/content` with no body or query parameters. `CrewClient.eraseConversationContent({conversationId})` exposes the same command. Only `cursor` and `opencode` conversations qualify. Native and trusted conversations return `409 content_erasure_unsupported`.
 

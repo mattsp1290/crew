@@ -8,7 +8,12 @@ import {
   jsonValueSchema,
   instructionsSummarySchema,
   memberSchema,
-  conversationStateSchema,
+  retainedConversationStateSchema,
+  retainedSnapshotWireSchema,
+  conversationClosedSchema,
+  conversationCloseRequestedSchema,
+  contentErasureCapabilitySchema,
+  contentErasureCapabilityV1Schema,
   createHandoffSchema,
   handoffRecordSchema,
   handoffsCapabilitySchema,
@@ -32,7 +37,12 @@ for (const [id, value] of Object.entries({
   Error: errorSchema,
   InstructionsSummary: instructionsSummarySchema,
   Member: memberSchema,
-  ConversationState: conversationStateSchema,
+  ConversationState: retainedConversationStateSchema,
+  RetainedConversationSnapshot: retainedSnapshotWireSchema,
+  ConversationClosed: conversationClosedSchema,
+  ConversationCloseRequested: conversationCloseRequestedSchema,
+  ContentErasureCapability: contentErasureCapabilitySchema,
+  ContentErasureCapabilityV1: contentErasureCapabilityV1Schema,
   Capabilities: routes.capabilities.response,
   Health: routes.health.response,
   MemberPage: routes.listMembers.response,
@@ -85,9 +95,9 @@ const errorResponses = {
     content: content(errorSchema),
   },
 };
-const errors = (command) =>
+const errors = (command, gone) =>
   Object.fromEntries(
-    [400, 401, 404, 405, 409, 410, 413, 500, 503].map((status) => [
+    [400, 401, 404, 405, 409, ...(gone ? [410] : []), 413, 500, 503].map((status) => [
       status,
       {
         $ref: `#/components/responses/${status < 500 ? "Error" : command ? "CommandUnavailable" : "Unavailable"}`,
@@ -107,14 +117,14 @@ for (const [operationId, route] of Object.entries(routes)) {
     operationId,
     parameters: parameters(route.path),
     responses: {
-      ...errors(route.command),
+      ...errors(route.command, route.goneErrors),
       ...Object.fromEntries(
         route.statuses.map((status) => [
           status,
           {
             description:
               status < 400 ? "Success" : "Dependency readiness report",
-            content: content(route.response),
+            content: content(route.responses?.[status] ?? route.response),
           },
         ]),
       ),
