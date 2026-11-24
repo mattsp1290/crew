@@ -24,7 +24,7 @@ test('candidate launcher documents incomplete qualification and rejects unknown 
   const invalid = run(['--credential', 'synthetic-secret-never-log']);
   assert.equal(invalid.status, 1);
   assert.equal(invalid.stdout, '');
-  assert.equal(invalid.stderr, 'candidate_audit_failed\n');
+  assert.equal(invalid.stderr, 'invalid_arguments\n');
 });
 
 test('candidate bytes must match the reviewed artifact before Docker or output writes', async () => {
@@ -116,6 +116,7 @@ for (const mode of ['empty', 'supported']) {
     const { directory, done } = await dockerFixture(t, mode);
     const result = await done;
     assert.equal(result.status, 1);
+    assert.equal(result.stderr, 'contract_mismatch\n');
     assert.doesNotMatch(result.stdout, /checks passed/);
     await assert.rejects(readFile(join(directory, 'evidence/evidence.json')), { code: 'ENOENT' });
     assert.equal(JSON.parse(await readFile(join(directory, 'evidence/cleanup.json'), 'utf8')).complete, true);
@@ -129,13 +130,14 @@ test('cleanup failures prevent success and remain recorded', { timeout: 10_000 }
   assert.equal(result.stderr, 'cleanup_failed\n');
   assert.doesNotMatch(result.stdout, /checks passed/);
   assert.deepEqual(JSON.parse(await readFile(join(directory, 'evidence/cleanup.json'), 'utf8')),
-    { complete: false, failedOperations: [2] });
+    { complete: false, failedOperations: ['image'] });
 });
 
 test('unexpected container credentials are rejected before startup and excluded from logs', { timeout: 10_000 }, async (t) => {
   const { directory, done } = await dockerFixture(t, 'proxy');
   const result = await done;
   assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'environment_mismatch\n');
   assert.doesNotMatch(result.stderr + result.stdout, /synthetic-secret/);
   await assert.rejects(readFile(join(directory, 'evidence/environment.stdout')), { code: 'ENOENT' });
   const commands = (await readFile(join(directory, 'commands.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);

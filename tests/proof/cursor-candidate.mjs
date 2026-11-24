@@ -35,11 +35,7 @@ await check('hardened-linux-process', async () => {
 });
 
 await check('minimal-container-environment', async () => {
-  const allowed = new Set(['PATH', 'PWD', 'HOSTNAME', 'NODE_VERSION', 'YARN_VERSION', 'HOME', 'TMPDIR', 'CURSOR_DATA_DIR', 'LANG', 'TZ']);
-  assert.deepEqual(Object.keys(process.env).filter((key) => !allowed.has(key)), []);
-  assert.equal(process.env.HOME, '/state/home');
-  assert.equal(process.env.TMPDIR, '/state/tmp');
-  assert.equal(process.env.CURSOR_DATA_DIR, '/state/home');
+  assert.deepEqual({ ...process.env }, contract.environment);
 });
 
 await check('user-namespace-denied', async () => {

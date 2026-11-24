@@ -2,6 +2,14 @@
   "schema": 1,
   "phase": "candidate-offline",
   "supported": false,
+  "environment": {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "HOME": "/state/home",
+    "TMPDIR": "/state/tmp",
+    "CURSOR_DATA_DIR": "/state/home",
+    "LANG": "C.UTF-8",
+    "TZ": "UTC"
+  },
   "checks": [
     "hardened-linux-process",
     "minimal-container-environment",

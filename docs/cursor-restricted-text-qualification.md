@@ -28,6 +28,8 @@ node scripts/qualify-cursor-restricted-text.mjs \
 Exit **2** means offline assertions passed and required live gates remain
 pending. Exit 1 means a check failed; inspect the saved phase logs. Help exits 0.
 There is no flag that promotes these results to deployment qualification.
+`environment_mismatch` and `contract_mismatch` identify rejected container
+configuration and rejected audit output without printing their values.
 
 The command builds a disposable candidate image with the separate locked
 dependency fixture. It does not update Crew's dependency files. The container
