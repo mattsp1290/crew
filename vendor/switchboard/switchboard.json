@@ -1,12 +1,12 @@
 {
-  "name": "@mattsp1290/switchboard",
+  "name": "@operatorworks/switchboard",
   "version": "0.0.0",
   "sourceRepository": "https://github.com/operatorworks/switchboard",
-  "sourceRevision": "1c0b20fdcd07e08b851011add04649aba6ac3c3d",
-  "sourceTree": "a1f8ba3ba524eca3197d0cbbc3eb5222d2d00de6",
-  "artifact": "switchboard-1c0b20fdcd07e08b851011add04649aba6ac3c3d.tgz",
-  "sha256": "a9a39226abea2a1d8911b0e7bd805f8c264017647fe44aaa6374e7c682d242e6",
-  "integrity": "sha512-aXnABhJ6WzClAsLlSNXK7o1khAUZXXZtqcpunHksYpT2tTAfCbmLkYkyrvtaQPkZ75qT5EC8LNUYxKcRHl6ivQ==",
+  "sourceRevision": "55e04a1d255ce4d5acf6302a900f57e0bb718b70",
+  "sourceTree": "4c7455e784f0258faefbbc67d9d6f94c28b9880a",
+  "artifact": "switchboard-55e04a1d255ce4d5acf6302a900f57e0bb718b70.tgz",
+  "sha256": "b473a6eaa3235d37107ce572efc9c9f7a7a0cfaa8958495fa3d01fee86222eee",
+  "integrity": "sha512-DdIYbpHkbMIEXWf1Qg43lzgu6GXYxtUphJCJqdr/fIfwVIKn0hC4zq4r7DK7dFCSMz4RCRXXTBp5dd47LcH8Kg==",
   "license": "MIT",
   "notices": [
     "LICENSE",
@@ -14,5 +14,5 @@
     "licenses/codex-APACHE-2.0.txt",
     "licenses/codex-NOTICE.txt"
   ],
-  "builtFrom": "Switchboard main"
+  "builtFrom": "Switchboard merged PR #84; retained Node 24.22.3 / npm 11.19.1 candidate archive"
 }

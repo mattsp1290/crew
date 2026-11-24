@@ -1,0 +1,173 @@
+{
+  "contract": "cursor-text-v1",
+  "architecture": "linux/arm64",
+  "otherArchitectures": {
+    "linux/amd64": "unqualified"
+  },
+  "node": "24.22.3",
+  "npm": "11.19.1",
+  "cursorSdk": "1.4.2",
+  "switchboard": {
+    "name": "@operatorworks/switchboard",
+    "version": "0.0.0",
+    "sourceRepository": "https://github.com/operatorworks/switchboard",
+    "sourceRevision": "55e04a1d255ce4d5acf6302a900f57e0bb718b70",
+    "sourceTree": "4c7455e784f0258faefbbc67d9d6f94c28b9880a",
+    "artifact": "switchboard-55e04a1d255ce4d5acf6302a900f57e0bb718b70.tgz",
+    "sha256": "b473a6eaa3235d37107ce572efc9c9f7a7a0cfaa8958495fa3d01fee86222eee",
+    "integrity": "sha512-DdIYbpHkbMIEXWf1Qg43lzgu6GXYxtUphJCJqdr/fIfwVIKn0hC4zq4r7DK7dFCSMz4RCRXXTBp5dd47LcH8Kg==",
+    "license": "MIT",
+    "notices": [
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "licenses/codex-APACHE-2.0.txt",
+      "licenses/codex-NOTICE.txt"
+    ],
+    "builtFrom": "Switchboard merged PR #84; retained Node 24.22.3 / npm 11.19.1 candidate archive"
+  },
+  "productionImage": "sha256:aafb71eb306f63a880eaf3027689f7109a4bd5c42ceaa9fccae30838c8f73df0",
+  "model": "grok-4.7",
+  "runtimeJourneyPassed": true,
+  "candidateBoundary": {
+    "createAndResumeOptions": "offline SDK seam assertions passed",
+    "realEmptyFs": "read/write denial and writable-tree positive controls passed",
+    "forcedRead": "backend header fault injection produced actual read error; no physical canary access in trace",
+    "forcedShell": "backend header fault injection produced actual shell error because local.fs is set; no shell effect",
+    "modelContext": "no seeded canaries in captured complete Run frames or output; context syscall summary retained",
+    "providerNetwork": {
+      "enabledPositiveBefore": 1,
+      "enabledPositiveAfter": 2,
+      "restrictedNegativeBefore": 0,
+      "restrictedNegativeAfter": 0,
+      "serviceNegativeBefore": 0,
+      "serviceNegativeAfter": 0,
+      "scope": "Controlled public observer counts every parsed path; decoded route variants and unmatched requests are included. No universal network or OS isolation claim.",
+      "unmatchedBefore": 0,
+      "unmatchedAfter": 0
+    }
+  },
+  "serviceChecks": [
+    "journey",
+    "accept",
+    "complete",
+    "accept",
+    "native-admitted",
+    "uncertain",
+    "erased"
+  ],
+  "runtimeHardening": {
+    "node": "24.22.3",
+    "arch": "arm64",
+    "uid": 10001,
+    "gid": 10001,
+    "readOnlyRoot": true,
+    "status": [
+      "CapEff:\t0000000000000000",
+      "CapBnd:\t0000000000000000",
+      "NoNewPrivs:\t1",
+      "Seccomp:\t2"
+    ],
+    "uname": "aarch64"
+  },
+  "namespace": {
+    "image": "sha256:aafb71eb306f63a880eaf3027689f7109a4bd5c42ceaa9fccae30838c8f73df0",
+    "command": [
+      "/usr/bin/unshare",
+      "-Ur",
+      "true"
+    ],
+    "exitCode": 1,
+    "stderr": "unshare: unshare failed: Operation not permitted"
+  },
+  "drain": {
+    "passed": true,
+    "conversations": 3,
+    "method": "stopped-private-pid-namespaces-and-temporal-fence"
+  },
+  "effects": {
+    "passed": true,
+    "outsideCanaryUnchanged": true,
+    "otherOwnerCanaryUnchanged": true,
+    "forbiddenWriteAbsent": true,
+    "mcpTrapAbsent": true
+  },
+  "cleanupComplete": true,
+  "writerInventory": "unknown; private environment remains for the dedicated runner lifetime, including late admission disposal; trusted drain required before erasure",
+  "sourceHashes": {
+    "scripts/qualify-cursor-service.py": "908bdec8a91e912937c96a3e8fcf5482e5b31af6e3373181690a98c8afe13d68",
+    "scripts/cursor-service-drain.mjs": "74275bebd95322cd446c26d6a6ef3165f0c7adbf34b974501f10a39ecb1e7716",
+    "tests/proof/cursor-restricted-text.mts": "fcc3bc1dff2c6a9a879b4fccd6a4b1b30f8a42d44386523cb1901c7e29857753"
+  },
+  "evidenceSha256": {
+    "traced-2.stdout": "fc334fe0d978f14290a733ae1df3491266fab6cf027b47d3fa899e41edecfafd",
+    "traced-2.stderr": "24f57f02620b082cf975c2165aa9bdc8531e8c4dc788d66f80df8abc215e5ddf",
+    "context-syscall-summary.json": "09c4d39c0ecdb3bcc40a1459b27bfd1e0d391a599ff2fda3e369b89f07d0167d",
+    "forced-read-negative.stdout": "4a5ae4a80252ed07e69eb5b6a61f0bd6b90b818c9c115a40422586ff6f9631dc",
+    "forced-read-negative.stderr": "891fe445b9980a331dd61878be6331ab80e3ca76d90882e7627b7bae8e2f1580",
+    "forced-shell-negative.stdout": "1c5faecc715d365ee0ca1e113f308d6d142dff046049a443ca6f36b1938367fe",
+    "forced-shell-negative.stderr": "aa6aaa11266689c23fbeba499b72820f7cfa4a23520c38b92dcbe0d22d32f6f9",
+    "remote-positive.stdout": "1baf2fb1a07b341981c8569376b0dd65e54e19bca4416b35e5fc9ffba1f62096",
+    "remote-positive.json": "17993832e46fad64e643aaba7d436b0431eb0db1c020ffc78e2763cd25c6f9a2",
+    "remote-negative.stdout": "8b1fe43587a8821d3c4944cbb98812b6a6d44d2958ff3e1c8ab66a4ca6fdbd92",
+    "remote-negative.json": "047d92ea882bc97b0d79935d1a9d9eb63878db51f291e7ffd3a05e7095bc34e0",
+    "service-live-8/evidence.json": "a05d2bf17b1e2f5f7f720251cd62e7904963d92ccec36014dc2e27d458dfaa83",
+    "service-live-8-canary-before.json": "01affc060b426a2c1556003d1bd71e8cba499ac9fbe8ad6bdf431865655879a0",
+    "service-live-8-canary-after.json": "01affc060b426a2c1556003d1bd71e8cba499ac9fbe8ad6bdf431865655879a0",
+    "offline-regressions.stdout": "b05236f21f9366b6e86c2b67603123e9f4d4a67152898959cdbc117ab48d2ac3",
+    "shared-regressions.stdout": "2a053f0d8864d443786f58fca247d2b40708f332325877c9af364a5d5363940e",
+    "remaining-regressions.stdout": "67df61ce7aff9c7dd3590fdc1ff1f36fd3ab4ac8064ea35e0c9983e84f2a0bef",
+    "probe-final.stdout": "97b655e8572941e70ae27025aef122dc24b74931473d19066bef59a660d986d1",
+    "erasure-proof.stdout": "12efb4c342e8e8aa435ea726fa1c658d9a338e7ee675d32102a992d1d9434801",
+    "review-remote-positive.stdout": "1baf2fb1a07b341981c8569376b0dd65e54e19bca4416b35e5fc9ffba1f62096",
+    "review-remote-positive.json": "cdd86e93b67953128ee7f4856f16b7f3a77d5ab4b529247eaf374e4d670084ee",
+    "review-remote-negative.stdout": "a75b91a06c7ac7dc93914046e5f36fc14ec80c7b15c4b70623dceb2eb847e75d",
+    "review-remote-negative.json": "b42930dfb4d10d2ee416ce8f7aaf55186cc232349ddcfc30b75a7052b8db3878",
+    "service-live-10/evidence.json": "6d8cc6dc6e8ad106bfb1988169741007244f59db850b1ac5cecf49dd4e959e07",
+    "service-live-10-canary-before.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "service-live-10-canary-after.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "fingerprint-compat.json": "39eca32124c1ab743d2d7826aeb17147ad44e84c542ad90c28c1fc4c99904f86",
+    "upstream-fingerprint-consumer.diff": "c9e26e3ebcca8cd7f71f3e8dabfb96b2e07e8a1973ce3ca4e1e69b8e0eb96ca1",
+    "correctness-regressions.stdout": "c569c79c92b28a72f9c176beb61bea3eca3bbf98d64cbcf636392bacb7b5448c",
+    "correctness-shared-final.stdout": "1d729fbc4dee34b91f02037c5d9dabb9a6a503efb85046451605a9b28d822943",
+    "service-live-11/evidence.json": "b93d72a973e84e841bf800beb8fd135b8917c6f67df5ebe8904938b8c4d53435",
+    "service-live-11-canary-before.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "service-live-11-canary-after.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "maintainability-regressions.stdout": "457761e6a17cdc20da1a7ffe0167e4888cf361111c5a0de136df14fdbc7ac389"
+  },
+  "evidenceLocation": "External private execution artifact directory; hashes identify the retained reports, not prompt/reply contents. Final review report names its local path.",
+  "limitations": [
+    "ARM64 only",
+    "opaque SDK retains process filesystem and network privileges",
+    "SDK writes a private sandbox.json even though the SDK sandbox is disabled",
+    "no exhaustive provider egress allowlist",
+    "provider retention, Temporal retention and database backups remain outside conversation erasure",
+    "canonical request crew-r-8ial remains open pending authorized merged delivery"
+  ],
+  "priorIncompleteDiagnostics": [
+    "Two direct network positive fixtures timed out and were excluded; fresh observer routes plus successful remote positive/negative pair qualify the network observation.",
+    "Early service launcher setup/readiness/receipt-contract/operator-address errors were corrected; all their fixtures were removed.",
+    "A Codex process-group fixture failed without an init reaper; it passed with the production-equivalent reaper.",
+    "Retained observability artifact keeps its original instrumentation scope; telemetry passed after reverting an incorrect test expectation.",
+    "Correctness review found and fixed a canary path blind spot, MCP marker mount mismatch, anonymous PostgreSQL volume cleanup, swallowed readiness interruption, proof-source race and missing physical erasure observation. Fresh network and production-image runs passed afterward.",
+    "The test-tools allowlist initially omitted the Claude confinement documentation sentinel; this was a fixture ENOENT, corrected before the final shared-engine gate."
+  ],
+  "physicalErasure": {
+    "seeded": 3,
+    "rootsAbsent": 3
+  },
+  "serviceSourceIdentityMatched": 159,
+  "mcpObserverPositiveControl": true,
+  "extractionRecord": "Unique per request; appears only after padding at the end of each 13,312/65,536-byte input.",
+  "proofPhaseInputs": "Exactly one identity for recovery/admission/uncertainty; three distinct conversations and request IDs for erasure.",
+  "finalDeterministicGates": {
+    "textPrivacyRecoveryErasureAndPhaseContracts": 112,
+    "sharedEngines": 24,
+    "integrationApi": 29,
+    "client": 51,
+    "telemetry": 38,
+    "affectedDriversAndColdCodexResume": 35,
+    "candidateLauncher": 9,
+    "pythonObserver": 1,
+    "pythonLauncher": 5
+  }
+}

@@ -1,16 +1,14 @@
 import type { TextStateRoot } from "./text-state-location.ts";
+import type { createCursorTextRuntime } from "@operatorworks/switchboard/cursor";
+import { join } from "node:path";
+import { warn } from "./diagnostics.ts";
 import { completeTextWriterInventory } from "./text-runtime-inventory.ts";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import { preparePrivate, removePrivate, sweepWhenSettled } from "./private-directory.ts";
 import { boundedBy, scrubTextEngineEnvironment, TextTurnFailed, textTurnFailed, textTurnResult, textTurnRoot } from "./text-turn.ts";
 
-export interface CursorRuntimeOptions {
-  readonly cwd: string;
-  readonly sessionDirectory: string;
-  readonly apiKey: string;
-  readonly model: string;
-}
+export type CursorRuntimeOptions = Parameters<typeof createCursorTextRuntime>[0];
 export type CursorRuntimeEvent =
   | { readonly kind: "text"; readonly text: string }
   | { readonly kind: "tool"; readonly callId: string; readonly name: string; readonly status: "running" | "completed" | "error" }
@@ -43,23 +41,26 @@ async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRunt
   process.env.HOME = options.sessionDirectory;
   process.env.TMPDIR = options.sessionDirectory;
   process.env.CURSOR_DATA_DIR = options.sessionDirectory;
-  const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
-  return createCursorRuntime(options);
+  try {
+    const { createCursorTextRuntime } = await import("@operatorworks/switchboard/cursor");
+    return createCursorTextRuntime(options);
+  } catch {
+    warn("cursor_policy_unsupported");
+    throw textTurnFailed();
+  }
 }
 
 function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  const tracked = work.then((handle) => {
-    if (signal.aborted) void handle.abort().catch(() => undefined);
-    return handle;
-  });
-  tracked.catch(() => undefined);
-  if (signal.aborted) return Promise.reject(textTurnFailed());
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(textTurnFailed());
-    signal.addEventListener("abort", onAbort, { once: true });
-    tracked.then((handle) => {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    work.then((handle) => {
       signal.removeEventListener("abort", onAbort);
-      if (signal.aborted) reject(textTurnFailed());
+      if (signal.aborted) {
+        void Promise.resolve().then(() => handle.abort()).catch(() => undefined);
+        reject(textTurnFailed());
+      }
       else resolve(handle);
     }, (error: unknown) => {
       signal.removeEventListener("abort", onAbort);
@@ -89,19 +90,14 @@ async function waitForClose(closing: Promise<void>, signal: AbortSignal) {
   return settled;
 }
 
-async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signal: AbortSignal, sessionDirectory: string, ownsSessionEnvironment: boolean) {
+async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signal: AbortSignal, sessionDirectory: string) {
   let closing: Promise<void> | undefined;
   try { closing = runtime?.close(); }
   catch { closing = undefined; }
   try {
-    // With no close in flight (including a defaultRuntime that published the session environment
-    // and then threw), nothing still reads the session environment.
+    // The opaque SDK may resolve an abandoned admission after close returns. Keep this
+    // dedicated runner's environment private until process exit, including late disposal.
     const settled = closing ? await waitForClose(closing, signal) : true;
-    if (settled && ownsSessionEnvironment) {
-      delete process.env.HOME;
-      delete process.env.TMPDIR;
-      delete process.env.CURSOR_DATA_DIR;
-    }
     // An abandoned close can still write under the session directory; sweep it again when it ends.
     if (!settled && closing) sweepWhenSettled(closing, sessionDirectory);
   } finally {
@@ -112,14 +108,13 @@ async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signa
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: TextStateRoot): Promise<DriverResult> {
   const sessionDirectory = textTurnRoot(input, member, "cursor", stateDir);
-  const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;
   let result: DriverResult | undefined;
   try {
-    await preparePrivate(sessionDirectory);
+    await preparePrivate(sessionDirectory, ["workspace"]);
     try {
       runtime = await (profile.runtime ?? defaultRuntime)({
-        cwd: profile.cwd, sessionDirectory, apiKey: profile.apiKey, model: profile.model,
+        cwd: join(sessionDirectory, "workspace"), sessionDirectory, apiKey: profile.apiKey, model: profile.model,
       });
     } catch {
       throw textTurnFailed();
@@ -127,6 +122,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     let latest = "";
     let outcome: string | undefined;
     let refusal = false;
+    if (input.signal.aborted) throw textTurnFailed();
     const started = runtime.start({
       text: input.text,
       onEvent(event) {
@@ -158,10 +154,11 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
       input.signal.removeEventListener("abort", onAbort);
     }
   } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "cursor_policy_unsupported") warn("cursor_policy_unsupported");
     if (error instanceof TextTurnFailed) throw error;
     throw textTurnFailed();
   } finally {
-    await settleCursorClose(runtime, input.signal, sessionDirectory, ownsSessionEnvironment);
+    await settleCursorClose(runtime, input.signal, sessionDirectory);
     if (!input.signal.aborted) completeTextWriterInventory(runtime?.writerGroups?.());
   }
   return textTurnResult(input.signal, result);

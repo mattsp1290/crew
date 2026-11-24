@@ -150,6 +150,41 @@ including SDK child processes. **Verified:** with PostgreSQL accepting only
 `hostssl` TCP connections, `sslmode=verify-full&sslrootcert=<CA path>` worked for
 the gateway, worker and CLI, and a plaintext connection was refused.
 
+## Cursor restricted-text workers
+
+Deploy the matched vendored Switchboard `55e04a1d255ce4d5acf6302a900f57e0bb718b70`
+and Cursor SDK 1.4.2 with Node 24.22.3. See
+[qualification status and commands](cursor-restricted-text-qualification.md)
+for the tested tuple and architecture limits. Keep UID/GID 10001, a read-only
+root, all capabilities dropped, `no-new-privileges`, private writable state and
+the writable `/tmp` described below. Mount no consumer documents or host user
+configuration. The SDK needs its credential and provider/DNS/CA connectivity;
+an exhaustive provider egress allowlist is unverified. No bwrap, user namespace
+support, extra capability or relaxed syscall policy is required.
+
+Each Cursor execution uses a private conversation workspace, HOME, TMPDIR,
+CURSOR_DATA_DIR and explicit SDK store. Profile `cwd` is metadata only. The fixed
+model-tool policy does not prevent SDK code from accessing other paths readable
+by UID 10001 or opening network connections. Keep unrelated content out of that
+process's accessible storage. Preserve the persistent engine-root marker when
+replacing a worker; registration fails closed on unsupported installed exports
+before creating profile rows or volume markers.
+
+Before upgrading this lane, stop old senders and pollers, settle or cancel known
+work under its original identity, and perform the complete trusted drain below
+across all old runners, late admissions, helpers and enrolled volumes. Poller
+shutdown alone is insufficient. Preserve uncertain receipts and unknown writer
+inventory; never replay them automatically under the new policy. Keep existing
+volume markers, fences and tombstones. No database reset is part of this change.
+
+Rollback first stops the lane and reconciles in-flight work under the same
+identities. A previous binary may serve only its previous declared contract
+after a reviewed drain. Prefer a forward fix, retain the schema-044 rollback
+floor, and never restore a pre-erasure backup as an ad hoc rollback. Real SDK
+completion and close still leave writer inventory unknown: erasure can return
+`content_runtime_unconfirmed` until the trusted drain/enrollment procedure below
+succeeds.
+
 ## Storage
 
 | Path | Mount | Requirements |

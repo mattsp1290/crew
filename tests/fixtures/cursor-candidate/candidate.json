@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/operatorworks/switchboard",
+  "revision": "55e04a1d255ce4d5acf6302a900f57e0bb718b70",
+  "tree": "4c7455e784f0258faefbbc67d9d6f94c28b9880a",
+  "sha256": "b473a6eaa3235d37107ce572efc9c9f7a7a0cfaa8958495fa3d01fee86222eee",
+  "contract": "cursor-text-v1",
+  "sdk": "1.4.2"
+}

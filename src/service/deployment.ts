@@ -13,6 +13,7 @@ import { childEngineSchema, engineSchema, textEngines, type Engine, spawnSchema 
 import { promptBytes, requestTextBytesSchema } from "@birbcrew/client/contract";
 import { cursorProfileSchema, opencodeProfileSchema } from "./text-profile-validation.ts";
 import { usesRelayCredential } from "./proxy-profiles.ts";
+import { assertCursorPolicySupport } from "./cursor-policy-support.ts";
 
 async function nativeVolume(directory: string) {
   if (!isAbsolute(directory)) throw new Error("Use an absolute private native state directory");
@@ -68,8 +69,19 @@ function assertTextProfile(name: string, entry: MemberProfile) {
   }
 }
 
+/** Unrelated runner reloads cannot introduce unprobed production Cursor registrations. */
+export function runnerRegistrationProfiles(config: ReadonlyMap<string, MemberProfile>, engine: Engine): ReadonlyMap<string, MemberProfile> {
+  if (engine === "cursor") return config;
+  return new Map([...config].map(([name, entry]): [string, MemberProfile] => {
+    if (!entry.cursor || entry.cursor.runtime !== undefined) return [name, entry];
+    const { cursor: _cursor, ...otherEngines } = entry;
+    return [name, otherEngines];
+  }));
+}
+
 export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string, textVolume?: TextVolumeLocation) {
   for (const [name, entry] of config) assertTextProfile(name, entry);
+  if ([...config.values()].some(entry => entry.cursor && entry.cursor.runtime === undefined)) await assertCursorPolicySupport(directory);
   const ceilings = new Map([...config].map(([name, entry]) => [name, profileCeiling(name, entry)]));
   const declarations = new Map<string, ProfileTargetSeal>();
   const roleMap = z.strictObject({ analyst: childTargetSchema.optional(), recorder: childTargetSchema.optional() });

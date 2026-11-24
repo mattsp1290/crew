@@ -52,9 +52,15 @@ test("Switchboard matches its pin, dependency, lock and installed package", asyn
   for (const notice of pin.notices) assert.ok((await readFile(new URL(notice, installed))).length > 0, notice);
   const { createEventStream } = await import(pin.name);
   assert.equal(typeof createEventStream, "function");
-  const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
+  const { createCursorRuntime, createCursorTextRuntime } = await import("@operatorworks/switchboard/cursor");
   assert.equal(typeof createCursorRuntime, "function");
-  const { opencodeHostAdapter, OPENCODE_HOST_ACP_VERSION } = await import("@mattsp1290/switchboard/host/opencode");
+  assert.equal(typeof createCursorTextRuntime, "function");
+  const sdk = JSON.parse(await readFile(new URL("node_modules/@cursor/sdk/package.json", root), "utf8"));
+  assert.equal(sdk.version, "1.4.2");
+  assert.equal(packages["node_modules/@cursor/sdk"].version, "1.4.2");
+  assert.equal(Object.hasOwn(dependencies, "@mattsp1290/switchboard"), false);
+  assert.equal(Object.hasOwn(packages, "node_modules/@mattsp1290/switchboard"), false);
+  const { opencodeHostAdapter, OPENCODE_HOST_ACP_VERSION } = await import("@operatorworks/switchboard/host/opencode");
   assert.deepEqual(opencodeHostAdapter.identity, { engine: "opencode", adapter: "opencode-host", version: "1", contractVersion: 1 });
   assert.equal(OPENCODE_HOST_ACP_VERSION, "1");
 });

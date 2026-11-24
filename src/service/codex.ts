@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { codexHostAdapter } from "@mattsp1290/switchboard/host/codex";
+import { codexHostAdapter } from "@operatorworks/switchboard/host/codex";
 import { z } from "zod";
 import { codexSubscriptionEndpoint } from "./accounts.ts";
 import { exitGraceMs } from "./codex-subscription.ts";

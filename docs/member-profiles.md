@@ -20,7 +20,7 @@ missing, expired or belongs to another account.
   "pi": {"provider": "opencode-go", "account": "ACCOUNT LABEL"},
   "claude": {"provider": "anthropic-api", "account": "ACCOUNT LABEL", "model": "claude-sonnet-4-6"},
   "codex": {"provider": "chatgpt-subscription", "account_id": "CHATGPT_ACCOUNT_ID", "model": "gpt-5.4"},
-  "cursor": {"account": "ACCOUNT LABEL", "model": "cursor-model", "cwd": "/absolute/workspace"},
+  "cursor": {"account": "ACCOUNT LABEL", "model": "grok-4.7", "cwd": "/legacy/profile-metadata", "requestTextBytes": 65536},
   "opencode": {
     "account": "ACCOUNT LABEL",
     "model": "provider/model",
@@ -33,7 +33,33 @@ missing, expired or belongs to another account.
 
 `cursor` and `opencode` are optional. A worker that sets `cursor` reads the API key from `BIRBCREW_CURSOR_API_KEY` and registers `cursor.v1`. A worker that sets `opencode` reads each name in `env` from its own environment and registers `opencode.v1`. That map replaces the child process environment. The spawn argv is `[executable, "acp"]`. These profiles are not copied into tool profiles.
 
-These turns run in the supervisor runner. Cursor uses the SDK sandbox, which does not cover `webSearch`, `webFetch`, or MCP. OpenCode's process is not sandboxed to `cwd`. Tool, permission, filesystem, and terminal requests fail the turn, and files the process already wrote remain.
+These turns run in the supervisor runner. Production Cursor profiles select
+Switchboard's fixed `cursor-text-v1` policy: no model tools, MCP servers, custom
+tools, agents, settings sources or retries, an empty virtual filesystem, and
+reported workspace `/`. The SDK sandbox is disabled; this lane must work without
+user namespaces. Unexpected tool events also fail the turn. This policy isolates
+model tool execution; opaque SDK code still has the process's filesystem and
+network access. See the [qualification status](cursor-restricted-text-qualification.md)
+before advertising deployment support. OpenCode's process is not sandboxed to
+`cwd`; its tool, permission, filesystem and terminal requests fail the turn.
+
+Cursor's `cwd` remains required profile/checkpoint metadata. Execution uses a
+fresh `workspace` below the private conversation root, alongside its SDK store,
+HOME, TMPDIR and CURSOR_DATA_DIR. Crew does not move or delete the old `cwd`.
+The credential-free registration probe requires Node 24.22.3, SDK 1.4.2 and the
+vendored Switchboard pin, checks exports without inference, and fails with
+`cursor_policy_unsupported` before profile or volume registration writes.
+It checks that Crew and Switchboard resolve the same SDK installation. The
+worker runs this probe at startup and before production Cursor re-registration.
+Unrelated engine runners omit production Cursor registrations, so adding a Cursor
+entry to a reloaded module cannot bypass its support check.
+A trusted module supplying `runtime` bypasses this production boundary and is
+outside its guarantee; `loadLiveProfiles` never supplies one.
+
+The dedicated Cursor runner retains its private environment until process exit.
+An abandoned SDK admission can settle after `close()` returns and recreate files
+under that private root. Such a turn still has unknown writer inventory and
+requires the trusted drain before erasure.
 
 Unknown keys are refused. The setting carries no date and does not expire. The
 credentials it points at are real ones and keep their own lifetimes: a provider
@@ -84,9 +110,14 @@ can revoke a key, and a Codex sign-in must stay current.
    and stops unless it is current and belongs to `account_id`. The native
    session volume stores conversation state; the operator's CLI manages the
    subscription login separately.
-6. For Cursor, add the `cursor` entry with the account label, the caller model
-   id, and an absolute workspace. Provide the key in `BIRBCREW_CURSOR_API_KEY`.
-   Spawn with engine `cursor` and profile `cursor.v1`.
+6. For Cursor, add the `cursor` entry with the account label, the SDK catalog
+   model ID and an absolute `cwd` metadata value. Use `grok-4.7` only when the
+   account's SDK catalog lists it; CLI effort variants are not SDK model IDs.
+   Provide the key in `BIRBCREW_CURSOR_API_KEY`. Spawn with engine `cursor` and
+   profile `cursor.v1`. Optional `requestTextBytes` is an immutable registered
+   input limit; omit it for the existing default. Each conversation accepts one
+   input identity and starts a fresh agent. No checkpoint resume or second turn
+   is enabled.
 7. For OpenCode ACP, add the `opencode` entry with the account label, the caller
    model id, absolute `cwd` and `executable`, and the environment variable names
    the child needs. Spawn with engine `opencode` and profile `opencode.v1`.

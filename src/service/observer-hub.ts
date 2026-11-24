@@ -1,6 +1,6 @@
 import { MemberStoreError } from "./domain.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { createEventStream, type EventStream, type SubscriptionEnd } from "@mattsp1290/switchboard";
+import { createEventStream, type EventStream, type SubscriptionEnd } from "@operatorworks/switchboard";
 import type { Pool } from "pg";
 import { errorSummary, warn } from "./diagnostics.ts";
 import { readEvents, readEventsIdleMs, readEventsLimit, type ObservedRow } from "./observation.ts";

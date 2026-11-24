@@ -10,6 +10,11 @@ on:
       - 'scripts/build-native'
       - 'scripts/setup'
       - 'scripts/install-temporal-cli'
+      - 'scripts/qualify-cursor-restricted-text.mjs'
+      - 'scripts/cursor-canary.py'
+      - 'scripts/qualify-cursor-service.py'
+      - 'scripts/cursor-service-drain.mjs'
+      - 'packaging/cursor-candidate.Dockerfile'
       - '.node-version'
       - 'tsconfig.json'
       - 'packages/client/**'
@@ -68,6 +73,14 @@ jobs:
       - run: npm run build
       - name: Isolated CI diagnostic contracts
         run: node --test tests/proof/isolated-ci.test.mts
+      - name: Cursor candidate launcher contracts (no inference)
+        run: node --test tests/proof/cursor-candidate-launcher.test.mjs
+      - name: Synthetic Cursor network observer
+        run: |
+          python3 tests/proof/cursor_canary_test.py
+          python3 tests/proof/cursor_service_launcher_test.py
+      - name: Cursor live proof phase contracts (no inference)
+        run: node --test tests/proof/cursor-service-phase.test.mts
       - run: npm run test:client
       - run: npm run check:openapi
       - run: npm run test:api
@@ -127,6 +140,8 @@ jobs:
         run: |
           mkdir -p .proof/bin
           scripts/install-temporal-cli .proof/bin
+      - name: Cursor installed policy and registration contracts (no inference)
+        run: node --test tests/service/cursor-runtime-contract.test.ts tests/service/cursor-policy-support.test.ts tests/service/cursor-turn.test.ts
       - name: Install pinned Beans
         run: |
           asset=bn-linux-x86_64

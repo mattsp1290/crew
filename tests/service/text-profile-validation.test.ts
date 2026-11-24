@@ -55,5 +55,6 @@ test("live construction carries policy outside SDK options", async () => {
   assert.equal(profiles.get("cursor.v1")?.requestTextBytes, 32_768);
   assert.equal(profiles.get("opencode.v1")?.requestTextBytes, 65_536);
   assert.equal(Object.hasOwn(profiles.get("cursor.v1")!.cursor!, "requestTextBytes"), false);
+  assert.equal(Object.hasOwn(profiles.get("cursor.v1")!.cursor!, "runtime"), false);
   assert.equal(Object.hasOwn(profiles.get("opencode.v1")!.opencode!, "requestTextBytes"), false);
 });
