@@ -68,6 +68,8 @@ jobs:
       - run: npm run build
       - name: Isolated CI diagnostic contracts
         run: node --test tests/proof/isolated-ci.test.mts
+      - name: Cursor candidate launcher contracts (no inference)
+        run: node --test tests/proof/cursor-candidate-launcher.test.mjs
       - run: npm run test:client
       - run: npm run check:openapi
       - run: npm run test:api

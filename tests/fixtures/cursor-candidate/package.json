@@ -1,0 +1,12 @@
+{
+  "name": "crew-cursor-candidate-audit",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@operatorworks/switchboard": "file:candidate.tgz",
+    "@cursor/sdk": "1.4.2",
+    "@bufbuild/protobuf": "1.10.0",
+    "@ag-ui/core": "1.0.4",
+    "zod": "4.4.3"
+  }
+}
