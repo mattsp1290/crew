@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -44,66 +45,120 @@ async function main() {
   const context = await mkdtemp(join(tmpdir(), 'crew-cursor-candidate-'));
   const tag = `crew-cursor-candidate:${createHash('sha256').update(context).digest('hex').slice(0, 16)}`;
   const container = tag.replace(':', '-');
+  const abort = new AbortController();
+  const onSignal = () => abort.abort();
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  const proxyNames = ['HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY',
+    'http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy'];
+  const environment = {
+    PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/state/home', TMPDIR: '/state/tmp',
+    CURSOR_DATA_DIR: '/state/home', LANG: 'C.UTF-8', TZ: 'UTC',
+  };
+  let failure;
+  let created = false;
+  let built = false;
   try {
     const sources = {
       'package.json': join(fixture, 'package.json'),
       'package-lock.json': join(fixture, 'package-lock.json'),
       'Dockerfile': join(root, 'packaging/cursor-candidate.Dockerfile'),
       'candidate.mjs': join(root, 'tests/proof/cursor-candidate.mjs'),
+      'contract.json': join(fixture, 'contract.json'),
     };
     const hashes = {};
     for (const [name, path] of Object.entries(sources)) {
       await copyFile(path, join(context, name));
-      hashes[name] = createHash('sha256').update(await readFile(path)).digest('hex');
+      hashes[name] = createHash('sha256').update(await readFile(join(context, name))).digest('hex');
     }
     await writeFile(join(context, 'candidate.tgz'), bytes, { mode: 0o600 });
-    await copyFile(join(fixture, 'package-lock.json'), join(out, 'package-lock.json'));
+    await copyFile(join(context, 'package-lock.json'), join(out, 'package-lock.json'));
     await writeFile(join(out, 'intent.json'), JSON.stringify({ identity, image, sourceHashes: hashes }, null, 2));
-    async function docker(phase, args, timeout) {
+    async function docker(phase, args, timeout, saveStdout = true) {
       try {
-        const result = await execute('docker', args, { timeout, maxBuffer: 8 * 1024 * 1024 });
-        await writeFile(join(out, `${phase}.stdout`), result.stdout);
+        if (abort.signal.aborted) throw new Error('interrupted');
+        const result = await execute('docker', args, { timeout, maxBuffer: 8 * 1024 * 1024, signal: abort.signal });
+        if (saveStdout) await writeFile(join(out, `${phase}.stdout`), result.stdout);
         await writeFile(join(out, `${phase}.stderr`), result.stderr);
         return result.stdout;
       } catch (error) {
-        await writeFile(join(out, `${phase}.stdout`), error.stdout ?? '');
+        if (saveStdout) await writeFile(join(out, `${phase}.stdout`), error.stdout ?? '');
         await writeFile(join(out, `${phase}.stderr`), error.stderr ?? '');
-        throw new Error(`${phase}_failed`);
+        throw new Error(abort.signal.aborted ? 'interrupted' : `${phase}_failed`);
       }
     }
-    await docker('build', ['build', '--build-arg', `NODE_IMAGE=${image}`, '-t', tag, context], 300_000);
-    const inspection = JSON.parse(await docker('image', ['image', 'inspect', tag], 30_000))[0];
+    // Explicit empty values override Docker client proxy defaults, including credentials.
+    await docker('build', ['build', '--build-arg', `NODE_IMAGE=${image}`,
+      ...proxyNames.flatMap((name) => ['--build-arg', `${name}=`]), '-t', tag, context], 300_000);
+    built = true;
+    const inspection = JSON.parse(await docker('image', ['image', 'inspect', '--format',
+      '{"Id":{{json .Id}},"Os":{{json .Os}},"Architecture":{{json .Architecture}}}', tag], 30_000));
     const runArgs = [
-      'run', '--name', container, '--rm', '--init', '--network', 'none', '--read-only',
+      'create', '--name', container, '--init', '--network', 'none', '--read-only',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
       '--user', '10001:10001', '--pids-limit', '128', '--memory', '1g',
       '--tmpfs', '/state:rw,nosuid,nodev,mode=0700,uid=10001,gid=10001',
       '--tmpfs', '/tmp:rw,nosuid,nodev,mode=0700,uid=10001,gid=10001',
-      '--env', 'HOME=/state/home', '--env', 'TMPDIR=/state/tmp', '--env', 'CURSOR_DATA_DIR=/state/home',
-      '--env', 'LANG=C.UTF-8', '--env', 'TZ=UTC', inspection.Id,
-      '/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin',
-      'HOME=/state/home', 'TMPDIR=/state/tmp', 'CURSOR_DATA_DIR=/state/home',
-      'LANG=C.UTF-8', 'TZ=UTC', 'node', 'candidate.mjs',
+      ...Object.entries(environment).flatMap(([name, value]) => ['--env', `${name}=${value}`]),
+      ...proxyNames.flatMap((name) => ['--env', `${name}=`]),
+      '--entrypoint', '/usr/bin/env', inspection.Id,
+      '-i', ...Object.entries(environment).map(([name, value]) => `${name}=${value}`), 'node', 'candidate.mjs',
     ];
-    const audit = JSON.parse(await docker('audit', runArgs, 60_000));
+    await docker('create', runArgs, 30_000);
+    created = true;
+    // Inspect before startup. Never save potentially credential-bearing Config.Env.
+    const configured = JSON.parse(await docker('environment', ['inspect', '--format', '{{json .Config.Env}}', container], 30_000, false));
+    assert.ok(Array.isArray(configured));
+    const expected = { ...environment, ...Object.fromEntries(proxyNames.map((name) => [name, ''])), NODE_VERSION: '24.22.3' };
+    for (const entry of configured) {
+      assert.equal(typeof entry, 'string');
+      const split = entry.indexOf('=');
+      const key = entry.slice(0, split);
+      const value = entry.slice(split + 1);
+      if (key === 'YARN_VERSION') assert.match(value, /^\d+\.\d+\.\d+$/);
+      else assert.ok(Object.hasOwn(expected, key) && expected[key] === value);
+    }
+    await writeFile(join(out, 'environment-keys.json'), JSON.stringify(configured.map((entry) => entry.split('=')[0])));
+    const audit = JSON.parse(await docker('audit', ['start', '--attach', container], 60_000));
+    const contract = JSON.parse(await readFile(join(context, 'contract.json'), 'utf8'));
+    for (const [key, value] of Object.entries(contract)) assert.deepEqual(audit[key], value);
     await writeFile(join(out, 'evidence.json'), JSON.stringify({
       ...audit, candidate: identity,
       image: { id: inspection.Id, os: inspection.Os, architecture: inspection.Architecture, base: image },
       sourceHashes: hashes, containerArgs: runArgs,
     }, null, 2));
-    process.stdout.write(`Offline candidate checks passed; live qualification remains blocked. Evidence: ${out}\n`);
-    return 2;
+  } catch (error) {
+    failure = error;
   } finally {
-    await rm(context, { recursive: true, force: true });
-    await execute('docker', ['rm', '-f', container], { timeout: 30_000 }).catch(() => undefined);
-    await execute('docker', ['image', 'rm', tag], { timeout: 30_000 }).catch(() => undefined);
+    // A timed-out or interrupted Docker CLI may have already created resources.
+    const cleanup = await Promise.allSettled([
+      rm(context, { recursive: true, force: true }),
+      execute('docker', ['rm', '-f', container], { timeout: 30_000 }),
+    ]);
+    cleanup.push(...await Promise.allSettled([
+      execute('docker', ['image', 'rm', tag], { timeout: 30_000 }),
+    ]));
+    const cleanupErrors = cleanup.flatMap((result, index) => {
+      if (result.status === 'fulfilled') return [];
+      const missing = /No such (container|image)/i.test(result.reason.stderr ?? '');
+      if (missing && ((index === 1 && !created) || (index === 2 && !built))) return [];
+      return [index];
+    });
+    await writeFile(join(out, 'cleanup.json'), JSON.stringify({ complete: cleanupErrors.length === 0, failedOperations: cleanupErrors }));
+    if (cleanupErrors.length && !failure) failure = new Error('cleanup_failed');
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
   }
+  if (failure) throw failure;
+  if (abort.signal.aborted) throw new Error('interrupted');
+  process.stdout.write(`Offline candidate checks passed; live qualification remains blocked. Evidence: ${out}\n`);
+  return 2;
 }
 
 try { process.exitCode = await main(); }
 catch (error) {
   // Never print subprocess errors, environment values, or candidate source text.
-  const known = new Set(['invalid_arguments', 'evidence_must_be_outside_repository', 'candidate_hash_mismatch', 'build_failed', 'image_failed', 'audit_failed']);
+  const known = new Set(['invalid_arguments', 'evidence_must_be_outside_repository', 'candidate_hash_mismatch', 'build_failed', 'image_failed', 'audit_failed', 'create_failed', 'environment_failed', 'cleanup_failed', 'interrupted']);
   const code = known.has(error.message) ? error.message : 'candidate_audit_failed';
   process.stderr.write(`${code}\n`);
   process.exitCode = 1;

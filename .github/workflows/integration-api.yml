@@ -10,6 +10,8 @@ on:
       - 'scripts/build-native'
       - 'scripts/setup'
       - 'scripts/install-temporal-cli'
+      - 'scripts/qualify-cursor-restricted-text.mjs'
+      - 'packaging/cursor-candidate.Dockerfile'
       - '.node-version'
       - 'tsconfig.json'
       - 'packages/client/**'

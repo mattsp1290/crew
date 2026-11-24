@@ -33,7 +33,12 @@ The command builds a disposable candidate image with the separate locked
 dependency fixture. It does not update Crew's dependency files. The container
 receives no credentials or host mounts, runs as UID/GID 10001 with a read-only
 root, dropped capabilities, NoNewPrivs, Docker's seccomp policy, private temporary
-storage and no network. It checks the real `unshare -Ur true` denial; a missing
+storage and no network. Docker proxy defaults are explicitly overridden for both
+build and execution. The configured container environment is checked before
+startup, and its potentially sensitive values are excluded from saved logs.
+The command sets the entrypoint explicitly and validates the offline assertion
+contract before retaining passing evidence.
+It checks the real `unshare -Ur true` denial; a missing
 utility fails. This diagnostic image is separate from the production service
 image and does not qualify that image.
 
@@ -47,8 +52,10 @@ provider session; Crew's planned integration remains fresh-create-only.
 `evidence.json` records assertion names, pending gates, architecture, Node,
 process identity, namespace denial, mount inventory, image identity, archive
 identity and audit-source hashes. The lockfile and build/run logs accompany it.
-The command removes its temporary build context and image tag; Docker may retain
-build cache. Evidence contains synthetic data only.
+The command removes its temporary build context, container and image tag, including
+after SIGINT/SIGTERM. It saves partial subprocess output and records cleanup in
+`cleanup.json`; cleanup failure prevents a passing exit. Docker may retain build
+cache. Evidence contains synthetic data only.
 
 ## Gates that still block adoption
 

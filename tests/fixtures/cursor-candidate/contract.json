@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "phase": "candidate-offline",
+  "supported": false,
+  "checks": [
+    "hardened-linux-process",
+    "minimal-container-environment",
+    "user-namespace-denied",
+    "exact-sdk-and-exports",
+    "real-sdk-rejects-unknown-tool-before-inference",
+    "empty-virtual-tree-and-observer-positive-control",
+    "candidate-create-resume-send-controls",
+    "missing-control-fails-closed"
+  ],
+  "pending": [
+    "forced-executor-exclusion-and-serialized-request",
+    "hardened-live-grok-context-and-host-access-audit",
+    "provider-network-canary-with-positive-control",
+    "production-image-integration-api-replay-recovery-and-erasure"
+  ]
+}

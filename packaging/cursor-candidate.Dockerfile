@@ -10,6 +10,6 @@ RUN case "$NODE_IMAGE" in *@sha256:*) ;; *) exit 1 ;; esac \
 WORKDIR /audit
 COPY package.json package-lock.json candidate.tgz ./
 RUN npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund
-COPY candidate.mjs ./
+COPY candidate.mjs contract.json ./
 USER 10001:10001
 CMD ["node", "candidate.mjs"]

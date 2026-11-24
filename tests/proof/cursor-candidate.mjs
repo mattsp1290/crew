@@ -7,6 +7,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
 });
 
 const checks = [];
+const contract = JSON.parse(await readFile(new URL('./contract.json', import.meta.url), 'utf8'));
 async function check(name, run) {
   await run();
   checks.push(name);
@@ -169,15 +170,9 @@ await check('missing-control-fails-closed', async () => {
 // Success here is offline boundary evidence only. No forced executor call,
 // provider transport, Grok result, or Crew API journey has been exercised.
 process.stdout.write(`${JSON.stringify({
-  schema: 1, phase: 'candidate-offline', supported: false,
+  ...contract,
   platform: process.platform, arch: process.arch, node: process.versions.node,
   uid: process.getuid(), gid: process.getgid(), checks,
   namespace: { command: '/usr/bin/unshare -Ur true', result: 'denied', errno: 'EPERM' },
   mountinfo: await readFile('/proc/self/mountinfo', 'utf8'),
-  pending: [
-    'forced-executor-exclusion-and-serialized-request',
-    'hardened-live-grok-context-and-host-access-audit',
-    'provider-network-canary-with-positive-control',
-    'production-image-integration-api-replay-recovery-and-erasure',
-  ],
 })}\n`);
