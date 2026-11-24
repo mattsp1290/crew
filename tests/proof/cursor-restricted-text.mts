@@ -75,7 +75,13 @@ try {
     assert.deepEqual(await call("POST", route, { requestId: request.requestId, text: "changed" }), { status: 409, payload: { error: "conflict" } });
     assert.deepEqual(await call("POST", route, { requestId: randomUUID(), text: "second" }), { status: 409, payload: { error: "input_limit" } });
     assert.equal((await call("GET", `/v1/conversations/${request.conversationId}`, undefined, input.otherToken)).status, 404);
-    assert.ok([200, 202].includes((await call("POST", `/v1/conversations/${request.conversationId}/close`, {})).status));
+    await wait(async () => {
+      const response = await call("POST", `/v1/conversations/${request.conversationId}/close`, {});
+      if ([200, 202].includes(response.status)) return true;
+      assert.ok(response.status === 409
+        && z.object({ error: z.string() }).parse(response.payload).error === "content_runtime_unconfirmed");
+      return undefined;
+    }, 30_000);
     await wait(async () => {
       const response = await call("DELETE", `/v1/conversations/${request.conversationId}/content`);
       if (response.status === 409 && z.object({ error: z.string() }).parse(response.payload).error === "content_runtime_unconfirmed") return true;

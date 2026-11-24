@@ -15,7 +15,7 @@ test("the installed candidate passes the real credential-free export probe", asy
   await assertCursorPolicySupport(root);
   assert.deepEqual(await readdir(root), []);
 });
-for (const mode of ["valid", "missing"]) {
+for (const mode of ["valid", "missing", "late-create"]) {
   test(`production Cursor SDK boundary (${mode}) runs in an isolated child`, async (t) => {
     const root = await mkdtemp(join(tmpdir(), "crew-cursor-contract-"));
     t.after(() => rm(root, { recursive: true, force: true }));

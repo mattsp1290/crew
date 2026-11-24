@@ -104,8 +104,9 @@ python3 scripts/cursor-canary.py --out /absolute/new-canary-directory
 
 Read `ready.json` for the selected port, the `positive` and `negative` routes,
 and their expected synthetic response values. `counts.json` and `hits.jsonl`
-record requests to either route, including HEAD and unsupported methods; query
-contents are excluded. Stop the process with SIGINT or SIGTERM.
+record requests to either route, including encoded paths, trailing slashes,
+descendants, HEAD and unsupported methods. Other paths increment `unmatched`.
+Query contents are excluded. Stop the process with SIGINT or SIGTERM.
 The evidence directory remains private for inspection.
 
 For provider-side observations, forward only this loopback listener through a
@@ -114,7 +115,8 @@ access. Check the public positive route deliberately, record its baseline count,
 then prove a separately tool-enabled SDK fixture can reach it. Give the restricted
 runtime the negative route and compare counters before and after. Do not request
 the negative route yourself during that test. Stop both the tunnel and observer
-after qualification. A model refusal or a zero counter without a successful
+after qualification. Both the negative and unmatched counters must stay at their
+baselines. A model refusal or a zero counter without a successful
 tool-enabled positive control is incomplete evidence.
 
 The observer alone does not force SDK tool execution, prove all network tools are
@@ -159,6 +161,8 @@ Cursor credential. Gateway and model worker use the unmodified production image
 as UID/GID 10001 with a read-only root, dropped capabilities and NoNewPrivs.
 The worker has only its private state volume and temporary space. The audit
 requires an actual `/usr/bin/unshare -Ur true` EPERM result from that same image.
+The launcher compares every service source file in the production and tools
+images before inference. Every fixture overrides Docker's default proxy settings.
 
 The API client checks synthetic JSON extraction at 13,312 and 65,536 bytes,
 immutable advertised limits, pre-launch size refusals, replay launch counts,
@@ -174,7 +178,9 @@ Docker socket only during enrollment. Its quiesce hook stops and awaits all
 fixture senders, coordinator, engine workers and private PID namespaces, then
 stops and restarts the persistent Temporal service to fence pending RPCs. It
 uses the normal `erasure-inventory` CLI. Replacement workers erase the enrolled
-synthetic conversations while retaining their original receipt metadata.
+synthetic conversations while retaining their original receipt metadata. The
+audit seeds a private marker in each drained conversation root, then verifies
+that each root disappears from the enrolled volume after DELETE succeeds.
 This fixture has one enrolled state volume and no historical clones.
 
 `evidence.json` identifies images, source hashes, architecture, hardening,

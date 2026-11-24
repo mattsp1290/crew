@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { warn } from "./diagnostics.ts";
 
@@ -19,8 +20,8 @@ export class CursorPolicyUnsupportedError extends Error {
 
 const metadata = z.object({ name: z.string().optional(), version: z.string().optional() });
 
-function installedPackage(specifier: string) {
-  let directory = dirname(realpathSync(fileURLToPath(import.meta.resolve(specifier))));
+function installedPackage(entry: string) {
+  let directory = dirname(realpathSync(fileURLToPath(entry)));
   for (let depth = 0; depth < 8; depth += 1, directory = dirname(directory)) {
     let source: string;
     try { source = readFileSync(join(directory, "package.json"), "utf8"); }
@@ -29,7 +30,7 @@ function installedPackage(specifier: string) {
       throw error;
     }
     const parsed = metadata.parse(JSON.parse(source));
-    if (parsed.name !== undefined) return parsed;
+    if (parsed.name !== undefined) return { ...parsed, root: directory };
   }
   throw new CursorPolicyUnsupportedError();
 }
@@ -39,10 +40,13 @@ export async function assertCursorPolicySupport(stateDirectory: string): Promise
   let directory: string | undefined;
   try {
     if (!isAbsolute(stateDirectory) || process.versions.node !== "24.22.3") throw new CursorPolicyUnsupportedError();
-    const sdk = installedPackage("@cursor/sdk");
-    const adapter = installedPackage("@operatorworks/switchboard/cursor");
+    const sdk = installedPackage(import.meta.resolve("@cursor/sdk"));
+    const adapterEntry = import.meta.resolve("@operatorworks/switchboard/cursor");
+    const adapter = installedPackage(adapterEntry);
+    const adapterSdk = installedPackage(pathToFileURL(createRequire(adapterEntry).resolve("@cursor/sdk")).href);
     if (sdk.name !== "@cursor/sdk" || sdk.version !== "1.4.2"
-      || adapter.name !== "@operatorworks/switchboard" || adapter.version !== "0.0.0") throw new CursorPolicyUnsupportedError();
+      || adapter.name !== "@operatorworks/switchboard" || adapter.version !== "0.0.0"
+      || adapterSdk.root !== sdk.root) throw new CursorPolicyUnsupportedError();
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     directory = await mkdtemp(join(await realpath(stateDirectory), ".cursor-policy-"));
     const probeDirectory = directory;
@@ -57,11 +61,14 @@ export async function assertCursorPolicySupport(stateDirectory: string): Promise
       });
       let output = "";
       let failed = false;
-      const stop = () => {
-        failed = true;
+      const killGroup = () => {
         if (child.pid !== undefined) {
           try { process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
         }
+      };
+      const stop = () => {
+        failed = true;
+        killGroup();
         child.stdout.destroy();
       };
       const timer = setTimeout(stop, 5_000);
@@ -74,6 +81,7 @@ export async function assertCursorPolicySupport(stateDirectory: string): Promise
       child.on("error", () => { failed = true; });
       child.on("close", (code) => {
         clearTimeout(timer);
+        killGroup();
         if (!failed && code === 0 && output === cursorPolicyProbeToken) resolve();
         else reject(new CursorPolicyUnsupportedError());
       });

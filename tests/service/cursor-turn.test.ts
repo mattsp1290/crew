@@ -306,6 +306,24 @@ test("a cursor close that finishes after abort has its late files swept", async 
   await rm(stateDir, { recursive: true, force: true });
 });
 
+test("cancellation during runtime loading prevents native start", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cursor-loading-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const place = member({ cwd: stateDir }), controller = new AbortController();
+  const loaded = Promise.withResolvers<CursorRuntimeHandle>();
+  const entered = Promise.withResolvers<void>();
+  let starts = 0, closes = 0;
+  const profile: CursorProfile = { model, apiKey, cwd: stateDir,
+    runtime: () => { entered.resolve(); return loaded.promise; } };
+  const work = runCursorTurn(place.input({ signal: controller.signal }), place.member, profile, stateDir);
+  await entered.promise;
+  controller.abort();
+  loaded.resolve({ start() { starts += 1; throw new Error("must not start"); }, async close() { closes += 1; } });
+  await assert.rejects(work, { message: "Text engine turn failed" });
+  assert.equal(starts, 0);
+  assert.equal(closes, 1);
+});
+
 test("abort before cursor start resolves closes the runtime and aborts a late start", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "cursor-turn-"));
   const place = member({ cwd: stateDir });

@@ -49,8 +49,15 @@ HOME, TMPDIR and CURSOR_DATA_DIR. Crew does not move or delete the old `cwd`.
 The credential-free registration probe requires Node 24.22.3, SDK 1.4.2 and the
 vendored Switchboard pin, checks exports without inference, and fails with
 `cursor_policy_unsupported` before profile or volume registration writes.
+It checks that Crew and Switchboard resolve the same SDK installation. The
+worker runs this probe at startup; per-turn registration does not repeat it.
 A trusted module supplying `runtime` bypasses this production boundary and is
 outside its guarantee; `loadLiveProfiles` never supplies one.
+
+The dedicated Cursor runner retains its private environment until process exit.
+An abandoned SDK admission can settle after `close()` returns and recreate files
+under that private root. Such a turn still has unknown writer inventory and
+requires the trusted drain before erasure.
 
 Unknown keys are refused. The setting carries no date and does not expire. The
 credentials it points at are real ones and keep their own lifetimes: a provider

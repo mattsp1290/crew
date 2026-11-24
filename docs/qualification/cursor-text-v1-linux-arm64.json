@@ -25,7 +25,7 @@
     ],
     "builtFrom": "Switchboard merged PR #84; retained Node 24.22.3 / npm 11.19.1 candidate archive"
   },
-  "productionImage": "sha256:e39cfb2d4efad608af33230da2e31e4412985f8d7df9bc4341ab54ca41f3fde0",
+  "productionImage": "sha256:daf76d85c2a1acf870e135ba001f696791ad264074ddf84662f365bcd6ea0407",
   "model": "grok-4.7",
   "runtimeJourneyPassed": true,
   "candidateBoundary": {
@@ -41,7 +41,9 @@
       "restrictedNegativeAfter": 0,
       "serviceNegativeBefore": 0,
       "serviceNegativeAfter": 0,
-      "scope": "observed controlled endpoint; no universal network or OS isolation claim"
+      "scope": "Controlled public observer counts every parsed path; decoded route variants and unmatched requests are included. No universal network or OS isolation claim.",
+      "unmatchedBefore": 0,
+      "unmatchedAfter": 0
     }
   },
   "serviceChecks": [
@@ -68,7 +70,7 @@
     "uname": "aarch64"
   },
   "namespace": {
-    "image": "sha256:e39cfb2d4efad608af33230da2e31e4412985f8d7df9bc4341ab54ca41f3fde0",
+    "image": "sha256:daf76d85c2a1acf870e135ba001f696791ad264074ddf84662f365bcd6ea0407",
     "command": [
       "/usr/bin/unshare",
       "-Ur",
@@ -90,11 +92,11 @@
     "mcpTrapAbsent": true
   },
   "cleanupComplete": true,
-  "writerInventory": "unknown; completed SDK turns require trusted drain before erasure",
+  "writerInventory": "unknown; private environment remains for the dedicated runner lifetime, including late admission disposal; trusted drain required before erasure",
   "sourceHashes": {
-    "scripts/qualify-cursor-service.py": "a69312a99a8ea8d21a519ceb60a603ce7b6259454595583cd7b82a6a20578ec5",
-    "scripts/cursor-service-drain.mjs": "c8868ee3aa3faf7202e23939e3080e1b39ea4cbd22efa370c88a6320eef205ba",
-    "tests/proof/cursor-restricted-text.mts": "e71cdc5733857a50e16860f80c5cb74978763dc770c7edfb01f17f56546cdae1"
+    "scripts/qualify-cursor-service.py": "b195b612a04f2fb1fc32e5819a11e49c91a666676b29662afb92451e3e87023b",
+    "scripts/cursor-service-drain.mjs": "74275bebd95322cd446c26d6a6ef3165f0c7adbf34b974501f10a39ecb1e7716",
+    "tests/proof/cursor-restricted-text.mts": "194ac7fcf49f88c37aeb1a9b5c02a9cf4db396056666667c6a4d9d13831665dc"
   },
   "evidenceSha256": {
     "traced-2.stdout": "fc334fe0d978f14290a733ae1df3491266fab6cf027b47d3fa899e41edecfafd",
@@ -115,7 +117,18 @@
     "shared-regressions.stdout": "2a053f0d8864d443786f58fca247d2b40708f332325877c9af364a5d5363940e",
     "remaining-regressions.stdout": "67df61ce7aff9c7dd3590fdc1ff1f36fd3ab4ac8064ea35e0c9983e84f2a0bef",
     "probe-final.stdout": "97b655e8572941e70ae27025aef122dc24b74931473d19066bef59a660d986d1",
-    "erasure-proof.stdout": "12efb4c342e8e8aa435ea726fa1c658d9a338e7ee675d32102a992d1d9434801"
+    "erasure-proof.stdout": "12efb4c342e8e8aa435ea726fa1c658d9a338e7ee675d32102a992d1d9434801",
+    "review-remote-positive.stdout": "1baf2fb1a07b341981c8569376b0dd65e54e19bca4416b35e5fc9ffba1f62096",
+    "review-remote-positive.json": "cdd86e93b67953128ee7f4856f16b7f3a77d5ab4b529247eaf374e4d670084ee",
+    "review-remote-negative.stdout": "a75b91a06c7ac7dc93914046e5f36fc14ec80c7b15c4b70623dceb2eb847e75d",
+    "review-remote-negative.json": "b42930dfb4d10d2ee416ce8f7aaf55186cc232349ddcfc30b75a7052b8db3878",
+    "service-live-10/evidence.json": "6d8cc6dc6e8ad106bfb1988169741007244f59db850b1ac5cecf49dd4e959e07",
+    "service-live-10-canary-before.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "service-live-10-canary-after.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "fingerprint-compat.json": "39eca32124c1ab743d2d7826aeb17147ad44e84c542ad90c28c1fc4c99904f86",
+    "upstream-fingerprint-consumer.diff": "c9e26e3ebcca8cd7f71f3e8dabfb96b2e07e8a1973ce3ca4e1e69b8e0eb96ca1",
+    "correctness-regressions.stdout": "c569c79c92b28a72f9c176beb61bea3eca3bbf98d64cbcf636392bacb7b5448c",
+    "correctness-shared-final.stdout": "1d729fbc4dee34b91f02037c5d9dabb9a6a503efb85046451605a9b28d822943"
   },
   "evidenceLocation": "External private execution artifact directory; hashes identify the retained reports, not prompt/reply contents. Final review report names its local path.",
   "limitations": [
@@ -130,6 +143,14 @@
     "Two direct network positive fixtures timed out and were excluded; fresh observer routes plus successful remote positive/negative pair qualify the network observation.",
     "Early service launcher setup/readiness/receipt-contract/operator-address errors were corrected; all their fixtures were removed.",
     "A Codex process-group fixture failed without an init reaper; it passed with the production-equivalent reaper.",
-    "Retained observability artifact keeps its original instrumentation scope; telemetry passed after reverting an incorrect test expectation."
-  ]
+    "Retained observability artifact keeps its original instrumentation scope; telemetry passed after reverting an incorrect test expectation.",
+    "Correctness review found and fixed a canary path blind spot, MCP marker mount mismatch, anonymous PostgreSQL volume cleanup, swallowed readiness interruption, proof-source race and missing physical erasure observation. Fresh network and production-image runs passed afterward.",
+    "The test-tools allowlist initially omitted the Claude confinement documentation sentinel; this was a fixture ENOENT, corrected before the final shared-engine gate."
+  ],
+  "physicalErasure": {
+    "seeded": 3,
+    "rootsAbsent": 3
+  },
+  "serviceSourceIdentityMatched": 159,
+  "mcpObserverPositiveControl": true
 }

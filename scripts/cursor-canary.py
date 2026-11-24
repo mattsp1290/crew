@@ -10,7 +10,7 @@ import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     token = secrets.token_urlsafe(24)
     routes = {f"/{token}/{phase}": phase for phase in ("positive", "negative")}
     values = {phase: secrets.token_hex(24) for phase in routes.values()}
-    counts = dict.fromkeys(values, 0)
+    counts = dict.fromkeys([*values, "unmatched"], 0)
 
     def save_counts():
         temporary = args.out / "counts.tmp"
@@ -42,16 +42,22 @@ def main():
             valid = super().parse_request()
             self.canary_phase = None
             if valid:
+                phase = "unmatched"
                 try:
-                    self.canary_phase = routes.get(urlsplit(self.path).path)
+                    path = unquote(urlsplit(self.path).path)
+                    self.canary_phase = routes.get(path)
+                    prefix = f"/{token}/"
+                    if path.startswith(prefix):
+                        segment = path[len(prefix):].split("/", 1)[0]
+                        if segment in values:
+                            phase = segment
                 except ValueError:
                     pass
-                if self.canary_phase is not None:
-                    counts[self.canary_phase] += 1
-                    save_counts()
-                    method = self.command if self.command in ("GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH") else "other"
-                    with (args.out / "hits.jsonl").open("a") as log:
-                        log.write(json.dumps({"phase": self.canary_phase, "method": method, "time": time.time()}) + "\n")
+                counts[phase] += 1
+                save_counts()
+                method = self.command if self.command in ("GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH") else "other"
+                with (args.out / "hits.jsonl").open("a") as log:
+                    log.write(json.dumps({"phase": phase, "method": method, "time": time.time()}) + "\n")
             return valid
 
         def respond(self, include_body):

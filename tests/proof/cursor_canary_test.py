@@ -38,9 +38,15 @@ class CanaryTest(unittest.TestCase):
                     urlopen(base + "/not-a-canary", timeout=2)
                 self.assertEqual(refused.exception.code, 404)
                 refused.exception.close()
-                self.assertEqual(json.loads((out / "counts.json").read_text()), {"positive": 2, "negative": 2})
+                for suffix in ("/", "/child"):
+                    with self.assertRaises(HTTPError) as variant:
+                        urlopen(base + ready["routes"]["negative"] + suffix, timeout=2)
+                    variant.exception.close()
+                with urlopen(base + ready["routes"]["negative"].replace("negative", "%6Eegative"), timeout=2) as response:
+                    self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads((out / "counts.json").read_text()), {"positive": 2, "negative": 5, "unmatched": 1})
                 hits = [json.loads(line) for line in (out / "hits.jsonl").read_text().splitlines()]
-                self.assertEqual([hit["method"] for hit in hits], ["GET", "GET", "HEAD", "POST"])
+                self.assertEqual([hit["method"] for hit in hits], ["GET", "GET", "HEAD", "POST", "GET", "GET", "GET", "GET"])
                 for path in out.iterdir():
                     for sentinel in ("do-not-record-header", "do-not-record-body", "synthetic-query"):
                         self.assertNotIn(sentinel, path.read_text())

@@ -92,19 +92,14 @@ async function waitForClose(closing: Promise<void>, signal: AbortSignal) {
   return settled;
 }
 
-async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signal: AbortSignal, sessionDirectory: string, ownsSessionEnvironment: boolean) {
+async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signal: AbortSignal, sessionDirectory: string) {
   let closing: Promise<void> | undefined;
   try { closing = runtime?.close(); }
   catch { closing = undefined; }
   try {
-    // With no close in flight (including a defaultRuntime that published the session environment
-    // and then threw), nothing still reads the session environment.
+    // The opaque SDK may resolve an abandoned admission after close returns. Keep this
+    // dedicated runner's environment private until process exit, including late disposal.
     const settled = closing ? await waitForClose(closing, signal) : true;
-    if (settled && ownsSessionEnvironment) {
-      delete process.env.HOME;
-      delete process.env.TMPDIR;
-      delete process.env.CURSOR_DATA_DIR;
-    }
     // An abandoned close can still write under the session directory; sweep it again when it ends.
     if (!settled && closing) sweepWhenSettled(closing, sessionDirectory);
   } finally {
@@ -115,7 +110,6 @@ async function settleCursorClose(runtime: CursorRuntimeHandle | undefined, signa
 /** One Cursor text turn. A tool event, an unknown event, or a rewritten snapshot fails the turn. */
 export async function runCursorTurn(input: DriverInput, member: Conversation, profile: CursorProfile, stateDir: TextStateRoot): Promise<DriverResult> {
   const sessionDirectory = textTurnRoot(input, member, "cursor", stateDir);
-  const ownsSessionEnvironment = profile.runtime === undefined;
   let runtime: CursorRuntimeHandle | undefined;
   let result: DriverResult | undefined;
   try {
@@ -130,6 +124,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     let latest = "";
     let outcome: string | undefined;
     let refusal = false;
+    if (input.signal.aborted) throw textTurnFailed();
     const started = runtime.start({
       text: input.text,
       onEvent(event) {
@@ -165,7 +160,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
     if (error instanceof TextTurnFailed) throw error;
     throw textTurnFailed();
   } finally {
-    await settleCursorClose(runtime, input.signal, sessionDirectory, ownsSessionEnvironment);
+    await settleCursorClose(runtime, input.signal, sessionDirectory);
     if (!input.signal.aborted) completeTextWriterInventory(runtime?.writerGroups?.());
   }
   return textTurnResult(input.signal, result);

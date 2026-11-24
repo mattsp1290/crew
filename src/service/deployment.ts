@@ -69,11 +69,10 @@ function assertTextProfile(name: string, entry: MemberProfile) {
   }
 }
 
-export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string, textVolume?: TextVolumeLocation) {
+export async function registerProfiles(pool: Pool, config: ReadonlyMap<string, MemberProfile>, directory: string, textVolume?: TextVolumeLocation,
+  { probeCursorPolicy = true }: { probeCursorPolicy?: boolean } = {}) {
   for (const [name, entry] of config) assertTextProfile(name, entry);
-  for (const entry of config.values()) {
-    if (entry.cursor && entry.cursor.runtime === undefined) await assertCursorPolicySupport(directory);
-  }
+  if (probeCursorPolicy && [...config.values()].some(entry => entry.cursor && entry.cursor.runtime === undefined)) await assertCursorPolicySupport(directory);
   const ceilings = new Map([...config].map(([name, entry]) => [name, profileCeiling(name, entry)]));
   const declarations = new Map<string, ProfileTargetSeal>();
   const roleMap = z.strictObject({ analyst: childTargetSchema.optional(), recorder: childTargetSchema.optional() });

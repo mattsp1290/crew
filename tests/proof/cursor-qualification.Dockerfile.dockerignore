@@ -19,6 +19,10 @@
 !scripts/**
 !native/
 !native/member-launch.c
+!packaging/
+!packaging/cursor-candidate.Dockerfile
+!docs/
+!docs/verification.md
 !src/
 !src/service/
 !src/service/**

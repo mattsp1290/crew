@@ -7,6 +7,8 @@ import { json } from "node:stream/consumers";
 import { promisify } from "node:util";
 import { Pool } from "pg";
 import { z } from "zod";
+import { MemberStore } from "/app/src/service/store.ts";
+import { textTurnRootPath } from "/app/src/service/text-state-location.ts";
 
 const run = promisify(execFile);
 const input = z.strictObject({
@@ -56,7 +58,12 @@ export async function quiesce(){
   await run(process.execPath, ["src/service/cli.ts", "erasure-inventory", "--manifest", manifest, "--quiesce-module", hook, "--confirm-complete"], {
     timeout: 120_000, maxBuffer: 1024 * 1024,
   });
-  process.stdout.write(JSON.stringify({ passed: true, conversations: conversations.length, method: "stopped-private-pid-namespaces-and-temporal-fence" }) + "\n");
+  const store = new MemberStore(pool), roots = [];
+  for (const request of input.requests) {
+    const conversation = await store.getConversation({ ownerId: input.ownerId, conversationId: request.conversationId });
+    roots.push(textTurnRootPath("/var/lib/birbcrew/native", conversation, "cursor"));
+  }
+  process.stdout.write(JSON.stringify({ passed: true, conversations: conversations.length, roots, method: "stopped-private-pid-namespaces-and-temporal-fence" }) + "\n");
 } finally {
   await pool.end();
   await rm(directory, { recursive: true, force: true });

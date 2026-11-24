@@ -9,7 +9,7 @@ import { z } from "zod";
 
 const project = fileURLToPath(new URL("../../", import.meta.url));
 
-async function fixture(t: TestContext, mode: "valid" | "missing" | "version" | "hang" | "network" | "early-exit" | "held-pipe") {
+async function fixture(t: TestContext, mode: "valid" | "missing" | "version" | "hang" | "network" | "early-exit" | "held-pipe" | "group-helper") {
   const root = await mkdtemp(join(tmpdir(), "cursor-policy-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await cp(join(project, "src"), join(root, "src"), { recursive: true });
@@ -34,6 +34,7 @@ ${mode === "hang" ? "await new Promise(()=>{setInterval(()=>{},1000)});" : ""}
 ${mode === "network" ? "await fetch('https://127.0.0.1:1/forbidden');" : ""}
 ${mode === "early-exit" ? "process.exit(0);" : ""}
 ${mode === "held-pipe" ? "const {spawn}=await import('node:child_process');spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),7000)'],{detached:true,stdio:['ignore','inherit','ignore']}).unref();process.exit(0);" : ""}
+${mode === "group-helper" ? `const {spawn}=await import('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(`setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(observed + ".late")},'survived')},500)`)}],{stdio:'ignore'}).unref();` : ""}
 const forbidden=()=>{writeFileSync(${JSON.stringify(invoked)},'unexpected');throw new Error('inference forbidden')};
 export class Agent {static create=forbidden;static resume=forbidden;}
 export const Cursor={models:{list:forbidden}};
@@ -108,6 +109,25 @@ test("a detached fixture holding stdout cannot extend the probe deadline", { tim
   }
 });
 
+test("a successful probe terminates its remaining helper group", async (t) => {
+  const f = await fixture(t, "group-helper");
+  await f.support(f.state);
+  await new Promise(resolve => setTimeout(resolve, 800));
+  await assert.rejects(access(f.observed + ".late"));
+  assert.deepEqual(await readdir(f.state), []);
+});
+
+test("the adapter cannot resolve a different nested SDK", async (t) => {
+  const f = await fixture(t, "valid");
+  const nested = join(f.root, "node_modules/@operatorworks/switchboard/node_modules/@cursor/sdk");
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(nested, "package.json"), JSON.stringify({ name: "@cursor/sdk", version: "1.4.3", main: "index.js" }));
+  await writeFile(join(nested, "index.js"), "throw new Error('nested SDK must not load');\n");
+  await assert.rejects(f.support(f.state), { code: "cursor_policy_unsupported" });
+  await assert.rejects(access(f.state));
+  await assert.rejects(access(f.observed));
+});
+
 test("unsupported installed tuples prevent registration before SQL or volume markers", async (t) => {
   const f = await fixture(t, "version");
   const { registerProfiles } = await import(pathToFileURL(join(f.root, "src/service/deployment.ts")).href);
@@ -120,5 +140,19 @@ test("unsupported installed tuples prevent registration before SQL or volume mar
   await assert.rejects(registerProfiles(pool, config, f.state), { code: "cursor_policy_unsupported" });
   assert.equal(queries, 0);
   await assert.rejects(access(f.state));
+  await assert.rejects(access(f.observed));
+});
+
+test("runner re-registration does not repeat the startup Cursor import probe", async (t) => {
+  const f = await fixture(t, "version");
+  const { registerProfiles } = await import(pathToFileURL(join(f.root, "src/service/deployment.ts")).href);
+  const pool = new Pool({ connectionString: "postgresql://fixture:fixture@127.0.0.1:1/fixture" });
+  t.after(() => pool.end());
+  let queries = 0;
+  pool.query = () => { queries += 1; throw new Error("fixture database reached"); };
+  pool.connect = () => { queries += 1; throw new Error("fixture database reached"); };
+  const config = new Map([["cursor.v1", { accountId: "synthetic", cursor: { model: "grok-4.7", apiKey: "synthetic-key", cwd: "/metadata/legacy" } }]]);
+  await assert.rejects(registerProfiles(pool, config, f.state, undefined, { probeCursorPolicy: false }), { message: "fixture database reached" });
+  assert.ok(queries > 0);
   await assert.rejects(access(f.observed));
 });
