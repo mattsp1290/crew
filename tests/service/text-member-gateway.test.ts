@@ -452,6 +452,21 @@ test("cursor and opencode each commit one text turn and refuse a second launch",
       const memberId = (created.payload as { memberId: string }).memberId;
       const listing = await call("GET", "/v1/members");
       assert.equal((listing.payload as { members: { memberId: string; requestTextBytes?: number }[] }).members.find(m => m.memberId === memberId)?.requestTextBytes, n);
+      if (engine === "cursor" && n === 65_536) {
+        const conversationId = randomUUID(), requestId = randomUUID();
+        assert.equal((await call("POST", "/v1/conversations", { memberId, conversationId })).status, 201);
+        const prefix = 'Extract the synthetic record: {"name":"cedar"}. Padding: ';
+        const text = prefix + "x".repeat(13 * 1024 - Buffer.byteLength(prefix));
+        assert.equal(Buffer.byteLength(text), 13 * 1024);
+        const before = await readFile(log, "utf8");
+        assert.equal((await call("POST", `/v1/conversations/${conversationId}/requests`, { requestId, text })).status, 202);
+        await until("Cursor 13 KiB committed", async () => (await store.requestStatus({ ownerId, conversationId, requestId })).phase === "committed");
+        assert.equal(await members.submit({ ownerId, conversationId, requestId, text }), reply);
+        const after = await readFile(log, "utf8");
+        assert.equal(after.slice(before.length), "start\n");
+        assert.equal((await call("POST", `/v1/conversations/${conversationId}/requests`, { requestId, text })).status, 202);
+        assert.equal(await readFile(log, "utf8"), after, "13 KiB replay does not launch again");
+      }
       for (const versioned of [false, true]) {
         const conversationId = randomUUID();
         assert.equal((await call("POST", "/conversations", { memberId, conversationId })).status, 201);

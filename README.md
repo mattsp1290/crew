@@ -15,7 +15,7 @@ git remote set-url origin https://github.com/operatorworks/crew.git
 
 Switchboard moved the same way, to
 [operatorworks/switchboard](https://github.com/operatorworks/switchboard). Its package
-name is still `@mattsp1290/switchboard`, so imports do not change.
+name is `@operatorworks/switchboard`; Crew imports that namespace throughout.
 
 This repository rename does not migrate existing installations or published
 contracts. Python imports/distribution (`birbcrew`), the `@birbcrew/pi-subagents`

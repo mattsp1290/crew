@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,6 +14,46 @@ const apiKey = "cursor-test-key";
 const model = "composer-2";
 const toolArguments = { command: "rm -rf SECRET_TOOL" };
 const toolResult = "SECRET_TOOL_RESULT";
+
+test("Cursor physical workspaces are fresh, private and independent of profile cwd", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cursor-private-state-"));
+  const legacy = await mkdtemp(join(tmpdir(), "cursor-legacy-metadata-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  t.after(() => rm(legacy, { recursive: true, force: true }));
+  await writeFile(join(legacy, "unchanged"), "legacy sentinel");
+  const workspaces: string[] = [];
+  const profile: CursorProfile = {
+    model, apiKey, cwd: legacy,
+    async runtime(options) {
+      assert.equal(options.cwd, join(options.sessionDirectory, "workspace"));
+      assert.notEqual(options.cwd, legacy);
+      assert.equal((await stat(options.cwd)).mode & 0o777, 0o700);
+      assert.deepEqual(await readdir(options.cwd), []);
+      workspaces.push(options.cwd);
+      await writeFile(join(options.cwd, "synthetic-output"), "private content");
+      return {
+        async start({ onEvent }) {
+          onEvent({ kind: "text", text: "done" });
+          onEvent({ kind: "ended", outcome: "completed" });
+          return { agentId: "synthetic-agent", finished: Promise.resolve("completed"), async abort() {} };
+        },
+        async close() {},
+      };
+    },
+  };
+  for (let index = 0; index < 2; index += 1) {
+    const place = member({ cwd: stateDir });
+    const result = await runCursorTurn(place.input(), place.member, profile, stateDir);
+    assert.equal(result.kind, "complete");
+    if (result.kind === "complete") assert.deepEqual(result.checkpoint, {
+      version: 1, engine: "cursor", state: { cwd: legacy, model, agentId: "synthetic-agent" },
+    });
+    await assert.rejects(access(workspaces[index]));
+  }
+  assert.equal(new Set(workspaces).size, 2);
+  assert.deepEqual(await readdir(legacy), ["unchanged"]);
+  assert.equal(await readFile(join(legacy, "unchanged"), "utf8"), "legacy sentinel");
+});
 
 function member(state: { cwd: string }): { member: Conversation; input: (extra?: Partial<DriverInput>) => DriverInput; directory: (ownerId: string, memberId: string, conversationId: string) => string } {
   const conversation: Conversation = {

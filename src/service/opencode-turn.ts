@@ -132,7 +132,7 @@ export async function runOpenCodeTurn(input: DriverInput, member: Conversation, 
   let inventory: (() => readonly number[] | null) | undefined;
   try {
     await preparePrivate(root, ["home", "tmp"]);
-    const { opencodeHostAdapter } = await import("@mattsp1290/switchboard/host/opencode");
+    const { opencodeHostAdapter } = await import("@operatorworks/switchboard/host/opencode");
     const opened = await opencodeHostAdapter.open({
       model: profile.model,
       environment: { variables: { ...profile.env }, nativeConfig: { cwd: profile.cwd, executable: profile.executable, account: profile.account } },

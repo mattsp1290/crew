@@ -44,6 +44,15 @@ response fields are compatible; consumers must reject an unsupported major versi
 Trusted context is currently an operator-configured local runtime, **not** a public
 HTTP context/tool injection endpoint. Capabilities are implementation contracts, not
 proof of the operator's provider access or configured profile availability.
+Production Cursor profiles use a fixed server-side `cursor-text-v1` policy with
+no model tools, settings, MCP, subagents or custom tools and an empty virtual
+filesystem. Clients cannot configure those controls. The physical workspace is
+private per conversation; profile `cwd` is metadata. Trusted runtime overrides
+are outside this guarantee. See [profile configuration](member-profiles.md) and
+[qualification status](cursor-restricted-text-qualification.md); this model-tool
+boundary does not isolate opaque SDK code from all process-readable files or
+network access. Existing one-input, replay, uncertainty and erasure contracts
+remain unchanged, including `content_runtime_unconfirmed` for unknown writers.
 Proposed, not advertised: [frontend tools](frontend-tools.md) specifies a future `frontendTools` capability. It adds only optional fields and new routes (definition, batch and call routes) and leaves existing text submit and the observation route and stream unchanged.
 
 | Route | Purpose |

@@ -1,16 +1,14 @@
 import type { TextStateRoot } from "./text-state-location.ts";
+import type { createCursorTextRuntime } from "@operatorworks/switchboard/cursor";
+import { join } from "node:path";
+import { warn } from "./diagnostics.ts";
 import { completeTextWriterInventory } from "./text-runtime-inventory.ts";
 import type { DriverInput, DriverResult } from "./activities.ts";
 import { turnTextBytes, type Conversation } from "./domain.ts";
 import { preparePrivate, removePrivate, sweepWhenSettled } from "./private-directory.ts";
 import { boundedBy, scrubTextEngineEnvironment, TextTurnFailed, textTurnFailed, textTurnResult, textTurnRoot } from "./text-turn.ts";
 
-export interface CursorRuntimeOptions {
-  readonly cwd: string;
-  readonly sessionDirectory: string;
-  readonly apiKey: string;
-  readonly model: string;
-}
+export type CursorRuntimeOptions = Parameters<typeof createCursorTextRuntime>[0];
 export type CursorRuntimeEvent =
   | { readonly kind: "text"; readonly text: string }
   | { readonly kind: "tool"; readonly callId: string; readonly name: string; readonly status: "running" | "completed" | "error" }
@@ -43,8 +41,13 @@ async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRunt
   process.env.HOME = options.sessionDirectory;
   process.env.TMPDIR = options.sessionDirectory;
   process.env.CURSOR_DATA_DIR = options.sessionDirectory;
-  const { createCursorRuntime } = await import("@mattsp1290/switchboard/cursor");
-  return createCursorRuntime(options);
+  try {
+    const { createCursorTextRuntime } = await import("@operatorworks/switchboard/cursor");
+    return createCursorTextRuntime(options);
+  } catch {
+    warn("cursor_policy_unsupported");
+    throw textTurnFailed();
+  }
 }
 
 function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -116,10 +119,10 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
   let runtime: CursorRuntimeHandle | undefined;
   let result: DriverResult | undefined;
   try {
-    await preparePrivate(sessionDirectory);
+    await preparePrivate(sessionDirectory, ["workspace"]);
     try {
       runtime = await (profile.runtime ?? defaultRuntime)({
-        cwd: profile.cwd, sessionDirectory, apiKey: profile.apiKey, model: profile.model,
+        cwd: join(sessionDirectory, "workspace"), sessionDirectory, apiKey: profile.apiKey, model: profile.model,
       });
     } catch {
       throw textTurnFailed();
@@ -158,6 +161,7 @@ export async function runCursorTurn(input: DriverInput, member: Conversation, pr
       input.signal.removeEventListener("abort", onAbort);
     }
   } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "cursor_policy_unsupported") warn("cursor_policy_unsupported");
     if (error instanceof TextTurnFailed) throw error;
     throw textTurnFailed();
   } finally {
