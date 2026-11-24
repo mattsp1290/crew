@@ -21,7 +21,7 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("--key-stdin", result.stdout)
 
-    def failed_setup(self, interrupt=False, readiness=False):
+    def failed_setup(self, interrupt=False, readiness=False, inspection=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             docker = root / "docker"
@@ -31,6 +31,7 @@ from pathlib import Path
 root=Path({str(root)!r})
 with (root/'calls').open('a') as log:log.write(json.dumps({{'args':sys.argv[1:],'env':dict(os.environ)}})+'\\n')
 if sys.argv[1:3]==['image','inspect']:
+ if {inspection!r}:sys.exit(1)
  print(json.dumps([{{'Id':sys.argv[3],'Architecture':'arm64','Os':'linux'}}]))
  (root/'proof.mts').write_text('changed after snapshot')
 elif sys.argv[1:3]==['start','-a']:
@@ -46,6 +47,8 @@ elif sys.argv[1:3]==['network','create']:
 elif 'pg_isready' in sys.argv:
  (root/'allocating').touch()
  time.sleep(30)
+elif {inspection!r} and (sys.argv[1]=='rm' or sys.argv[1:3] in [['volume','rm'],['network','rm']]):
+ sys.exit(1)
 """)
             docker.chmod(0o755)
             proof = root / "proof.mts"
@@ -101,7 +104,7 @@ elif 'pg_isready' in sys.argv:
                 self.assertFalse(any("--name" in c["args"] and c["args"][c["args"].index("--name") + 1].endswith("-worker") for c in calls))
             retained = "".join(p.read_text() for p in (root / "evidence").iterdir())
             self.assertNotIn("synthetic-sdk-secret", retained)
-            self.assertEqual(report["error"], "qualification_interrupted" if interrupt else "docker_operation_failed:network")
+            self.assertEqual(report["error"], "qualification_interrupted" if interrupt else "docker_operation_failed:image" if inspection else "docker_operation_failed:network")
 
     def test_failed_allocation_cleans_up_without_credentials(self):
         self.failed_setup()
@@ -111,6 +114,9 @@ elif 'pg_isready' in sys.argv:
 
     def test_readiness_interruption_cannot_continue_to_inference(self):
         self.failed_setup(interrupt=True, readiness=True)
+
+    def test_unallocated_resources_preserve_the_original_failure(self):
+        self.failed_setup(inspection=True)
 
 
 if __name__ == "__main__":

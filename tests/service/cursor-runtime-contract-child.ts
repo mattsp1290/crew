@@ -37,11 +37,8 @@ export const Agent={
  async resume(){resumes++;throw new Error('Crew must never resume this lane')}
 };
 export function audit(){return JSON.stringify({importedEnvironment,messages,stores,resumes,disposed,
- creations:creations.map(o=>({keys:Object.keys(o).sort(),tools:o.tools,mcpServers:o.mcpServers,agents:o.agents,
-  local:{keys:Object.keys(o.local).sort(),cwd:o.local.cwd,store:o.local.store.dir,settingSources:o.local.settingSources,
-   sandboxOptions:o.local.sandboxOptions,enableAgentRetries:o.local.enableAgentRetries,fsMatches:o.local.fs===tree,
-   reportedWorkspacePath:o.local.reportedWorkspacePath,customTools:o.local.customTools,hostMcpBridgeUrls:o.local.hostMcpBridgeUrls,
-   dirs:o.local.dirs,autoReview:o.local.autoReview}}))});}
+ creations:creations.map(o=>({keys:Object.keys(o).sort(),...o,apiKey:o.apiKey==='synthetic-sdk-key',
+  local:{keys:Object.keys(o.local).sort(),...o.local,store:o.local.store.dir,fs:o.local.fs===tree}}))});}
 ` };
   },
 });
@@ -83,13 +80,7 @@ assert.equal(typeof inspect, "function");
 if (typeof inspect !== "function") throw new Error("missing audit function");
 const audit = z.object({
   importedEnvironment: z.record(z.string(), z.string()), messages: z.array(z.array(z.unknown())), stores: z.array(z.string()),
-  resumes: z.number(), disposed: z.number(), creations: z.array(z.object({
-    keys: z.array(z.string()), tools: z.array(z.string()), mcpServers: z.record(z.string(), z.unknown()), agents: z.record(z.string(), z.unknown()),
-    local: z.object({ keys: z.array(z.string()), cwd: z.string(), store: z.string(), settingSources: z.array(z.string()),
-      sandboxOptions: z.object({ enabled: z.boolean() }), enableAgentRetries: z.boolean(), fsMatches: z.boolean(),
-      reportedWorkspacePath: z.string(), customTools: z.record(z.string(), z.unknown()), hostMcpBridgeUrls: z.array(z.string()),
-      dirs: z.array(z.string()), autoReview: z.boolean() }),
-  })),
+  resumes: z.number(), disposed: z.number(), creations: z.array(z.record(z.string(), z.unknown())),
 }).parse(JSON.parse(z.string().parse(inspect())));
 assert.equal(audit.resumes, 0);
 for (const name of ["DATABASE_URL", "CURSOR_API_KEY", "CURSOR_BACKEND_URL", "CURSOR_SDK_LOCAL_MODEL_CATALOG_JSON", "CURSOR_RIPGREP_PATH"]) {
@@ -109,20 +100,19 @@ assert.deepEqual(await readdir(legacy), ["sentinel"]);
 if (mode === "missing") assert.deepEqual(audit.creations, []);
 else {
   assert.equal(audit.creations.length, 1);
-  const launch = audit.creations[0];
-  assert.deepEqual(launch.keys, ["agents", "apiKey", "local", "mcpServers", "model", "tools"]);
-  assert.deepEqual(launch.tools, []);
-  assert.deepEqual(launch.agents, {});
-  assert.deepEqual(launch.mcpServers, {});
-  assert.deepEqual(launch.local, {
-    keys: ["autoReview", "customTools", "cwd", "dirs", "enableAgentRetries", "fs", "hostMcpBridgeUrls", "reportedWorkspacePath", "sandboxOptions", "settingSources", "store"],
-    cwd: join(audit.importedEnvironment.HOME, "workspace"), store: audit.importedEnvironment.HOME,
-    settingSources: [], sandboxOptions: { enabled: false }, enableAgentRetries: false, fsMatches: true,
-    reportedWorkspacePath: "/", customTools: {}, hostMcpBridgeUrls: [], dirs: [], autoReview: false,
+  assert.deepEqual(audit.creations[0], {
+    keys: ["agents", "apiKey", "local", "mcpServers", "model", "tools"],
+    tools: [], agents: {}, mcpServers: {}, apiKey: true, model: { id: profile.model },
+    local: {
+      keys: ["autoReview", "customTools", "cwd", "dirs", "enableAgentRetries", "fs", "hostMcpBridgeUrls", "reportedWorkspacePath", "sandboxOptions", "settingSources", "store"],
+      cwd: join(audit.importedEnvironment.HOME, "workspace"), store: audit.importedEnvironment.HOME,
+      settingSources: [], sandboxOptions: { enabled: false }, enableAgentRetries: false, fs: true,
+      reportedWorkspacePath: "/", customTools: {}, hostMcpBridgeUrls: [], dirs: [], autoReview: false,
+    },
   });
   assert.deepEqual(audit.messages, mode === "late-create" ? [] : [[input.text]]);
   assert.deepEqual(audit.stores, [audit.importedEnvironment.HOME]);
   assert.equal(audit.disposed, 1);
-  await assert.rejects(access(launch.local.cwd));
+  await assert.rejects(access(join(audit.importedEnvironment.HOME, "workspace")));
 }
 process.stdout.write("production-cursor-boundary-verified\n");

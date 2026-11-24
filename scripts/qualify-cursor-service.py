@@ -61,6 +61,18 @@ def main():
     def save():
         (args.out / "evidence.json").write_text(json.dumps(report, indent=2) + "\n")
 
+    def cleanup_resource(kind, name, remove, query):
+        try:
+            docker(*remove)
+            entry = {kind: name, "removed": True}
+        except Exception:
+            try:
+                names = docker(*query).decode().splitlines()
+                entry = {kind: name, "removed": name not in names, "absenceChecked": True}
+            except Exception:
+                entry = {kind: name, "removed": False}
+        report["cleanup"].append(entry)
+
     def docker(*argv, data=None, worker=False, timeout=60, expected=0, include_stderr=False):
         if argv[0] in ("create", "run"):
             proxy_args = [arg for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY",
@@ -275,7 +287,7 @@ for(const p of JSON.parse(s).roots){fs.mkdirSync(p,{recursive:true,mode:0o700});
         until(lambda: docker(*gateway_ready))
         proof("erased", journey["memberId"], completed)
         erased_code = """const fs=require('node:fs');let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{
-const roots=JSON.parse(s).roots;for(const p of roots){if(fs.existsSync(p))throw new Error('root_remains');}
+const roots=JSON.parse(s).roots;for(const p of roots){try{fs.lstatSync(p);throw new Error('root_remains');}catch(error){if(error.code!=='ENOENT')throw error;}}
 console.log(JSON.stringify({seeded:roots.length,rootsAbsent:roots.length}));});"""
         report["physicalErasure"] = json.loads(tools(["node", "-e", erased_code], root_input, ["-v", state + ":/state:ro"]))
         report["phase"] = "passed"
@@ -296,26 +308,17 @@ console.log(JSON.stringify({seeded:roots.length,rootsAbsent:roots.length}));});"
                 (args.out / (name + ".log")).write_text(logs[:1024 * 1024])
             except Exception:
                 pass
-            try:
-                docker("rm", "-fv", name)
-                report["cleanup"].append({"container": name, "removed": True})
-            except Exception:
-                report["cleanup"].append({"container": name, "removed": False})
+            cleanup_resource("container", name, ["rm", "-fv", name],
+                             ["ps", "-a", "--format", "{{.Names}}", "--filter", "name=^/" + name + "$"])
         for volume in reversed(volumes):
-            try:
-                docker("volume", "rm", volume)
-                report["cleanup"].append({"volume": volume, "removed": True})
-            except Exception:
-                report["cleanup"].append({"volume": volume, "removed": False})
-        try:
-            docker("network", "rm", network)
-            report["cleanup"].append({"network": network, "removed": True})
-        except Exception:
-            report["cleanup"].append({"network": network, "removed": False})
+            cleanup_resource("volume", volume, ["volume", "rm", volume],
+                             ["volume", "ls", "--format", "{{.Name}}", "--filter", "name=" + volume])
+        cleanup_resource("network", network, ["network", "rm", network],
+                         ["network", "ls", "--format", "{{.Name}}", "--filter", "name=" + network])
         key = ""
         if not all(row["removed"] for row in report["cleanup"]):
             report["passed"] = False
-            report["error"] = "cleanup_failed"
+            report.setdefault("error", "cleanup_failed")
         save()
     return 0 if report.get("passed") and all(v["removed"] for v in report["cleanup"]) else 1
 

@@ -10,9 +10,10 @@ restricted-container support.
 The candidate is merged Switchboard
 `55e04a1d255ce4d5acf6302a900f57e0bb718b70`, SDK `1.4.2`.
 [The identity record](../tests/fixtures/cursor-candidate/candidate.json) identifies
-the archive bytes. Obtain that exact archive from the implementation plan's
-retained upstream verification artifacts; rebuilding is not assumed to reproduce
-it. A different archive requires a fresh source review and lock update.
+the archive bytes. The same bytes are checked in as
+`vendor/switchboard/switchboard-55e04a1d255ce4d5acf6302a900f57e0bb718b70.tgz`.
+Rebuilding is not assumed to reproduce them. A different archive requires a fresh
+source review and lock update.
 
 ## Run the offline candidate audit
 
@@ -166,7 +167,10 @@ images before inference. Every fixture overrides Docker's default proxy settings
 
 The API client checks synthetic JSON extraction at 13,312 and 65,536 bytes,
 immutable advertised limits, pre-launch size refusals, replay launch counts,
-conflicts and cross-owner refusal. A credential-free workflow coordinator stays
+conflicts and cross-owner refusal. Each unpredictable answer appears only in the
+final record after the padding. Recovery phases require one request identity;
+erasure requires three distinct completed conversation identities.
+A credential-free workflow coordinator stays
 available while all Cursor engine pollers are stopped. The original accepted
 request completes once after engine restart. A separately interrupted launch
 must remain uncertain without another launch. The client uses receipt reads
@@ -195,4 +199,5 @@ The launcher failure and cancellation checks need no Docker or inference:
 
 ```sh
 python3 tests/proof/cursor_service_launcher_test.py
+node --test tests/proof/cursor-service-phase.test.mts
 ```

@@ -10,7 +10,7 @@ import { withNativeAdmission } from "./native-admission.ts";
 import type { Launch } from "./supervisor.ts";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { registerProfiles } from "./deployment.ts";
+import { registerProfiles, runnerRegistrationProfiles } from "./deployment.ts";
 import { memberProfiles } from "./profiles.ts";
 import type { DriverInput } from "./activities.ts";
 import { isTextEngine, type Conversation, type Checkpoint, type Engine } from "./domain.ts";
@@ -54,9 +54,7 @@ process.once("message", async (command: AdmittedTurn) => {
     try {
       const member = command.conversation;
       if (isTextEngine(member.engine) && command.textVolume?.engine !== member.engine) throw new Error("Missing pinned text volume");
-      // Startup already checked the installation. Each Cursor factory rechecks its own
-      // support before create; unrelated engines must not depend on a Cursor import here.
-      await registerProfiles(pool, profiles, stateDir, command.textVolume, { probeCursorPolicy: false });
+      await registerProfiles(pool, runnerRegistrationProfiles(profiles, member.engine), stateDir, command.textVolume);
       const driver = memberProfiles(profiles, stateDir, process.pid, command.textVolume).get(member.profile)?.[member.engine];
       if (!driver) throw new Error("Unsupported member profile");
       // Read at every launch, outside workflow code. Claude and Codex reuse what their native session recorded on its first turn.

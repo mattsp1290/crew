@@ -50,7 +50,9 @@ The credential-free registration probe requires Node 24.22.3, SDK 1.4.2 and the
 vendored Switchboard pin, checks exports without inference, and fails with
 `cursor_policy_unsupported` before profile or volume registration writes.
 It checks that Crew and Switchboard resolve the same SDK installation. The
-worker runs this probe at startup; per-turn registration does not repeat it.
+worker runs this probe at startup and before production Cursor re-registration.
+Unrelated engine runners omit production Cursor registrations, so adding a Cursor
+entry to a reloaded module cannot bypass its support check.
 A trusted module supplying `runtime` bypasses this production boundary and is
 outside its guarantee; `loadLiveProfiles` never supplies one.
 

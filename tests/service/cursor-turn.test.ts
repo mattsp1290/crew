@@ -374,3 +374,25 @@ test("abort after cursor start resolves aborts the turn", async () => {
   assert.equal(aborted, 1);
   await rm(stateDir, { recursive: true, force: true });
 });
+
+test("cancellation queued behind admission still aborts the handed-off handle once", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cursor-admission-race-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const place = member({ cwd: stateDir }), controller = new AbortController();
+  let aborted = 0, closed = 0;
+  const profile: CursorProfile = { model, apiKey, cwd: stateDir, runtime: () => ({
+    start() {
+      const admission = Promise.withResolvers<Awaited<ReturnType<CursorRuntimeHandle["start"]>>>();
+      queueMicrotask(() => {
+        admission.resolve({ agentId: "synthetic-agent", finished: Promise.resolve("completed"), async abort() { aborted += 1; } });
+        queueMicrotask(() => controller.abort());
+      });
+      return admission.promise;
+    },
+    async close() { closed += 1; },
+  }) };
+  await assert.rejects(runCursorTurn(place.input({ signal: controller.signal }), place.member, profile, stateDir), { message: "Text engine turn failed" });
+  await delay(0);
+  assert.equal(aborted, 1);
+  assert.equal(closed, 1);
+});

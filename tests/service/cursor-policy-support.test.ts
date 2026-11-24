@@ -27,11 +27,12 @@ async function fixture(t: TestContext, mode: "valid" | "missing" | "version" | "
   await writeFile(join(sdk, "package.json"), JSON.stringify({ name: "@cursor/sdk", version: mode === "version" ? "1.4.3" : "1.4.2", type: "module", exports: "./index.js" }));
   const observed = join(root, "observed.json");
   const invoked = join(root, "agent-invoked");
+  const network = join(root, "network-denied");
   await writeFile(join(sdk, "index.js"), `
 import {writeFileSync} from 'node:fs';
 writeFileSync(${JSON.stringify(observed)},JSON.stringify({env:process.env,cwd:process.cwd()}));
 ${mode === "hang" ? "await new Promise(()=>{setInterval(()=>{},1000)});" : ""}
-${mode === "network" ? "await fetch('https://127.0.0.1:1/forbidden');" : ""}
+${mode === "network" ? `try{await fetch('https://127.0.0.1:1/forbidden');}catch(error){writeFileSync(${JSON.stringify(network)},error?.message==='cursor_policy_unsupported'?'policy':'transport');}throw new Error('synthetic import failure');` : ""}
 ${mode === "early-exit" ? "process.exit(0);" : ""}
 ${mode === "held-pipe" ? "const {spawn}=await import('node:child_process');spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),7000)'],{detached:true,stdio:['ignore','inherit','ignore']}).unref();process.exit(0);" : ""}
 ${mode === "group-helper" ? `const {spawn}=await import('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(`setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(observed + ".late")},'survived')},500)`)}],{stdio:'ignore'}).unref();` : ""}
@@ -43,7 +44,7 @@ export const emptyFs=${mode === "missing" ? "undefined" : "()=>({read(){},list()
 `);
   await writeFile(join(adapter, "dist/cursor/index.js"), "export function createCursorTextRuntime(){throw new Error('agent construction forbidden')}\n");
   const module: typeof import("../../src/service/cursor-policy-support.ts") = await import(pathToFileURL(join(root, "src/service/cursor-policy-support.ts")).href);
-  return { root, state: join(root, "state"), observed, invoked, support: module.assertCursorPolicySupport };
+  return { root, state: join(root, "state"), observed, invoked, network, support: module.assertCursorPolicySupport };
 }
 
 test("the probe is credential-free, export-only and cleaned after success", async (t) => {
@@ -84,6 +85,7 @@ for (const mode of ["missing", "network", "early-exit"] as const) {
     const f = await fixture(t, mode);
     await assert.rejects(f.support(f.state), { code: "cursor_policy_unsupported", message: "Cursor text policy is unsupported" });
     await assert.rejects(access(f.invoked));
+    if (mode === "network") assert.equal(await readFile(f.network, "utf8"), "policy");
     assert.deepEqual(await readdir(f.state), []);
   });
 }
@@ -143,16 +145,21 @@ test("unsupported installed tuples prevent registration before SQL or volume mar
   await assert.rejects(access(f.observed));
 });
 
-test("runner re-registration does not repeat the startup Cursor import probe", async (t) => {
+test("a Codex reload cannot register a newly added production Cursor profile", async (t) => {
   const f = await fixture(t, "version");
-  const { registerProfiles } = await import(pathToFileURL(join(f.root, "src/service/deployment.ts")).href);
+  const { registerProfiles, runnerRegistrationProfiles } = await import(pathToFileURL(join(f.root, "src/service/deployment.ts")).href);
   const pool = new Pool({ connectionString: "postgresql://fixture:fixture@127.0.0.1:1/fixture" });
   t.after(() => pool.end());
   let queries = 0;
   pool.query = () => { queries += 1; throw new Error("fixture database reached"); };
   pool.connect = () => { queries += 1; throw new Error("fixture database reached"); };
   const config = new Map([["cursor.v1", { accountId: "synthetic", cursor: { model: "grok-4.7", apiKey: "synthetic-key", cwd: "/metadata/legacy" } }]]);
-  await assert.rejects(registerProfiles(pool, config, f.state, undefined, { probeCursorPolicy: false }), { message: "fixture database reached" });
+  const reloaded = runnerRegistrationProfiles(config, "codex");
+  assert.equal(reloaded.get("cursor.v1")?.cursor, undefined);
+  assert.ok(config.get("cursor.v1")?.cursor);
+  assert.equal(runnerRegistrationProfiles(config, "cursor"), config);
+  await assert.rejects(registerProfiles(pool, reloaded, f.state), { message: "fixture database reached" });
   assert.ok(queries > 0);
   await assert.rejects(access(f.observed));
+  await assert.rejects(access(join(f.state, "cursor")));
 });

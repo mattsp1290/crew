@@ -51,18 +51,16 @@ async function defaultRuntime(options: CursorRuntimeOptions): Promise<CursorRunt
 }
 
 function raceAbort<T extends { abort(): Promise<void> }>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  const tracked = work.then((handle) => {
-    if (signal.aborted) void handle.abort().catch(() => undefined);
-    return handle;
-  });
-  tracked.catch(() => undefined);
-  if (signal.aborted) return Promise.reject(textTurnFailed());
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(textTurnFailed());
-    signal.addEventListener("abort", onAbort, { once: true });
-    tracked.then((handle) => {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    work.then((handle) => {
       signal.removeEventListener("abort", onAbort);
-      if (signal.aborted) reject(textTurnFailed());
+      if (signal.aborted) {
+        void Promise.resolve().then(() => handle.abort()).catch(() => undefined);
+        reject(textTurnFailed());
+      }
       else resolve(handle);
     }, (error: unknown) => {
       signal.removeEventListener("abort", onAbort);

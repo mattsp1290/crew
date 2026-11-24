@@ -25,7 +25,7 @@
     ],
     "builtFrom": "Switchboard merged PR #84; retained Node 24.22.3 / npm 11.19.1 candidate archive"
   },
-  "productionImage": "sha256:daf76d85c2a1acf870e135ba001f696791ad264074ddf84662f365bcd6ea0407",
+  "productionImage": "sha256:aafb71eb306f63a880eaf3027689f7109a4bd5c42ceaa9fccae30838c8f73df0",
   "model": "grok-4.7",
   "runtimeJourneyPassed": true,
   "candidateBoundary": {
@@ -70,7 +70,7 @@
     "uname": "aarch64"
   },
   "namespace": {
-    "image": "sha256:daf76d85c2a1acf870e135ba001f696791ad264074ddf84662f365bcd6ea0407",
+    "image": "sha256:aafb71eb306f63a880eaf3027689f7109a4bd5c42ceaa9fccae30838c8f73df0",
     "command": [
       "/usr/bin/unshare",
       "-Ur",
@@ -94,9 +94,9 @@
   "cleanupComplete": true,
   "writerInventory": "unknown; private environment remains for the dedicated runner lifetime, including late admission disposal; trusted drain required before erasure",
   "sourceHashes": {
-    "scripts/qualify-cursor-service.py": "b195b612a04f2fb1fc32e5819a11e49c91a666676b29662afb92451e3e87023b",
+    "scripts/qualify-cursor-service.py": "908bdec8a91e912937c96a3e8fcf5482e5b31af6e3373181690a98c8afe13d68",
     "scripts/cursor-service-drain.mjs": "74275bebd95322cd446c26d6a6ef3165f0c7adbf34b974501f10a39ecb1e7716",
-    "tests/proof/cursor-restricted-text.mts": "194ac7fcf49f88c37aeb1a9b5c02a9cf4db396056666667c6a4d9d13831665dc"
+    "tests/proof/cursor-restricted-text.mts": "fcc3bc1dff2c6a9a879b4fccd6a4b1b30f8a42d44386523cb1901c7e29857753"
   },
   "evidenceSha256": {
     "traced-2.stdout": "fc334fe0d978f14290a733ae1df3491266fab6cf027b47d3fa899e41edecfafd",
@@ -128,7 +128,11 @@
     "fingerprint-compat.json": "39eca32124c1ab743d2d7826aeb17147ad44e84c542ad90c28c1fc4c99904f86",
     "upstream-fingerprint-consumer.diff": "c9e26e3ebcca8cd7f71f3e8dabfb96b2e07e8a1973ce3ca4e1e69b8e0eb96ca1",
     "correctness-regressions.stdout": "c569c79c92b28a72f9c176beb61bea3eca3bbf98d64cbcf636392bacb7b5448c",
-    "correctness-shared-final.stdout": "1d729fbc4dee34b91f02037c5d9dabb9a6a503efb85046451605a9b28d822943"
+    "correctness-shared-final.stdout": "1d729fbc4dee34b91f02037c5d9dabb9a6a503efb85046451605a9b28d822943",
+    "service-live-11/evidence.json": "b93d72a973e84e841bf800beb8fd135b8917c6f67df5ebe8904938b8c4d53435",
+    "service-live-11-canary-before.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "service-live-11-canary-after.json": "e55eec01775706455253c5573f2bd720bf601de8b4cc74241883832b016ed43e",
+    "maintainability-regressions.stdout": "457761e6a17cdc20da1a7ffe0167e4888cf361111c5a0de136df14fdbc7ac389"
   },
   "evidenceLocation": "External private execution artifact directory; hashes identify the retained reports, not prompt/reply contents. Final review report names its local path.",
   "limitations": [
@@ -152,5 +156,18 @@
     "rootsAbsent": 3
   },
   "serviceSourceIdentityMatched": 159,
-  "mcpObserverPositiveControl": true
+  "mcpObserverPositiveControl": true,
+  "extractionRecord": "Unique per request; appears only after padding at the end of each 13,312/65,536-byte input.",
+  "proofPhaseInputs": "Exactly one identity for recovery/admission/uncertainty; three distinct conversations and request IDs for erasure.",
+  "finalDeterministicGates": {
+    "textPrivacyRecoveryErasureAndPhaseContracts": 112,
+    "sharedEngines": 24,
+    "integrationApi": 29,
+    "client": 51,
+    "telemetry": 38,
+    "affectedDriversAndColdCodexResume": 35,
+    "candidateLauncher": 9,
+    "pythonObserver": 1,
+    "pythonLauncher": 5
+  }
 }

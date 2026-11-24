@@ -79,6 +79,8 @@ jobs:
         run: |
           python3 tests/proof/cursor_canary_test.py
           python3 tests/proof/cursor_service_launcher_test.py
+      - name: Cursor live proof phase contracts (no inference)
+        run: node --test tests/proof/cursor-service-phase.test.mts
       - run: npm run test:client
       - run: npm run check:openapi
       - run: npm run test:api
